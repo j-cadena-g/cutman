@@ -27,7 +27,7 @@ export async function sendEmail(
 }
 
 export function magicLinkEmail(input: { appName?: string; url: string }): { subject: string; text: string } {
-  const appName = input.appName ?? "League Brain";
+  const appName = input.appName ?? "Cutman";
   return {
     subject: `Sign in to ${appName}`,
     text: `Tap this link to sign in. It expires in 15 minutes.\n\n${input.url}\n\nIf you did not ask for this, ignore it.`,

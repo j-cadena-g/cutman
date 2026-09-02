@@ -7,8 +7,8 @@ import {
   fixtureRosters,
   fixtureTransactions,
   fixtureUsersVerified,
-} from "@league-brain/sleeper";
-import type { LeagueSnapshot } from "@league-brain/story";
+} from "@cutman/sleeper";
+import type { LeagueSnapshot } from "@cutman/story";
 import { beforeAll, describe, expect, it } from "vitest";
 import { LeagueBrain } from "./league-brain.ts";
 

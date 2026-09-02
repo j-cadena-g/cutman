@@ -1,5 +1,5 @@
 {
-  "name": "@league-brain/auth",
+  "name": "@cutman/auth",
   "private": true,
   "version": "0.0.0",
   "type": "module",
@@ -12,11 +12,11 @@
     "lint": "echo ok"
   },
   "dependencies": {
-    "@league-brain/db": "workspace:*"
+    "@cutman/db": "workspace:*"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "5.20260902.1",
-    "@league-brain/tsconfig": "workspace:*",
+    "@cutman/tsconfig": "workspace:*",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }

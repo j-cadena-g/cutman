@@ -1,5 +1,5 @@
 {
-  "name": "@league-brain/tsconfig",
+  "name": "@cutman/tsconfig",
   "private": true,
   "version": "0.0.0",
   "files": ["base.json", "cloudflare.json"]

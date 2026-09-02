@@ -7,7 +7,7 @@ import {
   putMagicLink,
   type UserRow,
   upsertUserByEmail,
-} from "@league-brain/db";
+} from "@cutman/db";
 import {
   clearSessionCookie,
   isValidEmail,
@@ -18,7 +18,7 @@ import {
   sessionCookieValue,
   sessionExpiry,
   sha256Hex,
-} from "@league-brain/auth";
+} from "@cutman/auth";
 
 export type AuthedUser = UserRow;
 

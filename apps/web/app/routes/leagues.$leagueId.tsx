@@ -1,6 +1,6 @@
 import { Form, Link } from "react-router";
-import { getLeague, getLeagueMember, setLeagueTone, setRecapOptIn, upsertLeagueMember } from "@league-brain/db";
-import { isTone, parseTone, toneBlurb, toneLabel, type Tone } from "@league-brain/story";
+import { getLeague, getLeagueMember, setLeagueTone, setRecapOptIn, upsertLeagueMember } from "@cutman/db";
+import { isTone, parseTone, toneBlurb, toneLabel, type Tone } from "@cutman/story";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
 import { Card, CardDescription, CardTitle } from "~/components/ui/card";
@@ -108,7 +108,7 @@ export default function LeaguePage({ loaderData, actionData }: Route.ComponentPr
     <main className="mx-auto max-w-5xl px-6 py-10">
       <p className="text-xs font-semibold uppercase tracking-[0.24em] text-flag">
         <Link to="/" className="hover:text-cream">
-          League Brain
+          Cutman
         </Link>
       </p>
       <div className="mt-3 flex flex-wrap items-end justify-between gap-4">
@@ -165,7 +165,7 @@ export default function LeaguePage({ loaderData, actionData }: Route.ComponentPr
             <Card className="mt-4">
               <CardTitle>Quiet so far</CardTitle>
               <CardDescription>
-                The brain polls Sleeper, diffs the snapshot, and only writes a beat when something actually changed. Same
+                Cutman polls Sleeper, diffs the snapshot, and only writes a beat when something actually changed. Same
                 payload twice is silence.
               </CardDescription>
             </Card>

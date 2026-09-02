@@ -1,4 +1,4 @@
-import { createFixtureClient, HttpSleeperClient, type PlayerMap, type SleeperClient } from "@league-brain/sleeper";
+import { createFixtureClient, HttpSleeperClient, type PlayerMap, type SleeperClient } from "@cutman/sleeper";
 
 const PLAYERS_KEY = "players:nfl";
 const PLAYERS_AT_KEY = "players:nfl:fetched_at";

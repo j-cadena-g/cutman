@@ -1,4 +1,4 @@
-import type { SleeperMatchup } from "@league-brain/sleeper";
+import type { SleeperMatchup } from "@cutman/sleeper";
 
 export function hasFinitePoints(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);

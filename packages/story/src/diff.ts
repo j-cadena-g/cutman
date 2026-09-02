@@ -1,4 +1,4 @@
-import type { PlayerMap, SleeperLeagueUser, SleeperMatchup, SleeperRoster } from "@league-brain/sleeper";
+import type { PlayerMap, SleeperLeagueUser, SleeperMatchup, SleeperRoster } from "@cutman/sleeper";
 import type { LeagueSnapshot } from "./snapshot.ts";
 import { hasPlayerPoints } from "./week.ts";
 

@@ -1,19 +1,19 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "league-brain-test",
+  "name": "cutman-test",
   "main": "./workers/test-entry.ts",
   "compatibility_date": "2026-08-22",
   "compatibility_flags": ["nodejs_compat"],
   "vars": {
     "APP_URL": "http://127.0.0.1:41789",
-    "EMAIL_FROM": "brain@localhost",
+    "EMAIL_FROM": "Cutman <hello@cutman.io>",
     "USE_SLEEPER_FIXTURES": "true"
   },
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "league-brain-test",
-      "database_id": "local-league-brain-test",
+      "database_name": "cutman-test",
+      "database_id": "local-cutman-test",
       "migrations_dir": "./d1"
     }
   ],

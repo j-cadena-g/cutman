@@ -1,5 +1,5 @@
 {
-  "name": "@league-brain/story",
+  "name": "@cutman/story",
   "private": true,
   "version": "0.0.0",
   "type": "module",
@@ -12,10 +12,10 @@
     "lint": "echo ok"
   },
   "dependencies": {
-    "@league-brain/sleeper": "workspace:*"
+    "@cutman/sleeper": "workspace:*"
   },
   "devDependencies": {
-    "@league-brain/tsconfig": "workspace:*",
+    "@cutman/tsconfig": "workspace:*",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }

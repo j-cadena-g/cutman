@@ -1,4 +1,4 @@
-import { fixtureMatchupsFinal, fixtureMatchupsInProgress, fixtureMatchupsNoPlayerPoints, fixturePlayers, fixtureRosters, fixtureTransactions, fixtureUsersUnverified, fixtureUsersVerified } from "@league-brain/sleeper";
+import { fixtureMatchupsFinal, fixtureMatchupsInProgress, fixtureMatchupsNoPlayerPoints, fixturePlayers, fixtureRosters, fixtureTransactions, fixtureUsersUnverified, fixtureUsersVerified } from "@cutman/sleeper";
 import { describe, expect, it } from "vitest";
 import { diffSnapshots, factsIfChanged } from "./diff.ts";
 import { runRecapAttempt } from "./recap.ts";

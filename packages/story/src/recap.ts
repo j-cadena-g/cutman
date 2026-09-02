@@ -1,7 +1,7 @@
 import type { StoryFact } from "./diff.ts";
 import { isBlankRecap, type RecapDraft } from "./json.ts";
 import { isWeekFinal } from "./week.ts";
-import type { SleeperMatchup } from "@league-brain/sleeper";
+import type { SleeperMatchup } from "@cutman/sleeper";
 
 export type RecapStatus = "skipped_not_final" | "skipped_already" | "published" | "model_error" | "blank";
 

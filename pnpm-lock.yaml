@@ -41,22 +41,22 @@ importers:
 
   apps/web:
     dependencies:
-      '@league-brain/ai':
+      '@cutman/ai':
         specifier: workspace:*
         version: link:../../packages/ai
-      '@league-brain/auth':
+      '@cutman/auth':
         specifier: workspace:*
         version: link:../../packages/auth
-      '@league-brain/db':
+      '@cutman/db':
         specifier: workspace:*
         version: link:../../packages/db
-      '@league-brain/email':
+      '@cutman/email':
         specifier: workspace:*
         version: link:../../packages/email
-      '@league-brain/sleeper':
+      '@cutman/sleeper':
         specifier: workspace:*
         version: link:../../packages/sleeper
-      '@league-brain/story':
+      '@cutman/story':
         specifier: workspace:*
         version: link:../../packages/story
       '@radix-ui/react-label':
@@ -99,7 +99,7 @@ importers:
       '@cloudflare/workers-types':
         specifier: 5.20260902.1
         version: 5.20260902.1
-      '@league-brain/tsconfig':
+      '@cutman/tsconfig':
         specifier: workspace:*
         version: link:../../packages/tsconfig
       '@react-router/dev':
@@ -138,14 +138,14 @@ importers:
 
   packages/ai:
     dependencies:
-      '@league-brain/story':
+      '@cutman/story':
         specifier: workspace:*
         version: link:../story
     devDependencies:
       '@cloudflare/workers-types':
         specifier: 5.20260902.1
         version: 5.20260902.1
-      '@league-brain/tsconfig':
+      '@cutman/tsconfig':
         specifier: workspace:*
         version: link:../tsconfig
       typescript:
@@ -157,14 +157,14 @@ importers:
 
   packages/auth:
     dependencies:
-      '@league-brain/db':
+      '@cutman/db':
         specifier: workspace:*
         version: link:../db
     devDependencies:
       '@cloudflare/workers-types':
         specifier: 5.20260902.1
         version: 5.20260902.1
-      '@league-brain/tsconfig':
+      '@cutman/tsconfig':
         specifier: workspace:*
         version: link:../tsconfig
       typescript:
@@ -179,7 +179,7 @@ importers:
       '@cloudflare/workers-types':
         specifier: 5.20260902.1
         version: 5.20260902.1
-      '@league-brain/tsconfig':
+      '@cutman/tsconfig':
         specifier: workspace:*
         version: link:../tsconfig
       typescript:
@@ -194,7 +194,7 @@ importers:
       '@cloudflare/workers-types':
         specifier: 5.20260902.1
         version: 5.20260902.1
-      '@league-brain/tsconfig':
+      '@cutman/tsconfig':
         specifier: workspace:*
         version: link:../tsconfig
       typescript:
@@ -215,7 +215,7 @@ importers:
 
   packages/sleeper:
     devDependencies:
-      '@league-brain/tsconfig':
+      '@cutman/tsconfig':
         specifier: workspace:*
         version: link:../tsconfig
       typescript:
@@ -227,11 +227,11 @@ importers:
 
   packages/story:
     dependencies:
-      '@league-brain/sleeper':
+      '@cutman/sleeper':
         specifier: workspace:*
         version: link:../sleeper
     devDependencies:
-      '@league-brain/tsconfig':
+      '@cutman/tsconfig':
         specifier: workspace:*
         version: link:../tsconfig
       typescript:

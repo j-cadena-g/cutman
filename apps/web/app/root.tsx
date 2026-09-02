@@ -4,8 +4,8 @@ import "./app.css";
 
 export function meta(): Route.MetaDescriptors {
   return [
-    { title: "League Brain" },
-    { name: "description", content: "The league as a story. Trades, rivalries, weekly shame, running gags." },
+    { title: "Cutman" },
+    { name: "description", content: "Cutman is the season story for your Sleeper league." },
   ];
 }
 
@@ -43,7 +43,7 @@ export default function App() {
 
 export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
   let title = "Something broke";
-  let detail = "The brain lost the snap. Refresh and try again.";
+  let detail = "The snap got lost. Refresh and try again.";
   if (isRouteErrorResponse(error)) {
     title = error.status === 404 ? "Not on this roster" : `Error ${error.status}`;
     detail = error.status === 404 ? "That page does not exist." : error.statusText || detail;
@@ -52,7 +52,7 @@ export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
   }
   return (
     <main className="mx-auto max-w-xl px-6 py-24">
-      <p className="text-xs font-semibold uppercase tracking-[0.22em] text-flag">League Brain</p>
+      <p className="text-xs font-semibold uppercase tracking-[0.22em] text-flag">Cutman</p>
       <h1 className="mt-4 font-display text-4xl">{title}</h1>
       <p className="mt-3 text-muted">{detail}</p>
     </main>

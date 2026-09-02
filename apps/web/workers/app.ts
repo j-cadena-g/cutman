@@ -1,4 +1,4 @@
-import { ensureSchema } from "@league-brain/db";
+import { ensureSchema } from "@cutman/db";
 import { createRequestHandler, RouterContextProvider } from "react-router";
 import { LeagueBrain } from "./league-brain.ts";
 import { handleScheduled } from "./scheduled.ts";

@@ -8,8 +8,8 @@ import {
   saveSleeperUsername,
   upsertLeagueMember,
   markUserVerified,
-} from "@league-brain/db";
-import { formatVerifyToken, generateVerifyCode, isTone, parseTone, verifySleeperTeamName } from "@league-brain/story";
+} from "@cutman/db";
+import { formatVerifyToken, generateVerifyCode, isTone, parseTone, verifySleeperTeamName } from "@cutman/story";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
 import { Card, CardDescription, CardTitle } from "~/components/ui/card";
@@ -150,7 +150,7 @@ export default function Home({ loaderData, actionData }: Route.ComponentProps) {
     <main className="mx-auto max-w-5xl px-6 py-10">
       <header className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.24em] text-flag">League Brain</p>
+          <p className="text-xs font-semibold uppercase tracking-[0.24em] text-flag">Cutman</p>
           <h1 className="mt-2 font-display text-4xl md:text-5xl">This week's plot</h1>
           <p className="mt-2 text-sm text-muted">{user.email}</p>
         </div>
@@ -204,7 +204,7 @@ export default function Home({ loaderData, actionData }: Route.ComponentProps) {
             {season ? <p className="text-xs uppercase tracking-[0.18em] text-muted">{season} NFL</p> : null}
           </div>
           {enabled.length === 0 ? (
-            <p className="mt-4 text-muted">None yet. Enable a league below and the brain starts keeping the book.</p>
+            <p className="mt-4 text-muted">None yet. Enable a league below and Cutman starts keeping the book.</p>
           ) : (
             <div className="mt-5 grid gap-4 md:grid-cols-2">
               {enabled.map((league) => (

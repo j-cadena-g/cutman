@@ -1,6 +1,6 @@
-# League Brain
+# Cutman
 
-The league as a story — trades, rivalries, weekly shame, running gags — for NFL Sleeper leagues. Not start/sit.
+Cutman is the season story for your Sleeper league.
 
 This repo is public for visibility and is not a place to send PRs.
 
@@ -13,7 +13,7 @@ Licensing is TBD.
 - One-time verify: append `FF-XXXX` to your Sleeper team name; we confirm via league users and bind `sleeper_user_id`
 - Enable a league (Durable Object id = Sleeper `league_id`). Member required. Commish = `is_owner`. First enabler may set tone until a commish appears
 - Living dashboard: bible, timeline, recap archive, commish strip. Rosters stay on Sleeper
-- Brain: poll Sleeper, diff snapshots, Gemma writes beats. Same payload twice = no beat. No bench-shame without `players_points`
+- Poll Sleeper, diff snapshots, Gemma writes beats. Same payload twice = no beat. No bench-shame without `players_points`
 - Tuesday recap in `America/New_York` once every matchup has a finite numeric score. Archive, then email. One recap per league/week. Never a blank email. Model dresses facts only (`{copy}` / `{subject,body}`)
 
 ## Run locally
@@ -55,7 +55,7 @@ Configured in `apps/web/wrangler.jsonc`:
 The worker applies `apps/web/d1/0001_init.sql` on first request (`CREATE TABLE IF NOT EXISTS`). For a CLI-managed local D1:
 
 ```bash
-pnpm --filter @league-brain/web exec wrangler d1 migrations apply league-brain --local --persist-to .wrangler/state
+pnpm --filter @cutman/web exec wrangler d1 migrations apply cutman --local --persist-to .wrangler/state
 ```
 
 Generate Env types:
@@ -67,15 +67,15 @@ pnpm cf-typegen
 Deploy:
 
 ```bash
-pnpm --filter @league-brain/web deploy
+pnpm --filter @cutman/web deploy
 ```
 
 ## Email Sending domain
 
-Onboard a domain in Cloudflare **Compute → Email Service → Email Sending** (SPF/DKIM/DMARC on the zone). Then:
+Onboard **cutman.io** in Cloudflare **Compute → Email Service → Email Sending** (SPF/DKIM/DMARC on the zone). Then:
 
 1. Keep the `send_email` binding named `EMAIL`
-2. Set `EMAIL_FROM` to an address on that domain, e.g. `brain@yourdomain.com`
-3. Set `APP_URL` to the deployed origin so magic links point at production
+2. Set `EMAIL_FROM` to `Cutman <hello@cutman.io>`
+3. Set `APP_URL` to `https://cutman.io` so magic links point at production
 
 Until the domain is onboarded, local `wrangler dev` still runs: emails are printed, not delivered.

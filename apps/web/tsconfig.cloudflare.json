@@ -1,5 +1,5 @@
 {
-  "extends": "@league-brain/tsconfig/base.json",
+  "extends": "@cutman/tsconfig/base.json",
   "include": [
     ".react-router/types/**/*",
     "app/**/*",

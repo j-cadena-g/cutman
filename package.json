@@ -1,14 +1,14 @@
 {
-  "name": "league-brain",
+  "name": "cutman",
   "private": true,
   "packageManager": "pnpm@10.33.3",
   "scripts": {
-    "dev": "turbo dev --filter=@league-brain/web",
-    "build": "turbo build --filter=@league-brain/web",
+    "dev": "turbo dev --filter=@cutman/web",
+    "build": "turbo build --filter=@cutman/web",
     "test": "turbo test",
     "typecheck": "turbo typecheck",
     "lint": "turbo lint",
-    "cf-typegen": "pnpm --filter @league-brain/web cf-typegen"
+    "cf-typegen": "pnpm --filter @cutman/web cf-typegen"
   },
   "devDependencies": {
     "turbo": "^2.10.12",

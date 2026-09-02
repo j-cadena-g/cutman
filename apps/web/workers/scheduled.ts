@@ -1,5 +1,5 @@
-import { listEnabledLeagues } from "@league-brain/db";
-import { easternParts, shouldAttemptTuesdayRecap, shouldPoll } from "@league-brain/story";
+import { listEnabledLeagues } from "@cutman/db";
+import { easternParts, shouldAttemptTuesdayRecap, shouldPoll } from "@cutman/story";
 
 export async function handleScheduled(env: Env, now = new Date()): Promise<{ polled: number; recapped: number }> {
   const parts = easternParts(now);

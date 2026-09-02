@@ -1,5 +1,5 @@
 {
-  "extends": "@league-brain/tsconfig/base.json",
+  "extends": "@cutman/tsconfig/base.json",
   "include": ["src", "vitest.config.ts"],
   "compilerOptions": {
     "types": ["vitest/globals"]

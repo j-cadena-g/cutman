@@ -1,4 +1,4 @@
-import type { SleeperLeagueUser, SleeperMatchup, SleeperRoster, SleeperTransaction } from "@league-brain/sleeper";
+import type { SleeperLeagueUser, SleeperMatchup, SleeperRoster, SleeperTransaction } from "@cutman/sleeper";
 
 export type LeagueSnapshot = {
   leagueId: string;

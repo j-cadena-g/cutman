@@ -1,8 +1,8 @@
 import { DurableObject } from "cloudflare:workers";
-import { generateBeat, generateRecap, type WorkersAi } from "@league-brain/ai";
-import { listRecapRecipients } from "@league-brain/db";
-import { recapEmail, sendEmail } from "@league-brain/email";
-import type { PlayerMap, SleeperMatchup } from "@league-brain/sleeper";
+import { generateBeat, generateRecap, type WorkersAi } from "@cutman/ai";
+import { listRecapRecipients } from "@cutman/db";
+import { recapEmail, sendEmail } from "@cutman/email";
+import type { PlayerMap, SleeperMatchup } from "@cutman/sleeper";
 import {
   beatPrompt,
   diffSnapshots,
@@ -16,7 +16,7 @@ import {
   type RecapDraft,
   type StoryFact,
   type Tone,
-} from "@league-brain/story";
+} from "@cutman/story";
 import { getPlayerMap, sleeperFromEnv } from "./sleeper.ts";
 
 type Settings = {
@@ -89,7 +89,7 @@ export class LeagueBrain extends DurableObject<Env> {
     if (existing.length === 0) {
       this.ctx.storage.sql.exec(
         "INSERT INTO bible (entry, created_at) VALUES (?, ?)",
-        `${input.name} is live on League Brain. Tone: ${input.tone}.`,
+        `${input.name} is in the book. Tone: ${input.tone}.`,
         Date.now(),
       );
     }
@@ -301,7 +301,7 @@ export class LeagueBrain extends DurableObject<Env> {
     const leagueId = this.getSetting("leagueId");
     const name = this.getSetting("name") ?? "Untitled league";
     const tone = (this.getSetting("tone") as Tone | null) ?? "playful";
-    if (!leagueId) throw new Error("League Brain is not bootstrapped");
+    if (!leagueId) throw new Error("Cutman is not bootstrapped");
     return { leagueId, name, tone };
   }
 

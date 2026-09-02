@@ -1,4 +1,4 @@
-import { parseBeatDraft, parseRecapDraft, type BeatDraft, type RecapDraft } from "@league-brain/story";
+import { parseBeatDraft, parseRecapDraft, type BeatDraft, type RecapDraft } from "@cutman/story";
 
 export const GEMMA_MODEL = "@cf/google/gemma-4-26b-a4b-it" as const;
 
