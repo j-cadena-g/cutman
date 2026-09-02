@@ -10,7 +10,7 @@
   "upload_source_maps": true,
   "vars": {
     "APP_URL": "https://cutman.io",
-    "EMAIL_FROM": "Cutman <hello@cutman.io>",
+    "EMAIL_FROM": "Cutman <hello@mail.cutman.io>",
     "USE_SLEEPER_FIXTURES": "false"
   },
   "d1_databases": [

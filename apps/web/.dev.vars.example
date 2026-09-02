@@ -1,4 +1,4 @@
 # Copy to apps/web/.dev.vars. Do not put real tokens or personal data here.
 APP_URL=http://127.0.0.1:41789
-EMAIL_FROM=Cutman <hello@cutman.io>
+EMAIL_FROM=Cutman <hello@mail.cutman.io>
 USE_SLEEPER_FIXTURES=true

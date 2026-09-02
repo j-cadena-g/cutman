@@ -75,7 +75,7 @@ pnpm --filter @cutman/web deploy
 Onboard **cutman.io** in Cloudflare **Compute → Email Service → Email Sending** (SPF/DKIM/DMARC on the zone). Then:
 
 1. Keep the `send_email` binding named `EMAIL`
-2. Set `EMAIL_FROM` to `Cutman <hello@cutman.io>`
+2. Set `EMAIL_FROM` to `Cutman <hello@mail.cutman.io>`
 3. Set `APP_URL` to `https://cutman.io` so magic links point at production
 
 Until the domain is onboarded, local `wrangler dev` still runs: emails are printed, not delivered.

@@ -9,7 +9,7 @@ describe("email sending", () => {
       },
     };
     await expect(
-      sendEmail(email, { from: "Cutman <hello@cutman.io>", to: "manager@example.test", subject: "  ", text: "" }),
+      sendEmail(email, { from: "Cutman <hello@mail.cutman.io>", to: "manager@example.test", subject: "  ", text: "" }),
     ).rejects.toThrow(/blank/i);
   });
 
@@ -22,7 +22,7 @@ describe("email sending", () => {
       },
     };
     const recap = recapEmail({ subject: "Week 3 belongs to James", body: "CeeDee changed hands." });
-    await sendEmail(email, { from: "Cutman <hello@cutman.io>", to: "manager@example.test", ...recap });
+    await sendEmail(email, { from: "Cutman <hello@mail.cutman.io>", to: "manager@example.test", ...recap });
     expect(sent).toHaveLength(1);
   });
 });

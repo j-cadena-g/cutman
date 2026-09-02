@@ -6,7 +6,7 @@
   "compatibility_flags": ["nodejs_compat"],
   "vars": {
     "APP_URL": "http://127.0.0.1:41789",
-    "EMAIL_FROM": "Cutman <hello@cutman.io>",
+    "EMAIL_FROM": "Cutman <hello@mail.cutman.io>",
     "USE_SLEEPER_FIXTURES": "true"
   },
   "d1_databases": [
