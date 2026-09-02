@@ -1,0 +1,21 @@
+{
+  "name": "league-brain",
+  "private": true,
+  "packageManager": "pnpm@10.33.3",
+  "scripts": {
+    "dev": "turbo dev --filter=@league-brain/web",
+    "build": "turbo build --filter=@league-brain/web",
+    "test": "turbo test",
+    "typecheck": "turbo typecheck",
+    "lint": "turbo lint",
+    "cf-typegen": "pnpm --filter @league-brain/web cf-typegen"
+  },
+  "devDependencies": {
+    "turbo": "^2.10.12",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["esbuild", "workerd"]
+  }
+}

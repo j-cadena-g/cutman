@@ -1,0 +1,6 @@
+{
+  "name": "@league-brain/tsconfig",
+  "private": true,
+  "version": "0.0.0",
+  "files": ["base.json", "cloudflare.json"]
+}

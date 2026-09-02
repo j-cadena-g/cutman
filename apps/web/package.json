@@ -1,0 +1,51 @@
+{
+  "name": "@league-brain/web",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "react-router dev --port 41789 --host 127.0.0.1",
+    "build": "react-router build",
+    "preview": "pnpm build && vite preview --port 41789",
+    "deploy": "pnpm build && wrangler deploy",
+    "cf-typegen": "wrangler types",
+    "typecheck": "wrangler types && react-router typegen && tsc -b",
+    "test": "vitest run",
+    "lint": "echo ok"
+  },
+  "dependencies": {
+    "@league-brain/ai": "workspace:*",
+    "@league-brain/auth": "workspace:*",
+    "@league-brain/db": "workspace:*",
+    "@league-brain/email": "workspace:*",
+    "@league-brain/sleeper": "workspace:*",
+    "@league-brain/story": "workspace:*",
+    "@radix-ui/react-label": "^2.1.8",
+    "@radix-ui/react-slot": "^1.2.4",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "isbot": "^5.1.32",
+    "lucide-react": "^0.562.0",
+    "react": "^19.2.1",
+    "react-dom": "^19.2.1",
+    "react-router": "catalog:",
+    "tailwind-merge": "^3.4.0"
+  },
+  "devDependencies": {
+    "@cloudflare/vite-plugin": "catalog:",
+    "@cloudflare/vitest-pool-workers": "0.22.0",
+    "@cloudflare/workers-types": "5.20260902.1",
+    "@league-brain/tsconfig": "workspace:*",
+    "@react-router/dev": "catalog:",
+    "@tailwindcss/vite": "^4.1.17",
+    "@types/node": "24.10.1",
+    "@types/react": "^19.2.7",
+    "@types/react-dom": "^19.2.3",
+    "tailwindcss": "^4.1.17",
+    "typescript": "catalog:",
+    "vite": "^7.1.12",
+    "vite-tsconfig-paths": "^5.1.4",
+    "vitest": "catalog:",
+    "wrangler": "catalog:"
+  }
+}

@@ -1,0 +1,4 @@
+{
+  "extends": "@league-brain/tsconfig/cloudflare.json",
+  "include": ["src"]
+}

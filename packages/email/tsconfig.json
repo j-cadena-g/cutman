@@ -1,0 +1,7 @@
+{
+  "extends": "@league-brain/tsconfig/cloudflare.json",
+  "include": ["src", "vitest.config.ts"],
+  "compilerOptions": {
+    "types": ["vitest/globals"]
+  }
+}

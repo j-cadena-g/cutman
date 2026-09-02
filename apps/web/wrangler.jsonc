@@ -1,0 +1,55 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "league-brain",
+  "main": "./workers/app.ts",
+  "compatibility_date": "2026-08-22",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true
+  },
+  "upload_source_maps": true,
+  "vars": {
+    "APP_URL": "http://127.0.0.1:41789",
+    "EMAIL_FROM": "brain@localhost",
+    "USE_SLEEPER_FIXTURES": "false"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "league-brain",
+      "database_id": "local-league-brain",
+      "migrations_dir": "./d1"
+    }
+  ],
+  "kv_namespaces": [
+    {
+      "binding": "PLAYERS",
+      "id": "local-players-kv"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "LEAGUE_BRAIN",
+        "class_name": "LeagueBrain"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["LeagueBrain"]
+    }
+  ],
+  "ai": {
+    "binding": "AI"
+  },
+  "send_email": [
+    {
+      "name": "EMAIL"
+    }
+  ],
+  "triggers": {
+    "crons": ["0 * * * *"]
+  }
+}
