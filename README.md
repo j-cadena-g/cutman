@@ -52,10 +52,10 @@ Configured in `apps/web/wrangler.jsonc`:
 | `EMAIL` | Email Service | `env.EMAIL.send` for magic links and Tuesday recaps |
 | Cron | `0 * * * *` UTC | Handler uses Eastern Time: poll every 3h; recap Tue 9 / 13 / 19 |
 
-Apply D1 locally (Vite/Wrangler usually does this on boot):
+The worker applies `apps/web/d1/0001_init.sql` on first request (`CREATE TABLE IF NOT EXISTS`). For a CLI-managed local D1:
 
 ```bash
-pnpm --filter @league-brain/web exec wrangler d1 migrations apply league-brain --local
+pnpm --filter @league-brain/web exec wrangler d1 migrations apply league-brain --local --persist-to .wrangler/state
 ```
 
 Generate Env types:

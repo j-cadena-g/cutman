@@ -1,3 +1,4 @@
+import { ensureSchema } from "@league-brain/db";
 import { createRequestHandler, RouterContextProvider } from "react-router";
 import { LeagueBrain } from "./league-brain.ts";
 import { handleScheduled } from "./scheduled.ts";
@@ -20,11 +21,14 @@ export { LeagueBrain };
 
 export default {
   async fetch(request, env, ctx) {
+    await ensureSchema(env.DB);
     const context = new RouterContextProvider();
     Object.assign(context, { cloudflare: { env, ctx } });
     return requestHandler(request, context);
   },
   async scheduled(_controller, env, ctx) {
-    ctx.waitUntil(handleScheduled(env));
+    ctx.waitUntil(
+      ensureSchema(env.DB).then(() => handleScheduled(env)),
+    );
   },
 } satisfies ExportedHandler<Env>;

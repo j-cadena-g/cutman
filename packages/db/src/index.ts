@@ -1,3 +1,5 @@
+export { ensureSchema } from "./ensure.ts";
+
 export type UserRow = {
   id: string;
   email: string;
