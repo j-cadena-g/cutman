@@ -149,7 +149,7 @@ function replaceConfigValue(source, { label, pattern }, value) {
 
   const nextSource = source.replace(pattern, (_match, prefix, _current, suffix) => {
     replaced = true;
-    return `${prefix}${value}${suffix}`;
+    return `${prefix}${JSON.stringify(value).slice(1, -1)}${suffix}`;
   });
 
   if (!replaced) {
