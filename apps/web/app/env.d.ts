@@ -17,4 +17,8 @@ interface Env {
   V1_LEAGUE_NAME: string;
   V1_SLEEPER_USER_ID: string;
   V1_SLEEPER_USERNAME: string;
+  // The Sleeper league id for the single configured pilot league that onboarding challenges
+  // against (see app/lib/v1.server.ts's `pilotSleeperLeagueId`). Optional: falls back to
+  // `V1_LEAGUE_ID` until the wrangler manifest defines this var directly (Task 5).
+  PILOT_SLEEPER_LEAGUE_ID?: string;
 }

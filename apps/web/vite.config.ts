@@ -10,6 +10,7 @@ export default defineConfig({
     host: "127.0.0.1",
     strictPort: true,
   },
+
   plugins: [
     cloudflare({
       viteEnvironment: { name: "ssr" },
@@ -23,4 +24,8 @@ export default defineConfig({
     reactRouter(),
     tsconfigPaths(),
   ],
+
+  ssr: {
+    noExternal: ["@clerk/react-router"],
+  },
 });
