@@ -9,10 +9,9 @@ Licensing is TBD.
 ## What you get
 
 - Clerk sign-in only. Recaps still go out through Cloudflare Email Service as `Cutman <hello@mail.cutman.io>`
-- Allowlist: Clerk email → Sleeper `user_id` in D1. After sign-in, Cutman live-checks that Sleeper user is still in the one configured league. Fail either check and you are signed in with no dashboard
-- One league. One LeagueBrain Durable Object keyed by that Sleeper league id
+- v1 runs one configured Sleeper league. D1 already models many leagues; one LeagueBrain Durable Object per league id
 - Dashboard reads the Durable Object snapshot (bible, timeline, recaps). It does not hit Sleeper on every page load
-- D1 holds identity, the allowlist, and recap opt-in. KV holds the NFL player map
+- D1 holds Clerk users, leagues, and per-league membership / recap opt-in. KV holds the NFL player map
 - Cron is hourly UTC; the handler uses `America/New_York`. Poll every 3 hours. One idempotent Tuesday recap at 9:00
 - Default tone is playful when unset
 
@@ -90,17 +89,25 @@ Current Worker bindings in the public `apps/web/wrangler.jsonc` template:
 
 | Binding | Type | Purpose |
 | --- | --- | --- |
-| `DB` | D1 | Users, allowlist, recap opt-in, the one enabled league |
+| `DB` | D1 | Clerk users, leagues, memberships, recap opt-in |
 | `PLAYERS` | KV | NFL player map, fetched at most once per day |
 | `LEAGUE_BRAIN` | SQLite Durable Object | Snapshots, beats, bible, recaps. id = configured `V1_LEAGUE_ID` |
 | `AI` | Workers AI | `@cf/google/gemma-4-26b-a4b-it` only |
 | `EMAIL` | Email Service | `env.EMAIL.send` for Tuesday recaps. From-name is **Cutman** |
 | Cron | `0 * * * *` UTC | Handler uses Eastern Time: poll every 3h; recap Tuesday 9:00 |
 
-The worker applies `apps/web/d1/0001_init.sql` on first request (`CREATE TABLE IF NOT EXISTS`). Live league/user rows are `INSERT OR IGNORE`d from Environment `V1_*` vars. Production renders require those vars so placeholder identities from `wrangler.jsonc` cannot ship. For a CLI-managed local D1:
+The worker applies D1 migration `0001_init.sql` (multi-league schema). v1 still `INSERT OR IGNORE`s the single configured league from Environment `V1_*` vars. Production renders require those vars so placeholder identities from `wrangler.jsonc` cannot ship. For a CLI-managed local D1:
 
 ```bash
 pnpm run db:migrate:local
+```
+
+If your local D1 predates the current schema (or you just want a clean slate), reset it — this
+is **local-only**: it deletes `apps/web/.wrangler/state/v3/d1` and nothing else, then reapplies
+`0001_init.sql`. It never touches remote D1.
+
+```bash
+pnpm run db:reset:local
 ```
 
 Generate Env types:
@@ -118,6 +125,7 @@ pnpm cf-typegen
 | `pnpm run deploy` | Apply remote D1 migrations, then deploy the Worker with `--secrets-file` |
 | `pnpm run db:migrate:local` | Apply migrations to the local D1 database |
 | `pnpm run db:migrate:remote` | Apply migrations to the remote D1 database |
+| `pnpm run db:reset:local` | Wipe local D1 state and reapply migrations (local only; never touches remote) |
 | `pnpm run typecheck` | Generate Wrangler + route types and run TypeScript |
 | `pnpm run test` | Run Vitest suites |
 

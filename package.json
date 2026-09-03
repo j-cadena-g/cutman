@@ -10,6 +10,7 @@
     "deploy": "pnpm --filter @cutman/web run deploy",
     "db:migrate:local": "pnpm --filter @cutman/web run db:migrate:local",
     "db:migrate:remote": "pnpm --filter @cutman/web run db:migrate:remote",
+    "db:reset:local": "pnpm --filter @cutman/web run db:reset:local",
     "test": "turbo test",
     "typecheck": "turbo typecheck",
     "lint": "turbo lint",

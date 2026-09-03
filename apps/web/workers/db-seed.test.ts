@@ -251,7 +251,9 @@ describe("leagues", () => {
       now,
     });
     await activateLeague(env.DB, league.id, now + 1);
-    await expect(provisionLeague(env.DB, league.id)).rejects.toThrow();
+    await expect(provisionLeague(env.DB, league.id)).rejects.toThrow(
+      /from status "active"; provisioning only retries from "provisioning" or "error"/,
+    );
     const stillActive = await getLeague(env.DB, league.id);
     expect(stillActive?.status).toBe("active");
   });
@@ -267,7 +269,9 @@ describe("leagues", () => {
       now,
     });
     await activateLeague(env.DB, league.id, now + 1);
-    await expect(activateLeague(env.DB, league.id, now + 2)).rejects.toThrow();
+    await expect(activateLeague(env.DB, league.id, now + 2)).rejects.toThrow(
+      /from status "active"; activation only applies to leagues that are "provisioning"/,
+    );
   });
 
   it("fails only from provisioning", async () => {
@@ -281,7 +285,9 @@ describe("leagues", () => {
       now,
     });
     await activateLeague(env.DB, league.id, now + 1);
-    await expect(failLeague(env.DB, league.id, "boom")).rejects.toThrow();
+    await expect(failLeague(env.DB, league.id, "boom")).rejects.toThrow(
+      /from status "active"; failure only applies to leagues that are "provisioning"/,
+    );
     const stillActive = await getLeague(env.DB, league.id);
     expect(stillActive?.status).toBe("active");
     expect(stillActive?.provisioning_error).toBeNull();

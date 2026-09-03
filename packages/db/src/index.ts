@@ -186,13 +186,26 @@ export async function createLeague(
     // Both existing lookups resolved to the same row: idempotent re-create.
     return byId;
   }
-  await db
-    .prepare(
-      `INSERT INTO leagues (id, sleeper_league_id, name, season, status, tone, created_at)
-       VALUES (?, ?, ?, ?, 'provisioning', ?, ?)`,
-    )
-    .bind(input.id, input.sleeperLeagueId, input.name, input.season, input.tone ?? "playful", input.now)
-    .run();
+  try {
+    await db
+      .prepare(
+        `INSERT INTO leagues (id, sleeper_league_id, name, season, status, tone, created_at)
+         VALUES (?, ?, ?, ?, 'provisioning', ?, ?)`,
+      )
+      .bind(input.id, input.sleeperLeagueId, input.name, input.season, input.tone ?? "playful", input.now)
+      .run();
+  } catch (error) {
+    // A concurrent caller may have inserted the same (id, sleeperLeagueId) pair between our
+    // pre-check reads above and this insert (first-ever create is not covered by those reads,
+    // since neither row existed yet). If the row that now exists matches our intended pair,
+    // this is that same idempotent create racing itself — return it instead of surfacing the
+    // raw UNIQUE/PRIMARY KEY constraint error. Anything else (a genuine mismatch) rethrows.
+    const raced = await getLeague(db, input.id);
+    if (raced && raced.sleeper_league_id === input.sleeperLeagueId) {
+      return raced;
+    }
+    throw error;
+  }
   const row = await getLeague(db, input.id);
   if (!row) throw new Error("Failed to create league");
   return row;

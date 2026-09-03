@@ -12,6 +12,7 @@
     "deploy": "bash ../../scripts/run-with-1password-environment.sh -- pnpm run deploy:internal",
     "deploy:internal": "bash ../../scripts/deploy-with-secrets.sh",
     "db:migrate:local": "pnpm exec wrangler d1 migrations apply cutman --local --config wrangler.jsonc",
+    "db:reset:local": "node ../../scripts/reset-local-d1.mjs && pnpm run db:migrate:local",
     "db:migrate:remote": "bash ../../scripts/run-with-1password-environment.sh -- pnpm run db:migrate:remote:internal",
     "db:migrate:remote:internal": "pnpm run wrangler:deploy-config && pnpm exec wrangler d1 migrations apply cutman --remote --config .wrangler.deploy.jsonc",
     "cf-typegen": "wrangler types",
