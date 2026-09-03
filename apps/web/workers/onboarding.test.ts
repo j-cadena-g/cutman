@@ -829,6 +829,43 @@ describe("verifyCommissionerChallenge", () => {
     expect(replay).toEqual({ ok: false, error: { kind: "no_pending_challenge" } });
   });
 
+  it("errors pilot_league_not_found when Sleeper has no league for the configured pilot id", async () => {
+    const pilotSleeperLeagueId = nextPilotLeagueId("verify_pilot_missing");
+    const requestNow = 1_801_600_000_000;
+    const { user, requested } = await setupOwner({
+      clerkUserId: "user_verify_pilot_missing",
+      email: "verify-pilot-missing@example.test",
+      pilotSleeperLeagueId,
+      sleeperUserId: "sleeper_pilot_missing",
+      username: "commish_pilot_missing",
+      teamName: "placeholder",
+      isOwner: true,
+      requestNow,
+    });
+    const matchingButMissingLeague = createFakeSleeperClient({
+      leagueUsersById: {
+        [pilotSleeperLeagueId]: [
+          {
+            user_id: "sleeper_pilot_missing",
+            username: "commish_pilot_missing",
+            display_name: "commish_pilot_missing",
+            is_owner: true,
+            metadata: { team_name: `Team ${requested.challenge}` },
+          },
+        ],
+      },
+    });
+
+    const result = await verifyCommissionerChallenge(
+      makeDeps({ sleeperClient: matchingButMissingLeague, pilotSleeperLeagueId, now: () => requestNow + 1000 }),
+      { clerkUserId: user.id },
+    );
+
+    expect(result).toEqual({ ok: false, error: { kind: "pilot_league_not_found" } });
+    const persisted = await getVerification(env.DB, requested.verificationId);
+    expect(persisted?.status).toBe("pending");
+  });
+
   it("returns challenge_already_used (not a raw error) when a concurrent request consumes the verification first", async () => {
     const pilotSleeperLeagueId = nextPilotLeagueId("verify_cas_used");
     const requestNow = 1_801_400_000_000;

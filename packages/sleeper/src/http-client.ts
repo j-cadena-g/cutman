@@ -2,6 +2,21 @@ import type { NflState, PlayerMap, SleeperClient, SleeperLeague, SleeperLeagueUs
 
 const DEFAULT_BASE = "https://api.sleeper.app/v1";
 
+export class SleeperRequestError extends Error {
+  constructor(
+    public readonly path: string,
+    public readonly status: number,
+  ) {
+    super(`Sleeper ${path} failed: ${status}`);
+    this.name = "SleeperRequestError";
+  }
+}
+
+export function isSleeperRateLimited(error: unknown): boolean {
+  if (error instanceof SleeperRequestError) return error.status === 429;
+  return error instanceof Error && / failed: 429$/.test(error.message);
+}
+
 export class HttpSleeperClient implements SleeperClient {
   constructor(
     private readonly fetchImpl: typeof fetch = fetch,
@@ -47,7 +62,7 @@ export class HttpSleeperClient implements SleeperClient {
   private async getJson<T>(path: string): Promise<T> {
     const response = await this.fetchImpl(`${this.baseUrl}${path}`);
     if (!response.ok) {
-      throw new Error(`Sleeper ${path} failed: ${response.status}`);
+      throw new SleeperRequestError(path, response.status);
     }
     return (await response.json()) as T;
   }
@@ -56,7 +71,7 @@ export class HttpSleeperClient implements SleeperClient {
     const response = await this.fetchImpl(`${this.baseUrl}${path}`);
     if (response.status === 404) return null;
     if (!response.ok) {
-      throw new Error(`Sleeper ${path} failed: ${response.status}`);
+      throw new SleeperRequestError(path, response.status);
     }
     const body: unknown = await response.json();
     return body === null ? null : (body as T);
