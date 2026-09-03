@@ -47,6 +47,18 @@ const requiredValues = {
     pattern: /^\d{6,}$/,
     description: "Sleeper league id (numeric snowflake)",
   },
+  V1_LEAGUE_NAME: {
+    pattern: /^.+$/,
+    description: "Sleeper league name",
+  },
+  V1_SLEEPER_USER_ID: {
+    pattern: /^\d{6,}$/,
+    description: "Sleeper user id (numeric snowflake)",
+  },
+  V1_SLEEPER_USERNAME: {
+    pattern: /^\S+$/,
+    description: "Sleeper username",
+  },
 };
 
 const replacements = [
@@ -171,9 +183,15 @@ async function main() {
     V1_LEAGUE_ID: isDevConfig
       ? getOptionalValue("V1_LEAGUE_ID")
       : getRequiredValue("V1_LEAGUE_ID"),
-    V1_LEAGUE_NAME: getOptionalValue("V1_LEAGUE_NAME"),
-    V1_SLEEPER_USER_ID: getOptionalValue("V1_SLEEPER_USER_ID"),
-    V1_SLEEPER_USERNAME: getOptionalValue("V1_SLEEPER_USERNAME"),
+    V1_LEAGUE_NAME: isDevConfig
+      ? getOptionalValue("V1_LEAGUE_NAME")
+      : getRequiredValue("V1_LEAGUE_NAME"),
+    V1_SLEEPER_USER_ID: isDevConfig
+      ? getOptionalValue("V1_SLEEPER_USER_ID")
+      : getRequiredValue("V1_SLEEPER_USER_ID"),
+    V1_SLEEPER_USERNAME: isDevConfig
+      ? getOptionalValue("V1_SLEEPER_USERNAME")
+      : getRequiredValue("V1_SLEEPER_USERNAME"),
   };
   let rendered = template;
   for (const replacement of replacements) {

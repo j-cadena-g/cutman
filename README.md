@@ -97,7 +97,7 @@ Current Worker bindings in the public `apps/web/wrangler.jsonc` template:
 | `EMAIL` | Email Service | `env.EMAIL.send` for Tuesday recaps. From-name is **Cutman** |
 | Cron | `0 * * * *` UTC | Handler uses Eastern Time: poll every 3h; recap Tuesday 9:00 |
 
-The worker applies `apps/web/d1/0001_init.sql` on first request (`CREATE TABLE IF NOT EXISTS` plus fake placeholder seeds). Live league/user rows are `INSERT OR IGNORE`d from Environment `V1_*` vars. For a CLI-managed local D1:
+The worker applies `apps/web/d1/0001_init.sql` on first request (`CREATE TABLE IF NOT EXISTS`). Live league/user rows are `INSERT OR IGNORE`d from Environment `V1_*` vars. Production renders require those vars so placeholder identities from `wrangler.jsonc` cannot ship. For a CLI-managed local D1:
 
 ```bash
 pnpm run db:migrate:local

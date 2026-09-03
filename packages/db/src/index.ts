@@ -108,7 +108,7 @@ export async function ensureOperatorSeed(
     now?: number;
   },
 ): Promise<void> {
-  const now = input.now ?? 0;
+  const now = input.now ?? Date.now();
   const leagueId = input.leagueId?.trim();
   const leagueName = input.leagueName?.trim() || V1_LEAGUE_NAME;
   const sleeperUserId = input.sleeperUserId?.trim();
@@ -129,15 +129,16 @@ export async function ensureLeague(
   db: D1Database,
   input: { leagueId: string; name: string; season: string; tone?: string; now: number },
 ): Promise<LeagueRow> {
-  const existing = await getLeague(db, input.leagueId);
-  if (existing) return existing;
   await db
-    .prepare("INSERT INTO leagues (sleeper_league_id, name, season, enabled_at, tone) VALUES (?, ?, ?, ?, ?)")
+    .prepare(
+      `INSERT OR IGNORE INTO leagues (sleeper_league_id, name, season, enabled_at, tone)
+       VALUES (?, ?, ?, ?, ?)`,
+    )
     .bind(input.leagueId, input.name, input.season, input.now, input.tone ?? "playful")
     .run();
-  const created = await getLeague(db, input.leagueId);
-  if (!created) throw new Error("Failed to enable league");
-  return created;
+  const row = await getLeague(db, input.leagueId);
+  if (!row) throw new Error("Failed to enable league");
+  return row;
 }
 
 export async function setLeagueTone(db: D1Database, leagueId: string, tone: string): Promise<void> {
