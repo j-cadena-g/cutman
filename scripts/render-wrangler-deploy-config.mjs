@@ -43,21 +43,9 @@ const requiredValues = {
     pattern: /^https?:\/\/[^/\s?#]+$/i,
     description: "application origin including protocol, without path",
   },
-  V1_LEAGUE_ID: {
+  PILOT_SLEEPER_LEAGUE_ID: {
     pattern: /^\d{6,}$/,
     description: "Sleeper league id (numeric snowflake)",
-  },
-  V1_LEAGUE_NAME: {
-    pattern: /^.+$/,
-    description: "Sleeper league name",
-  },
-  V1_SLEEPER_USER_ID: {
-    pattern: /^\d{6,}$/,
-    description: "Sleeper user id (numeric snowflake)",
-  },
-  V1_SLEEPER_USERNAME: {
-    pattern: /^\S+$/,
-    description: "Sleeper username",
   },
 };
 
@@ -104,24 +92,9 @@ const replacements = [
     envName: "CLERK_PUBLISHABLE_KEY",
   },
   {
-    label: "V1_LEAGUE_ID",
-    pattern: /("V1_LEAGUE_ID"\s*:\s*")([^"]*)(")/,
-    envName: "V1_LEAGUE_ID",
-  },
-  {
-    label: "V1_LEAGUE_NAME",
-    pattern: /("V1_LEAGUE_NAME"\s*:\s*")([^"]*)(")/,
-    envName: "V1_LEAGUE_NAME",
-  },
-  {
-    label: "V1_SLEEPER_USER_ID",
-    pattern: /("V1_SLEEPER_USER_ID"\s*:\s*")([^"]*)(")/,
-    envName: "V1_SLEEPER_USER_ID",
-  },
-  {
-    label: "V1_SLEEPER_USERNAME",
-    pattern: /("V1_SLEEPER_USERNAME"\s*:\s*")([^"]*)(")/,
-    envName: "V1_SLEEPER_USERNAME",
+    label: "PILOT_SLEEPER_LEAGUE_ID",
+    pattern: /("PILOT_SLEEPER_LEAGUE_ID"\s*:\s*")([^"]*)(")/,
+    envName: "PILOT_SLEEPER_LEAGUE_ID",
   },
 ];
 
@@ -180,18 +153,9 @@ async function main() {
     APP_ENV:
       globalThis.process.env.APP_ENV?.trim() ||
       (isDevConfig ? "development" : "production"),
-    V1_LEAGUE_ID: isDevConfig
-      ? getOptionalValue("V1_LEAGUE_ID")
-      : getRequiredValue("V1_LEAGUE_ID"),
-    V1_LEAGUE_NAME: isDevConfig
-      ? getOptionalValue("V1_LEAGUE_NAME")
-      : getRequiredValue("V1_LEAGUE_NAME"),
-    V1_SLEEPER_USER_ID: isDevConfig
-      ? getOptionalValue("V1_SLEEPER_USER_ID")
-      : getRequiredValue("V1_SLEEPER_USER_ID"),
-    V1_SLEEPER_USERNAME: isDevConfig
-      ? getOptionalValue("V1_SLEEPER_USERNAME")
-      : getRequiredValue("V1_SLEEPER_USERNAME"),
+    PILOT_SLEEPER_LEAGUE_ID: isDevConfig
+      ? getOptionalValue("PILOT_SLEEPER_LEAGUE_ID")
+      : getRequiredValue("PILOT_SLEEPER_LEAGUE_ID"),
   };
   let rendered = template;
   for (const replacement of replacements) {
@@ -204,12 +168,7 @@ async function main() {
       continue;
     }
     const value = deployValues[replacement.envName];
-    if (
-      !value &&
-      ["V1_LEAGUE_ID", "V1_LEAGUE_NAME", "V1_SLEEPER_USER_ID", "V1_SLEEPER_USERNAME"].includes(
-        replacement.envName,
-      )
-    ) {
+    if (!value && replacement.envName === "PILOT_SLEEPER_LEAGUE_ID") {
       continue;
     }
     rendered = replaceConfigValue(

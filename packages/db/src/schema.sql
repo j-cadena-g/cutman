@@ -1,6 +1,7 @@
 -- D1 holds Clerk identity, linked Sleeper accounts, leagues, and per-league membership / recap opt-in.
 -- LeagueBrain DO holds bible, timeline, snapshot, and recaps (one DO per league id).
--- Schema is multi-league. v1 runtime still seeds the single configured V1_LEAGUE_ID.
+-- Schema is multi-league. Leagues are created during onboarding, not auto-seeded.
+-- LeagueBrain Durable Objects are keyed by internal leagues.id.
 
 CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY,

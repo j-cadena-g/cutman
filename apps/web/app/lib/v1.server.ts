@@ -1,30 +1,11 @@
-import { V1_LEAGUE_ID as DEFAULT_V1_LEAGUE_ID, V1_LEAGUE_NAME as DEFAULT_V1_LEAGUE_NAME } from "@cutman/db";
-
-// Pure config accessors only. The v1 stopgap that used to create/activate the configured league
-// and bootstrap LeagueBrain on every signed-in request (`ensureV1LeagueRow`/`ensureV1League`) has
-// been removed: no signed-in request may create, activate, or bootstrap a league (see
-// app/lib/access.server.ts). The real lifecycle is now owned by app/lib/onboarding.server.ts
-// (creates the league in `provisioning` once a commissioner completes the challenge) and a later
-// task (activation + LeagueBrain bootstrap). `v1LeagueId`/`v1LeagueName` remain because they are
-// just config readers — callers (routes, the onboarding services' `pilotSleeperLeagueId`) still
-// need the configured Sleeper league id/name.
-export function v1LeagueId(env: Env): string {
-  const id = env.V1_LEAGUE_ID?.trim();
-  return id || DEFAULT_V1_LEAGUE_ID;
-}
-
-export function v1LeagueName(env: Env): string {
-  const name = env.V1_LEAGUE_NAME?.trim();
-  return name || DEFAULT_V1_LEAGUE_NAME;
-}
-
-// The single configured pilot league's Sleeper league id, passed to
-// app/lib/onboarding.server.ts's `pilotSleeperLeagueId` dependency. Reads the dedicated
-// `PILOT_SLEEPER_LEAGUE_ID` var (see app/env.d.ts) so onboarding's pilot-league configuration is
-// not silently coupled to the `V1_*` naming this file is already flagged as legacy — but falls
-// back to `v1LeagueId(env)` (today's only configured league) so this works before the wrangler
-// manifest actually defines `PILOT_SLEEPER_LEAGUE_ID` (manifest cleanup is a later task).
+// Pure config accessor for the single configured pilot league's Sleeper league id.
+// Callers (routes, onboarding) pass this into OnboardingDeps. There is no V1_* fallback:
+// a missing or blank PILOT_SLEEPER_LEAGUE_ID is a configuration error, not an invitation
+// to use the sleeper fixture id `0000000000000000000`.
 export function pilotSleeperLeagueId(env: Env): string {
   const id = env.PILOT_SLEEPER_LEAGUE_ID?.trim();
-  return id || v1LeagueId(env);
+  if (!id) {
+    throw new Error("PILOT_SLEEPER_LEAGUE_ID is not configured");
+  }
+  return id;
 }

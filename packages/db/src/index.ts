@@ -2,8 +2,7 @@ export {
   ensureSchema,
   EXAMPLE_SLEEPER_USER_ID,
   EXAMPLE_SLEEPER_USERNAME,
-  V1_LEAGUE_ID,
-  V1_LEAGUE_NAME,
+  EXAMPLE_SLEEPER_LEAGUE_ID,
 } from "./ensure.ts";
 
 export type UserRow = {

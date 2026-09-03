@@ -23,12 +23,9 @@
     "APP_URL": "http://127.0.0.1:41789",
     "EMAIL_FROM": "Cutman <hello@mail.cutman.io>",
     "USE_SLEEPER_FIXTURES": "false",
-    // Fake placeholders. Live V1_* values are rendered from 1Password into
-    // ignored .wrangler.dev.jsonc / .wrangler.deploy.jsonc.
-    "V1_LEAGUE_ID": "0000000000000000000",
-    "V1_LEAGUE_NAME": "Example League",
-    "V1_SLEEPER_USER_ID": "0000000000000000001",
-    "V1_SLEEPER_USERNAME": "example_user",
+    // Fake placeholder. Live PILOT_SLEEPER_LEAGUE_ID is rendered from 1Password into
+    // ignored .wrangler.dev.jsonc / .wrangler.deploy.jsonc. Never commit a live id.
+    "PILOT_SLEEPER_LEAGUE_ID": "0000000000000000000",
     "CLERK_PUBLISHABLE_KEY": "pk_test_replace_me"
   },
   "d1_databases": [

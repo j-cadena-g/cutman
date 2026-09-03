@@ -4,10 +4,11 @@
 # Key manifest for local Workers dev. `pnpm run dev` uses op run to inject these
 # keys into process.env; Wrangler reads them via CLOUDFLARE_INCLUDE_PROCESS_ENV.
 # `pnpm run dev:verify` requires the keys in the Required section (names only;
-# no values printed). Optional V1_* keys may be unset for a first run.
-# Do not create, mount, or commit `.dev.vars`.
-# Cloudflare account / zone / D1 / KV IDs belong in apps/web/.deploy.env.example.
-# Worker secrets for deploy live in apps/web/.wrangler.secrets.example.
+# no values printed). Optional PILOT_SLEEPER_LEAGUE_ID may be unset for a first
+# run (wrangler.jsonc keeps a fake placeholder). Do not create, mount, or commit
+# `.dev.vars`. Cloudflare account / zone / D1 / KV IDs belong in
+# apps/web/.deploy.env.example. Worker secrets for deploy live in
+# apps/web/.wrangler.secrets.example.
 # =============================================================================
 
 # -----------------------------------------------------------------------------
@@ -22,11 +23,8 @@ CLERK_SECRET_KEY=sk_test_...
 CLERK_PUBLISHABLE_KEY=pk_test_...
 
 # -----------------------------------------------------------------------------
-# Optional — one-league identity (override via 1Password; these values are fake)
-# Live Sleeper league/user ids belong in gitignored / 1Password config, not git.
+# Optional — pilot league identity (override via 1Password; this value is fake)
+# Live Sleeper league id belongs in gitignored / 1Password config, not git.
 # -----------------------------------------------------------------------------
-V1_LEAGUE_ID=0000000000000000000
-V1_LEAGUE_NAME=Example League
-V1_SLEEPER_USER_ID=0000000000000000001
-V1_SLEEPER_USERNAME=example_user
+PILOT_SLEEPER_LEAGUE_ID=0000000000000000000
 USE_SLEEPER_FIXTURES=false

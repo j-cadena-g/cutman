@@ -13,12 +13,8 @@ interface Env {
   APP_URL?: string;
   EMAIL_FROM: string;
   USE_SLEEPER_FIXTURES: string;
-  V1_LEAGUE_ID: string;
-  V1_LEAGUE_NAME: string;
-  V1_SLEEPER_USER_ID: string;
-  V1_SLEEPER_USERNAME: string;
-  // The Sleeper league id for the single configured pilot league that onboarding challenges
-  // against (see app/lib/v1.server.ts's `pilotSleeperLeagueId`). Optional: falls back to
-  // `V1_LEAGUE_ID` until the wrangler manifest defines this var directly (Task 5).
-  PILOT_SLEEPER_LEAGUE_ID?: string;
+  // Sleeper league id for the single configured pilot league. Live value comes from
+  // 1Password (`Cutman (dev)` / deploy Environment); tracked wrangler templates keep a fake
+  // placeholder. Never a V1_* fallback — see app/lib/v1.server.ts `pilotSleeperLeagueId`.
+  PILOT_SLEEPER_LEAGUE_ID: string;
 }
