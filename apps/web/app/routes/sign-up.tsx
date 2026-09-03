@@ -1,6 +1,14 @@
 import { SignUp } from "@clerk/react-router";
+import { Link } from "react-router";
+import { clerkIsConfigured } from "~/lib/clerk.server";
+import { cloudflareEnv } from "~/lib/env";
+import type { Route } from "./+types/sign-up";
 
-export default function SignUpPage() {
+export function loader({ context }: Route.LoaderArgs) {
+  return { clerkConfigured: clerkIsConfigured(cloudflareEnv(context)) };
+}
+
+export default function SignUpPage({ loaderData }: Route.ComponentProps) {
   return (
     <main className="mx-auto flex min-h-screen max-w-lg flex-col justify-center px-6 py-16">
       <p className="text-xs font-semibold uppercase tracking-[0.24em] text-flag">Cutman</p>
@@ -8,9 +16,18 @@ export default function SignUpPage() {
       <p className="mt-4 text-muted">
         Signing up does not put you on 519 Keeper. James allowlists Clerk emails to Sleeper user ids.
       </p>
-      <div className="mt-10">
-        <SignUp routing="path" path="/sign-up" signInUrl="/sign-in" forceRedirectUrl="/" />
-      </div>
+      {loaderData.clerkConfigured ? (
+        <div className="mt-10">
+          <SignUp routing="path" path="/sign-up" signInUrl="/sign-in" forceRedirectUrl="/" />
+        </div>
+      ) : (
+        <div className="mt-10 space-y-4 text-sm text-muted">
+          <p>Clerk keys are not injected in this process. Do not create a `.dev.vars` file.</p>
+          <Link className="inline-block underline decoration-flag/60" to="/sign-in">
+            Back to sign in
+          </Link>
+        </div>
+      )}
     </main>
   );
 }

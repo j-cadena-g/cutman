@@ -45,7 +45,14 @@ export function Layout({ children }: { children: React.ReactNode }) {
   );
 }
 
+function hasClerkState(data: unknown): data is Record<string, unknown> {
+  return Boolean(data && typeof data === "object" && !("clerkConfigured" in data && data.clerkConfigured === false));
+}
+
 export default function App({ loaderData }: Route.ComponentProps) {
+  if (!hasClerkState(loaderData)) {
+    return <Outlet />;
+  }
   return (
     <ClerkProvider loaderData={loaderData}>
       <Outlet />

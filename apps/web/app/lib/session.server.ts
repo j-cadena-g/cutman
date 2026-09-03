@@ -1,7 +1,7 @@
 import { clerkClient, getAuth } from "@clerk/react-router/server";
 import { upsertUserByClerkId, type UserRow } from "@cutman/db";
 import { redirect } from "react-router";
-import { bindClerkEnv } from "~/lib/clerk.server";
+import { bindClerkEnv, clerkIsConfigured } from "~/lib/clerk.server";
 import { cloudflareEnv } from "~/lib/env";
 
 export type AuthedUser = UserRow;
@@ -20,6 +20,7 @@ function clerkUserId(auth: Awaited<ReturnType<typeof getAuth>>): string | null {
 
 export async function getCurrentUser(args: AuthArgs): Promise<AuthedUser | null> {
   const env = cloudflareEnv(args.context);
+  if (!clerkIsConfigured(env)) return null;
   bindClerkEnv(env);
   const auth = await getAuth(args as Parameters<typeof getAuth>[0]);
   const userId = clerkUserId(auth);
