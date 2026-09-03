@@ -23,7 +23,15 @@ export function v1LeagueName(env: Env): string {
 // activated immediately. Later onboarding tasks own the real provisioning/verification lifecycle.
 // `activateLeague` is only legal from "provisioning", so a league left in "error" from a prior
 // attempt is explicitly re-provisioned first.
-async function ensureV1LeagueRow(env: Env, now: number): Promise<LeagueRow> {
+//
+// Two concurrent first loads (no league row yet) can race: `createLeague` idempotently resolves
+// to the same row either way (see its own concurrent-insert handling), but only one of the two
+// `activateLeague` calls can win the "provisioning" -> "active" compare-and-swap — the other
+// throws, because `activateLeague`'s lifecycle rule is intentionally strict and is not weakened
+// here. Instead of letting that reject bubble up as a 500, we re-check the row: if another
+// caller already won and it is now "active", that satisfies this caller's contract too, so we
+// return the current row instead of the stale error.
+export async function ensureV1LeagueRow(env: Env, now: number): Promise<LeagueRow> {
   const sleeperLeagueId = v1LeagueId(env);
   const existing = await getLeagueBySleeperId(env.DB, sleeperLeagueId);
   if (existing?.status === "active") return existing;
@@ -38,7 +46,13 @@ async function ensureV1LeagueRow(env: Env, now: number): Promise<LeagueRow> {
       now,
     }));
   const provisioning = league.status === "error" ? await provisionLeague(env.DB, league.id) : league;
-  return activateLeague(env.DB, provisioning.id, now);
+  try {
+    return await activateLeague(env.DB, provisioning.id, now);
+  } catch (error) {
+    const current = await getLeagueBySleeperId(env.DB, sleeperLeagueId);
+    if (current?.status === "active") return current;
+    throw error;
+  }
 }
 
 export async function ensureV1League(env: Env, now = Date.now()): Promise<void> {
