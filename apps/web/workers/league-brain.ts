@@ -300,7 +300,7 @@ export class LeagueBrain extends DurableObject<Env> {
 
   private readSettings(): Settings {
     const leagueId = this.getSetting("leagueId");
-    const name = this.getSetting("name") ?? "519 Keeper";
+    const name = this.getSetting("name") ?? "Example League";
     const tone = toneOrPlayful(this.getSetting("tone"));
     if (!leagueId) throw new Error("Cutman is not bootstrapped");
     return { leagueId, name, tone };

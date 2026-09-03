@@ -1,7 +1,9 @@
+import { V1_LEAGUE_NAME } from "./ensure.ts";
+
 export {
   ensureSchema,
-  JAMES_SLEEPER_USER_ID,
-  JAMES_SLEEPER_USERNAME,
+  EXAMPLE_SLEEPER_USER_ID,
+  EXAMPLE_SLEEPER_USERNAME,
   V1_LEAGUE_ID,
   V1_LEAGUE_NAME,
 } from "./ensure.ts";
@@ -78,6 +80,45 @@ export async function findAllowlistBySleeperUserId(
   sleeperUserId: string,
 ): Promise<AllowlistRow | null> {
   return db.prepare("SELECT * FROM allowlist WHERE sleeper_user_id = ?").bind(sleeperUserId).first<AllowlistRow>();
+}
+
+export async function ensureAllowlistEntry(
+  db: D1Database,
+  input: { sleeperUserId: string; sleeperUsername: string; now: number },
+): Promise<AllowlistRow> {
+  await db
+    .prepare(
+      `INSERT OR IGNORE INTO allowlist (sleeper_user_id, sleeper_username, clerk_email, created_at)
+       VALUES (?, ?, NULL, ?)`,
+    )
+    .bind(input.sleeperUserId, input.sleeperUsername, input.now)
+    .run();
+  const row = await findAllowlistBySleeperUserId(db, input.sleeperUserId);
+  if (!row) throw new Error("Failed to seed allowlist");
+  return row;
+}
+
+export async function ensureOperatorSeed(
+  db: D1Database,
+  input: {
+    leagueId?: string;
+    leagueName?: string;
+    sleeperUserId?: string;
+    sleeperUsername?: string;
+    now?: number;
+  },
+): Promise<void> {
+  const now = input.now ?? 0;
+  const leagueId = input.leagueId?.trim();
+  const leagueName = input.leagueName?.trim() || V1_LEAGUE_NAME;
+  const sleeperUserId = input.sleeperUserId?.trim();
+  const sleeperUsername = input.sleeperUsername?.trim();
+  if (leagueId) {
+    await ensureLeague(db, { leagueId, name: leagueName, season: "2026", now });
+  }
+  if (sleeperUserId && sleeperUsername) {
+    await ensureAllowlistEntry(db, { sleeperUserId, sleeperUsername, now });
+  }
 }
 
 export async function getLeague(db: D1Database, leagueId: string): Promise<LeagueRow | null> {

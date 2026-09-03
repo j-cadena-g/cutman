@@ -79,10 +79,10 @@ describe("week final + Tuesday recap", () => {
       week: 3,
       matchups: fixtureMatchupsFinal,
       existingRecap: null as { subject: string; body: string } | null,
-      facts: [{ kind: "trade" as const, transactionId: "tx-trade-1", copy: "James traded CeeDee." }],
+      facts: [{ kind: "trade" as const, transactionId: "tx-trade-1", copy: "Alex traded CeeDee." }],
       generate: async () => {
         generated.push("once");
-        return { subject: "Week 3: CeeDee changes hands", body: "James fleeced the chat." };
+        return { subject: "Week 3: CeeDee changes hands", body: "Alex fleeced the chat." };
       },
       archive: async (recap: { subject: string; body: string }) => {
         archived += 1;

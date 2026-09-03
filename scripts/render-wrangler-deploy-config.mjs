@@ -43,6 +43,10 @@ const requiredValues = {
     pattern: /^https?:\/\/[^/\s?#]+$/i,
     description: "application origin including protocol, without path",
   },
+  V1_LEAGUE_ID: {
+    pattern: /^\d{6,}$/,
+    description: "Sleeper league id (numeric snowflake)",
+  },
 };
 
 const replacements = [
@@ -87,7 +91,31 @@ const replacements = [
     pattern: /("CLERK_PUBLISHABLE_KEY"\s*:\s*")([^"]*)(")/,
     envName: "CLERK_PUBLISHABLE_KEY",
   },
+  {
+    label: "V1_LEAGUE_ID",
+    pattern: /("V1_LEAGUE_ID"\s*:\s*")([^"]*)(")/,
+    envName: "V1_LEAGUE_ID",
+  },
+  {
+    label: "V1_LEAGUE_NAME",
+    pattern: /("V1_LEAGUE_NAME"\s*:\s*")([^"]*)(")/,
+    envName: "V1_LEAGUE_NAME",
+  },
+  {
+    label: "V1_SLEEPER_USER_ID",
+    pattern: /("V1_SLEEPER_USER_ID"\s*:\s*")([^"]*)(")/,
+    envName: "V1_SLEEPER_USER_ID",
+  },
+  {
+    label: "V1_SLEEPER_USERNAME",
+    pattern: /("V1_SLEEPER_USERNAME"\s*:\s*")([^"]*)(")/,
+    envName: "V1_SLEEPER_USERNAME",
+  },
 ];
+
+function getOptionalValue(name) {
+  return globalThis.process.env[name]?.trim() || "";
+}
 
 function getRequiredValue(name) {
   const value = globalThis.process.env[name]?.trim();
@@ -140,6 +168,12 @@ async function main() {
     APP_ENV:
       globalThis.process.env.APP_ENV?.trim() ||
       (isDevConfig ? "development" : "production"),
+    V1_LEAGUE_ID: isDevConfig
+      ? getOptionalValue("V1_LEAGUE_ID")
+      : getRequiredValue("V1_LEAGUE_ID"),
+    V1_LEAGUE_NAME: getOptionalValue("V1_LEAGUE_NAME"),
+    V1_SLEEPER_USER_ID: getOptionalValue("V1_SLEEPER_USER_ID"),
+    V1_SLEEPER_USERNAME: getOptionalValue("V1_SLEEPER_USERNAME"),
   };
   let rendered = template;
   for (const replacement of replacements) {
@@ -151,10 +185,19 @@ async function main() {
     ) {
       continue;
     }
+    const value = deployValues[replacement.envName];
+    if (
+      !value &&
+      ["V1_LEAGUE_ID", "V1_LEAGUE_NAME", "V1_SLEEPER_USER_ID", "V1_SLEEPER_USERNAME"].includes(
+        replacement.envName,
+      )
+    ) {
+      continue;
+    }
     rendered = replaceConfigValue(
       rendered,
       replacement,
-      deployValues[replacement.envName],
+      value,
     );
   }
 

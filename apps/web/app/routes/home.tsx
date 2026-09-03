@@ -65,7 +65,7 @@ export default function Home({ loaderData, actionData }: Route.ComponentProps) {
         <p className="text-xs font-semibold uppercase tracking-[0.24em] text-flag">Cutman</p>
         <h1 className="mt-4 font-display text-5xl leading-[1.05]">The season story for your Sleeper league.</h1>
         <p className="mt-4 text-muted">
-          Cutman keeps the book for 519 Keeper. Sign in with Clerk. If your email is not on the allowlist, you will stay
+          Cutman keeps the book for your Sleeper league. Sign in with Clerk. If your email is not on the allowlist, you will stay
           signed in without a dashboard.
         </p>
         <Button asChild className="mt-10 w-fit">
@@ -78,8 +78,8 @@ export default function Home({ loaderData, actionData }: Route.ComponentProps) {
   if (access.kind === "signed_in") {
     const detail =
       access.reason === "not_allowlisted"
-        ? "Your Clerk email is not on the 519 Keeper allowlist."
-        : "Your Sleeper user is not in 519 Keeper this season.";
+        ? "Your Clerk email is not on the allowlist."
+        : "Your Sleeper user is not in this league this season.";
     return (
       <main className="mx-auto flex min-h-screen max-w-lg flex-col justify-center px-6 py-16">
         <p className="text-xs font-semibold uppercase tracking-[0.24em] text-flag">Cutman</p>

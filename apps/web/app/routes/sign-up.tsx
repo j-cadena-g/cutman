@@ -14,7 +14,7 @@ export default function SignUpPage({ loaderData }: Route.ComponentProps) {
       <p className="text-xs font-semibold uppercase tracking-[0.24em] text-flag">Cutman</p>
       <h1 className="mt-4 font-display text-5xl leading-[1.05]">Create a Clerk account.</h1>
       <p className="mt-4 text-muted">
-        Signing up does not put you on 519 Keeper. James allowlists Clerk emails to Sleeper user ids.
+        Signing up does not put you on the league. Access is an allowlist of Clerk emails to Sleeper user ids.
       </p>
       {loaderData.clerkConfigured ? (
         <div className="mt-10">
