@@ -22,6 +22,7 @@ import {
   provisionLeague,
   recordVerificationAttempt,
   refreshSleeperAccount,
+  reissueVerification,
   upsertLeagueMember,
   upsertUserByClerkId,
 } from "@cutman/db";
@@ -571,5 +572,90 @@ describe("league verifications", () => {
     const attempted = await recordVerificationAttempt(env.DB, { id: created.id, now: now + 20 });
     expect(attempted.status).toBe("verified");
     expect(attempted.attempts).toBe(0);
+  });
+
+  it("reissueVerification creates a fresh pending verification with zero attempts when none exists yet", async () => {
+    await ensureSchema(env.DB);
+    const now = 1_700_660_000_000;
+    const user = await upsertUserByClerkId(env.DB, { id: "user_verify_6", email: "verify6@example.test", now });
+    const issued = await reissueVerification(env.DB, {
+      id: "verification_6",
+      userId: user.id,
+      sleeperUserId: "sleeper_verify_6",
+      sleeperLeagueId: "sleeper_league_verify_6",
+      challenge: "cutman-1122",
+      expiresAt: now + 600_000,
+      now,
+    });
+    expect(issued.status).toBe("pending");
+    expect(issued.attempts).toBe(0);
+  });
+
+  it("reissueVerification supersedes (expires) an existing pending verification and carries its attempts forward", async () => {
+    await ensureSchema(env.DB);
+    const now = 1_700_660_100_000;
+    const user = await upsertUserByClerkId(env.DB, { id: "user_verify_7", email: "verify7@example.test", now });
+    const first = await createVerification(env.DB, {
+      id: "verification_7a",
+      userId: user.id,
+      sleeperUserId: "sleeper_verify_7",
+      sleeperLeagueId: "sleeper_league_verify_7",
+      challenge: "cutman-3344",
+      expiresAt: now + 600_000,
+      now,
+    });
+    await recordVerificationAttempt(env.DB, { id: first.id, now: now + 10 });
+    await recordVerificationAttempt(env.DB, { id: first.id, now: now + 20 });
+
+    const reissued = await reissueVerification(env.DB, {
+      id: "verification_7b",
+      userId: user.id,
+      sleeperUserId: "sleeper_verify_7",
+      sleeperLeagueId: "sleeper_league_verify_7",
+      challenge: "cutman-5566",
+      expiresAt: now + 600_000,
+      now: now + 30,
+    });
+
+    expect(reissued.status).toBe("pending");
+    expect(reissued.attempts).toBe(2);
+    expect(reissued.challenge).toBe("cutman-5566");
+
+    const superseded = await getVerification(env.DB, first.id);
+    expect(superseded?.status).toBe("expired");
+
+    expect(
+      await findPendingVerification(env.DB, { userId: user.id, sleeperLeagueId: "sleeper_league_verify_7" }),
+    ).toEqual(reissued);
+  });
+
+  it("reissueVerification does not disturb an already-verified verification and starts the new one at zero attempts", async () => {
+    await ensureSchema(env.DB);
+    const now = 1_700_660_200_000;
+    const user = await upsertUserByClerkId(env.DB, { id: "user_verify_8", email: "verify8@example.test", now });
+    const first = await createVerification(env.DB, {
+      id: "verification_8a",
+      userId: user.id,
+      sleeperUserId: "sleeper_verify_8",
+      sleeperLeagueId: "sleeper_league_verify_8",
+      challenge: "cutman-7788",
+      expiresAt: now + 600_000,
+      now,
+    });
+    await consumeVerification(env.DB, { id: first.id, now: now + 10 });
+
+    const reissued = await reissueVerification(env.DB, {
+      id: "verification_8b",
+      userId: user.id,
+      sleeperUserId: "sleeper_verify_8",
+      sleeperLeagueId: "sleeper_league_verify_8",
+      challenge: "cutman-9900",
+      expiresAt: now + 600_000,
+      now: now + 20,
+    });
+
+    expect(reissued.attempts).toBe(0);
+    const untouched = await getVerification(env.DB, first.id);
+    expect(untouched?.status).toBe("verified");
   });
 });
