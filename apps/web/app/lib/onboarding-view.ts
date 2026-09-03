@@ -7,19 +7,30 @@ import type { LeagueMemberRow, LeagueRow } from "@cutman/db";
 // so the decision itself is unit-testable without a database or the real Sleeper API.
 export type PilotLeagueStep =
   | { kind: "connect_sleeper_account" }
+  | { kind: "discovery_unavailable" }
   | { kind: "not_a_pilot_league_member" }
   | { kind: "request_challenge" }
   | { kind: "challenge_pending"; challenge: string; expiresAt: number; attempts: number }
   | { kind: "awaiting_commissioner" }
   | { kind: "provisioning" }
   | { kind: "join_available" }
+  // Kept for pure-function completeness (and its own unit tests below) even though the real
+  // `/onboarding` loader never reaches it in practice: it redirects to `/leagues/:id` the moment
+  // `membership && league && league.status === "active"` is true — the exact same condition that
+  // would produce this step — before `computePilotLeagueStep` is ever called. See
+  // app/routes/onboarding.tsx's loader.
   | { kind: "already_member" }
   | { kind: "setup_error" };
 
 export function computePilotLeagueStep(input: {
   sleeperConnected: boolean;
+  // True when the current call to `discoverLeagues` (a live Sleeper API read) threw/failed, so
+  // `pilotEntry` below could not actually be determined this time and must not be trusted as
+  // "definitely not a member".
+  discoveryFailed: boolean;
   // The current user's entry for the pilot league from `discoverLeagues`, or null if no Sleeper
-  // account is connected yet, or the connected account isn't in the pilot league at all.
+  // account is connected yet, discovery failed, or the connected account isn't in the pilot
+  // league at all.
   pilotEntry: { isOwner: boolean } | null;
   // The pilot league's own row in `leagues`, or null before any commissioner has verified it.
   league: LeagueRow | null;
@@ -30,18 +41,31 @@ export function computePilotLeagueStep(input: {
 }): PilotLeagueStep {
   if (!input.sleeperConnected) return { kind: "connect_sleeper_account" };
 
+  // A persisted `membership` row is authoritative proof of belonging to the pilot league and
+  // never depends on live Sleeper discovery — it settles the question on its own, before we even
+  // consider whether discovery succeeded or what it found.
+  const confirmedMember = Boolean(input.membership);
+
+  if (!confirmedMember) {
+    // Everything below an unconfirmed membership needs to know whether the connected Sleeper
+    // account currently shows up in the pilot league. An existing `leagues` row must never offer
+    // "Join" (or, at the route level, reveal its name) to someone that isn't confirmed — a
+    // discovery failure must not be misread as "confirmed not a member" (false negative), and
+    // "not a member" must not be misread as "go ahead and join" (false positive).
+    if (input.discoveryFailed) return { kind: "discovery_unavailable" };
+    if (!input.pilotEntry) return { kind: "not_a_pilot_league_member" };
+  }
+
   // Once a `leagues` row exists, *someone* has already completed the commissioner challenge —
   // that decides the step for everyone, independent of whether this exact user did it (a
   // regular member never sees "request a challenge" just because the league happens to still be
-  // provisioning). `membership` only matters to distinguish "already in" from "can join" once the
-  // league is active.
+  // provisioning). `confirmedMember` only matters to distinguish "already in" from "can join"
+  // once the league is active.
   if (input.league) {
     if (input.league.status === "error") return { kind: "setup_error" };
     if (input.league.status === "provisioning") return { kind: "provisioning" };
-    return input.membership ? { kind: "already_member" } : { kind: "join_available" };
+    return confirmedMember ? { kind: "already_member" } : { kind: "join_available" };
   }
-
-  if (!input.pilotEntry) return { kind: "not_a_pilot_league_member" };
 
   if (input.pendingVerification) {
     return {
@@ -52,7 +76,10 @@ export function computePilotLeagueStep(input: {
     };
   }
 
-  return input.pilotEntry.isOwner ? { kind: "request_challenge" } : { kind: "awaiting_commissioner" };
+  // `pilotEntry` is guaranteed non-null here: `confirmedMember` is false whenever we reach this
+  // line (the `input.league` branch above already returned for a confirmed member), and the
+  // `!input.pilotEntry` check above already returned `not_a_pilot_league_member` otherwise.
+  return input.pilotEntry?.isOwner ? { kind: "request_challenge" } : { kind: "awaiting_commissioner" };
 }
 
 export type OnboardingErrorKind =

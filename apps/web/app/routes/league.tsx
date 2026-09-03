@@ -6,6 +6,7 @@ import { resolveLeagueAccess } from "~/lib/access.server";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
 import { Card, CardDescription, CardTitle } from "~/components/ui/card";
+import { getDashboardOrNull } from "~/lib/dashboard";
 import { cloudflareEnv } from "~/lib/env";
 import type { Route } from "./+types/league";
 
@@ -34,7 +35,11 @@ export async function loader(args: Route.LoaderArgs) {
   }
 
   const stub = env.LEAGUE_BRAIN.get(env.LEAGUE_BRAIN.idFromName(access.league.sleeper_league_id));
-  const dashboard = await stub.getDashboard();
+  // A league can flip to "active" in D1 slightly before its LeagueBrain Durable Object has
+  // actually been bootstrapped (Task 4 owns provisioning/activation — this should be a short,
+  // transient window once it lands). Guard against `getDashboard()`'s "not bootstrapped" throw
+  // and render a setting-up/empty-book state below instead of a root 500.
+  const dashboard = await getDashboardOrNull(stub);
   return {
     access,
     dashboard,
@@ -46,8 +51,19 @@ export async function action(args: Route.ActionArgs) {
   const env = cloudflareEnv(args.context);
   const leagueId = args.params.leagueId;
   const access = await resolveLeagueAccess(args, leagueId);
-  if (access.kind !== "member") {
-    return { error: "Sign in to change this book." };
+
+  // Mirror the loader's own authorization exactly, instead of collapsing every non-member case
+  // into one generic error: a signed-out submission should land back on sign-in, a
+  // nonexistent/foreign league should 404 the same way a GET would, and a real member of a
+  // not-yet-active league should land on `/onboarding` (which owns rendering that state).
+  if (access.kind === "signed_out") {
+    throw redirect("/sign-in");
+  }
+  if (access.kind === "not_found") {
+    throw new Response("Not found", { status: 404 });
+  }
+  if (access.kind === "not_active") {
+    throw redirect("/onboarding");
   }
 
   const form = await args.request.formData();
@@ -91,6 +107,9 @@ export default function League({ loaderData, actionData }: Route.ComponentProps)
   const { access, dashboard, optIn } = loaderData;
   const tones: Tone[] = ["playful", "savage", "sportscenter"];
   const tone = toneOrPlayful(access.league.tone);
+  // Falls back to the D1 `leagues` row's own name/week-less state whenever the Durable Object
+  // hasn't been bootstrapped yet (`dashboard === null` — see getDashboardOrNull in the loader).
+  const leagueName = dashboard?.name ?? access.league.name;
 
   return (
     <main className="mx-auto max-w-5xl px-6 py-10">
@@ -99,9 +118,9 @@ export default function League({ loaderData, actionData }: Route.ComponentProps)
           <p className="text-xs font-semibold uppercase tracking-[0.24em] text-flag">
             <Link to="/">Cutman</Link>
           </p>
-          <h1 className="mt-2 font-display text-4xl md:text-5xl">{dashboard.name}</h1>
+          <h1 className="mt-2 font-display text-4xl md:text-5xl">{leagueName}</h1>
           <p className="mt-2 text-muted">
-            Week {dashboard.week ?? "—"} · living dashboard from the last snapshot
+            Week {dashboard?.week ?? "—"} · living dashboard from the last snapshot
           </p>
           <p className="mt-1 text-sm text-muted">{access.user.email}</p>
         </div>
@@ -118,7 +137,11 @@ export default function League({ loaderData, actionData }: Route.ComponentProps)
         </div>
       </header>
 
-      {actionData?.error ? <p className="mt-4 text-sm text-danger">{actionData.error}</p> : null}
+      {actionData?.error ? (
+        <p role="alert" className="mt-4 text-sm text-danger">
+          {actionData.error}
+        </p>
+      ) : null}
 
       <Card className="mt-8">
         <Badge>{access.isOwner ? "Commissioner" : "Member"}</Badge>
@@ -154,67 +177,82 @@ export default function League({ loaderData, actionData }: Route.ComponentProps)
         </div>
       </Card>
 
-      <section className="mt-12 grid gap-6 lg:grid-cols-5">
-        <div className="lg:col-span-3">
-          <h2 className="font-display text-3xl">Timeline</h2>
-          {dashboard.timeline.length === 0 ? (
-            <Card className="mt-4">
-              <CardTitle>Quiet so far</CardTitle>
-              <CardDescription>
-                Cutman polls Sleeper on the cron, diffs the snapshot, and only writes a beat when something actually
-                changed. This page reads the Durable Object, not Sleeper.
-              </CardDescription>
-            </Card>
-          ) : (
-            <ol className="mt-4 space-y-4">
-              {dashboard.timeline.map((beat) => (
-                <li key={beat.id}>
-                  <Card>
-                    <p className="text-[11px] uppercase tracking-[0.18em] text-flag">
-                      Week {beat.week} · {beat.kind.replace("_", " ")}
-                    </p>
-                    <p className="mt-2 text-lg leading-relaxed">{beat.copy}</p>
-                  </Card>
-                </li>
-              ))}
-            </ol>
-          )}
-        </div>
-        <div className="lg:col-span-2">
-          <h2 className="font-display text-3xl">Bible</h2>
-          {dashboard.bible.length === 0 ? (
-            <p className="mt-4 text-muted">Running gags land here as the season writes itself.</p>
-          ) : (
-            <ul className="mt-4 space-y-3 text-sm leading-relaxed text-paper">
-              {dashboard.bible.map((entry) => (
-                <li key={entry.id} className="border-l-2 border-flag/40 pl-3">
-                  {entry.entry}
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-      </section>
+      {dashboard ? (
+        <>
+          <section className="mt-12 grid gap-6 lg:grid-cols-5">
+            <div className="lg:col-span-3">
+              <h2 className="font-display text-3xl">Timeline</h2>
+              {dashboard.timeline.length === 0 ? (
+                <Card className="mt-4">
+                  <CardTitle>Quiet so far</CardTitle>
+                  <CardDescription>
+                    Cutman polls Sleeper on the cron, diffs the snapshot, and only writes a beat when something
+                    actually changed. This page reads the Durable Object, not Sleeper.
+                  </CardDescription>
+                </Card>
+              ) : (
+                <ol className="mt-4 space-y-4">
+                  {dashboard.timeline.map((beat) => (
+                    <li key={beat.id}>
+                      <Card>
+                        <p className="text-[11px] uppercase tracking-[0.18em] text-flag">
+                          Week {beat.week} · {beat.kind.replace("_", " ")}
+                        </p>
+                        <p className="mt-2 text-lg leading-relaxed">{beat.copy}</p>
+                      </Card>
+                    </li>
+                  ))}
+                </ol>
+              )}
+            </div>
+            <div className="lg:col-span-2">
+              <h2 className="font-display text-3xl">Bible</h2>
+              {dashboard.bible.length === 0 ? (
+                <p className="mt-4 text-muted">Running gags land here as the season writes itself.</p>
+              ) : (
+                <ul className="mt-4 space-y-3 text-sm leading-relaxed text-paper">
+                  {dashboard.bible.map((entry) => (
+                    <li key={entry.id} className="border-l-2 border-flag/40 pl-3">
+                      {entry.entry}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </section>
 
-      <section className="mt-12 pb-16">
-        <h2 className="font-display text-3xl">Recap archive</h2>
-        {dashboard.recaps.length === 0 ? (
-          <p className="mt-4 text-muted">
-            Tuesday 9:00 in America/New_York, once every matchup has a real score. One recap per week. Never a blank
-            email. From: Cutman &lt;hello@mail.cutman.io&gt;.
-          </p>
-        ) : (
-          <div className="mt-5 space-y-4">
-            {dashboard.recaps.map((recap) => (
-              <Card key={recap.week}>
-                <p className="text-[11px] uppercase tracking-[0.18em] text-flag">Week {recap.week}</p>
-                <CardTitle className="mt-2">{recap.subject}</CardTitle>
-                <p className="mt-3 whitespace-pre-wrap text-sm leading-relaxed text-paper">{recap.body}</p>
-              </Card>
-            ))}
-          </div>
-        )}
-      </section>
+          <section className="mt-12 pb-16">
+            <h2 className="font-display text-3xl">Recap archive</h2>
+            {dashboard.recaps.length === 0 ? (
+              <p className="mt-4 text-muted">
+                Tuesday 9:00 in America/New_York, once every matchup has a real score. One recap per week. Never a
+                blank email. From: Cutman &lt;hello@mail.cutman.io&gt;.
+              </p>
+            ) : (
+              <div className="mt-5 space-y-4">
+                {dashboard.recaps.map((recap) => (
+                  <Card key={recap.week}>
+                    <p className="text-[11px] uppercase tracking-[0.18em] text-flag">Week {recap.week}</p>
+                    <CardTitle className="mt-2">{recap.subject}</CardTitle>
+                    <p className="mt-3 whitespace-pre-wrap text-sm leading-relaxed text-paper">{recap.body}</p>
+                  </Card>
+                ))}
+              </div>
+            )}
+          </section>
+        </>
+      ) : (
+        <section className="mt-12 pb-16">
+          <Card>
+            <Badge>Verified</Badge>
+            <CardTitle className="mt-3">Setting up your season book</CardTitle>
+            <CardDescription>
+              Cutman is finishing setup for this league. The timeline, bible, and recap archive will fill in
+              automatically once it's ready — check back soon.
+            </CardDescription>
+          </Card>
+        </section>
+      )}
     </main>
   );
 }
