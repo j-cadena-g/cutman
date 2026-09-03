@@ -1,10 +1,24 @@
 export type { FixtureOverrides } from "./fixture-client.ts";
 export { createFixtureClient } from "./fixture-client.ts";
 export {
+  COMING_SOON_LEAGUE_ID,
+  COMING_SOON_LEAGUE_NAME,
+  COMING_SOON_OWNER_USER_ID,
+  COMING_SOON_OWNER_USERNAME,
+  EXAMPLE_COMMISSIONER_CHALLENGE,
+  EXAMPLE_COMMISSIONER_TEAM_NAME,
+  EXAMPLE_COMMISSIONER_USER_ID,
+  EXAMPLE_COMMISSIONER_USERNAME,
   EXAMPLE_SLEEPER_USER_ID,
   EXAMPLE_SLEEPER_USERNAME,
+  MUTABLE_SLEEPER_DISPLAY_NAME,
+  MUTABLE_SLEEPER_PREVIOUS_USERNAME,
+  MUTABLE_SLEEPER_USER_ID,
+  MUTABLE_SLEEPER_USERNAME,
   V1_LEAGUE_ID,
   V1_LEAGUE_NAME,
+  comingSoonFixtureLeague,
+  comingSoonFixtureUsers,
   fixtureLeagues,
   fixtureMatchupsFinal,
   fixtureMatchupsInProgress,
@@ -15,6 +29,8 @@ export {
   fixtureTransactions,
   fixtureUser,
   fixtureUsersVerified,
+  mutableFixtureUser,
+  v1FixtureCommissioner,
   v1FixtureLeague,
   v1FixtureMatchups,
   v1FixtureRosters,
@@ -22,7 +38,7 @@ export {
   v1FixtureUser,
   v1FixtureUsers,
 } from "./fixtures.ts";
-export { HttpSleeperClient } from "./http-client.ts";
+export { HttpSleeperClient, SleeperRequestError, isSleeperRateLimited } from "./http-client.ts";
 export type {
   NflState,
   PlayerMap,

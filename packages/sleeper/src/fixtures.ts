@@ -6,6 +6,18 @@ export const V1_LEAGUE_ID = "0000000000000000000";
 export const V1_LEAGUE_NAME = "Example League";
 export const EXAMPLE_SLEEPER_USER_ID = "0000000000000000001";
 export const EXAMPLE_SLEEPER_USERNAME = "example_user";
+export const COMING_SOON_LEAGUE_ID = "1111111111111111111";
+export const COMING_SOON_LEAGUE_NAME = "Coming Soon League";
+export const MUTABLE_SLEEPER_USER_ID = "0000000000000000002";
+export const MUTABLE_SLEEPER_USERNAME = "renamed_user";
+export const MUTABLE_SLEEPER_PREVIOUS_USERNAME = "old_handle";
+export const MUTABLE_SLEEPER_DISPLAY_NAME = "Renamed User";
+export const EXAMPLE_COMMISSIONER_USER_ID = "0000000000000000003";
+export const EXAMPLE_COMMISSIONER_USERNAME = "example_commish";
+export const EXAMPLE_COMMISSIONER_CHALLENGE = "CUTMAN-AB2C";
+export const EXAMPLE_COMMISSIONER_TEAM_NAME = "The CUTMAN-AB2C Dynasty";
+export const COMING_SOON_OWNER_USER_ID = "0000000000000000004";
+export const COMING_SOON_OWNER_USERNAME = "soon_commish";
 
 export const fixtureState: NflState = {
   week: 3,
@@ -198,6 +210,30 @@ export const v1FixtureLeague: SleeperLeague = {
   total_rosters: 10,
 };
 
+export const mutableFixtureUser: SleeperUser = {
+  username: MUTABLE_SLEEPER_USERNAME,
+  user_id: MUTABLE_SLEEPER_USER_ID,
+  display_name: MUTABLE_SLEEPER_DISPLAY_NAME,
+  avatar: null,
+};
+
+export const comingSoonFixtureLeague: SleeperLeague = {
+  league_id: COMING_SOON_LEAGUE_ID,
+  name: COMING_SOON_LEAGUE_NAME,
+  season: "2026",
+  sport: "nfl",
+  status: "in_season",
+  total_rosters: 4,
+};
+
+export const v1FixtureCommissioner: SleeperLeagueUser = {
+  user_id: EXAMPLE_COMMISSIONER_USER_ID,
+  username: EXAMPLE_COMMISSIONER_USERNAME,
+  display_name: "Example Commish",
+  is_owner: true,
+  metadata: { team_name: EXAMPLE_COMMISSIONER_TEAM_NAME },
+};
+
 const v1Teammates: Array<{ username: string; user_id: string; team: string }> = [
   { username: "mina", user_id: "u-mina", team: "Zero RB Forever" },
   { username: "devin", user_id: "u-devin", team: "Start Your QBs" },
@@ -207,7 +243,6 @@ const v1Teammates: Array<{ username: string; user_id: string; team: string }> = 
   { username: "cole", user_id: "u-cole", team: "Stacked Slot" },
   { username: "tess", user_id: "u-tess", team: "Tuesday Tape" },
   { username: "wren", user_id: "u-wren", team: "Bye Week Bargain" },
-  { username: "quad", user_id: "u-quad", team: "Two Tight Ends" },
 ];
 
 export const v1FixtureUsers: SleeperLeagueUser[] = [
@@ -218,6 +253,7 @@ export const v1FixtureUsers: SleeperLeagueUser[] = [
     is_owner: false,
     metadata: { team_name: "Example Squad" },
   },
+  v1FixtureCommissioner,
   ...v1Teammates.map((teammate) => ({
     user_id: teammate.user_id,
     username: teammate.username,
@@ -225,6 +261,37 @@ export const v1FixtureUsers: SleeperLeagueUser[] = [
     is_owner: false,
     metadata: { team_name: teammate.team },
   })),
+];
+
+export const comingSoonFixtureUsers: SleeperLeagueUser[] = [
+  {
+    user_id: EXAMPLE_SLEEPER_USER_ID,
+    username: EXAMPLE_SLEEPER_USERNAME,
+    display_name: EXAMPLE_SLEEPER_USERNAME,
+    is_owner: false,
+    metadata: { team_name: "Example Squad" },
+  },
+  {
+    user_id: COMING_SOON_OWNER_USER_ID,
+    username: COMING_SOON_OWNER_USERNAME,
+    display_name: "Soon Commish",
+    is_owner: true,
+    metadata: { team_name: "Waitlist Warriors" },
+  },
+  {
+    user_id: MUTABLE_SLEEPER_USER_ID,
+    username: MUTABLE_SLEEPER_USERNAME,
+    display_name: MUTABLE_SLEEPER_DISPLAY_NAME,
+    is_owner: false,
+    metadata: { team_name: "Same Id New Handle" },
+  },
+  {
+    user_id: "u-mina",
+    username: "mina",
+    display_name: "mina",
+    is_owner: false,
+    metadata: { team_name: "Zero RB Forever" },
+  },
 ];
 
 export const v1FixtureRosters: SleeperRoster[] = [
@@ -237,7 +304,7 @@ export const v1FixtureRosters: SleeperRoster[] = [
   { roster_id: 7, owner_id: "u-cole", players: ["5849", "7564", "KC"], starters: ["5849", "7564", "KC"] },
   { roster_id: 8, owner_id: "u-tess", players: ["4988", "8134", "DAL"], starters: ["4988", "8134", "DAL"] },
   { roster_id: 9, owner_id: "u-wren", players: ["6794", "4035", "SF"], starters: ["6794", "4035", "SF"] },
-  { roster_id: 10, owner_id: "u-quad", players: ["3198", "8146", "PHI"], starters: ["3198", "8146", "PHI"] },
+  { roster_id: 10, owner_id: EXAMPLE_COMMISSIONER_USER_ID, players: ["3198", "8146", "PHI"], starters: ["3198", "8146", "PHI"] },
 ];
 
 export const v1FixtureMatchups: SleeperMatchup[] = [
