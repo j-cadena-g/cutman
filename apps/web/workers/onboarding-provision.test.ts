@@ -32,7 +32,7 @@ function makeDeps(overrides: Partial<OnboardingDeps> & { sleeperClient: SleeperC
     db: env.DB,
     now: () => 1_806_000_000_000,
     generateChallenge: () => EXAMPLE_COMMISSIONER_CHALLENGE,
-    generateId: () => `verification_provision_${idCounter++}`,
+    generateId: () => `id_provision_${idCounter++}`,
     challengeTtlMs: 15 * 60 * 1000,
     ...overrides,
   };

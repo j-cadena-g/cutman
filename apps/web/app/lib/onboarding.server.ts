@@ -327,33 +327,48 @@ export async function verifyCommissionerChallenge(
     return { ok: false, error: { kind: "challenge_not_found_in_team_name" } };
   }
 
-  // Resolve the league's name/season before consuming the challenge, so an unexpected Sleeper
-  // API failure here doesn't burn the user's one-time verification for nothing.
-  let league = await getLeagueBySleeperId(deps.db, deps.pilotSleeperLeagueId);
-  if (!league) {
+  // Fetch Sleeper metadata (or reuse a D1 row) *before* consuming the one-time challenge, so an
+  // unexpected Sleeper miss doesn't burn the verification — and so a later CAS miss cannot leave
+  // a `provisioning` league with no commissioner.
+  const existingLeague = await getLeagueBySleeperId(deps.db, deps.pilotSleeperLeagueId);
+  if (!existingLeague) {
     const sleeperLeague = await deps.sleeperClient.getLeague(deps.pilotSleeperLeagueId);
     if (!sleeperLeague) {
       return { ok: false, error: { kind: "pilot_league_not_found" } };
     }
-    league = await createLeague(deps.db, {
-      id: deps.pilotSleeperLeagueId,
+    const consumed = await consumePendingChallenge(deps, verification.id, now);
+    if (!consumed.ok) return consumed;
+    // Internal `leagues.id` is generated and distinct from the Sleeper snowflake. Does not
+    // activate the league or bootstrap LeagueBrain — that belongs to a later task.
+    const league = await createLeague(deps.db, {
+      id: deps.generateId(),
       sleeperLeagueId: deps.pilotSleeperLeagueId,
       name: sleeperLeague.name,
       season: sleeperLeague.season,
       now,
     });
+    return commissionerResult(deps, { league, clerkUserId: input.clerkUserId, now });
   }
 
-  // Consumes the challenge exactly once via an atomic compare-and-swap in @cutman/db. That CAS
-  // can lose to a concurrent verify/expire of the *same* verification (e.g. a double-submitted
-  // request, or the TTL lapsing in the gap between the expiry check above and this call) — catch
-  // that instead of letting a raw Error escape this service's discriminated result type.
-  // Intentionally does not activate the league or bootstrap LeagueBrain — that belongs to a
-  // later task.
+  const consumed = await consumePendingChallenge(deps, verification.id, now);
+  if (!consumed.ok) return consumed;
+  return commissionerResult(deps, { league: existingLeague, clerkUserId: input.clerkUserId, now });
+}
+
+// Consumes the challenge exactly once via an atomic compare-and-swap in @cutman/db. That CAS
+// can lose to a concurrent verify/expire of the *same* verification (e.g. a double-submitted
+// request, or the TTL lapsing in the gap between the expiry check above and this call) — catch
+// that instead of letting a raw Error escape this service's discriminated result type.
+async function consumePendingChallenge(
+  deps: OnboardingDeps,
+  verificationId: string,
+  now: number,
+): Promise<{ ok: true } | { ok: false; error: VerifyCommissionerChallengeError }> {
   try {
-    await consumeVerification(deps.db, { id: verification.id, now });
+    await consumeVerification(deps.db, { id: verificationId, now });
+    return { ok: true };
   } catch {
-    const current = await getVerification(deps.db, verification.id);
+    const current = await getVerification(deps.db, verificationId);
     if (current?.status === "expired") {
       return { ok: false, error: { kind: "challenge_expired" } };
     }
@@ -361,15 +376,19 @@ export async function verifyCommissionerChallenge(
     // one-time challenge cannot be consumed again.
     return { ok: false, error: { kind: "challenge_already_used" } };
   }
+}
 
+async function commissionerResult(
+  deps: OnboardingDeps,
+  input: { league: LeagueRow; clerkUserId: string; now: number },
+): Promise<VerifyCommissionerChallengeResult> {
   const membership = await upsertLeagueMember(deps.db, {
-    leagueId: league.id,
+    leagueId: input.league.id,
     userId: input.clerkUserId,
     role: "commissioner",
-    now,
+    now: input.now,
   });
-
-  return { ok: true, league, membership };
+  return { ok: true, league: input.league, membership };
 }
 
 // ---------------------------------------------------------------------------

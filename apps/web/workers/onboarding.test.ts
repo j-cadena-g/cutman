@@ -105,7 +105,7 @@ function makeDeps(
     db: env.DB,
     now: () => defaultNow,
     generateChallenge: () => `CUTMAN-TEST${challengeCounter++}`,
-    generateId: () => `verification_${idCounter++}`,
+    generateId: () => `id_${idCounter++}`,
     challengeTtlMs: 15 * 60 * 1000,
     ...overrides,
   };
@@ -812,9 +812,11 @@ describe("verifyCommissionerChallenge", () => {
 
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("expected ok");
+    expect(result.league.id).not.toBe(pilotSleeperLeagueId);
     expect(result.league.sleeper_league_id).toBe(pilotSleeperLeagueId);
     expect(result.league.status).toBe("provisioning");
     expect(result.membership.role).toBe("commissioner");
+    expect(result.membership.league_id).toBe(result.league.id);
 
     const stored = await getLeagueBySleeperId(env.DB, pilotSleeperLeagueId);
     expect(stored?.status).toBe("provisioning");
@@ -864,6 +866,186 @@ describe("verifyCommissionerChallenge", () => {
     expect(result).toEqual({ ok: false, error: { kind: "pilot_league_not_found" } });
     const persisted = await getVerification(env.DB, requested.verificationId);
     expect(persisted?.status).toBe("pending");
+    expect(await getLeagueBySleeperId(env.DB, pilotSleeperLeagueId)).toBeNull();
+  });
+
+  it("does not persist a leagues row when consume fails after Sleeper checks, so the owner can still request and verify", async () => {
+    const pilotSleeperLeagueId = nextPilotLeagueId("verify_consume_fail_no_league");
+    const requestNow = 1_801_700_000_000;
+    const { user, requested } = await setupOwner({
+      clerkUserId: "user_verify_consume_fail",
+      email: "verify-consume-fail@example.test",
+      pilotSleeperLeagueId,
+      sleeperUserId: "sleeper_consume_fail",
+      username: "commish_consume_fail",
+      teamName: "placeholder",
+      isOwner: true,
+      requestNow,
+    });
+    const verifyNow = requestNow + 1000;
+    const matchingClient = createFakeSleeperClient({
+      usersByLookup: {
+        commish_consume_fail: {
+          user_id: "sleeper_consume_fail",
+          username: "commish_consume_fail",
+          display_name: "commish_consume_fail",
+        },
+      },
+      leagueUsersById: {
+        [pilotSleeperLeagueId]: [
+          {
+            user_id: "sleeper_consume_fail",
+            username: "commish_consume_fail",
+            display_name: "commish_consume_fail",
+            is_owner: true,
+            metadata: { team_name: `Team ${requested.challenge}` },
+          },
+        ],
+      },
+      leaguesById: {
+        [pilotSleeperLeagueId]: {
+          league_id: pilotSleeperLeagueId,
+          name: "The Pilot",
+          season: "2026",
+          sport: "nfl",
+        },
+      },
+    });
+    // Consume wins after Sleeper metadata is fetched and before this call's CAS, matching the
+    // production gap that used to insert a `provisioning` league with no commissioner.
+    const racingClient: SleeperClient = {
+      ...matchingClient,
+      async getLeague(leagueId) {
+        const league = await matchingClient.getLeague(leagueId);
+        await consumeVerification(env.DB, { id: requested.verificationId, now: verifyNow - 1 });
+        return league;
+      },
+    };
+
+    const result = await verifyCommissionerChallenge(
+      makeDeps({ sleeperClient: racingClient, pilotSleeperLeagueId, now: () => verifyNow }),
+      { clerkUserId: user.id },
+    );
+
+    expect(result).toEqual({ ok: false, error: { kind: "challenge_already_used" } });
+    expect(await getLeagueBySleeperId(env.DB, pilotSleeperLeagueId)).toBeNull();
+
+    const retryRequest = await requestCommissionerChallenge(
+      makeDeps({ sleeperClient: matchingClient, pilotSleeperLeagueId, now: () => verifyNow + 10 }),
+      { clerkUserId: user.id },
+    );
+    expect(retryRequest.ok).toBe(true);
+    if (!retryRequest.ok) throw new Error("expected retry request to succeed");
+
+    const retryClient = createFakeSleeperClient({
+      leagueUsersById: {
+        [pilotSleeperLeagueId]: [
+          {
+            user_id: "sleeper_consume_fail",
+            username: "commish_consume_fail",
+            display_name: "commish_consume_fail",
+            is_owner: true,
+            metadata: { team_name: `Team ${retryRequest.challenge}` },
+          },
+        ],
+      },
+      leaguesById: {
+        [pilotSleeperLeagueId]: {
+          league_id: pilotSleeperLeagueId,
+          name: "The Pilot",
+          season: "2026",
+          sport: "nfl",
+        },
+      },
+    });
+    const retryVerify = await verifyCommissionerChallenge(
+      makeDeps({ sleeperClient: retryClient, pilotSleeperLeagueId, now: () => verifyNow + 20 }),
+      { clerkUserId: user.id },
+    );
+    expect(retryVerify.ok).toBe(true);
+    if (!retryVerify.ok) throw new Error("expected retry verify to succeed");
+    expect(retryVerify.league.id).not.toBe(pilotSleeperLeagueId);
+    expect(retryVerify.league.sleeper_league_id).toBe(pilotSleeperLeagueId);
+  });
+
+  it("reuses an existing league row for the same Sleeper id instead of inserting a second internal id", async () => {
+    const pilotSleeperLeagueId = nextPilotLeagueId("verify_reuse_existing");
+    const requestNow = 1_801_800_000_000;
+    const { user, requested } = await setupOwner({
+      clerkUserId: "user_verify_reuse",
+      email: "verify-reuse@example.test",
+      pilotSleeperLeagueId,
+      sleeperUserId: "sleeper_reuse",
+      username: "commish_reuse",
+      teamName: "placeholder",
+      isOwner: true,
+      requestNow,
+    });
+    const matchingClient = createFakeSleeperClient({
+      leagueUsersById: {
+        [pilotSleeperLeagueId]: [
+          {
+            user_id: "sleeper_reuse",
+            username: "commish_reuse",
+            display_name: "commish_reuse",
+            is_owner: true,
+            metadata: { team_name: `Team ${requested.challenge}` },
+          },
+        ],
+      },
+      leaguesById: {
+        [pilotSleeperLeagueId]: {
+          league_id: pilotSleeperLeagueId,
+          name: "The Pilot",
+          season: "2026",
+          sport: "nfl",
+        },
+      },
+    });
+    const first = await verifyCommissionerChallenge(
+      makeDeps({ sleeperClient: matchingClient, pilotSleeperLeagueId, now: () => requestNow + 1000 }),
+      { clerkUserId: user.id },
+    );
+    expect(first.ok).toBe(true);
+    if (!first.ok) throw new Error("expected first verify to succeed");
+
+    const secondRequest = await requestCommissionerChallenge(
+      makeDeps({ sleeperClient: matchingClient, pilotSleeperLeagueId, now: () => requestNow + 2000 }),
+      { clerkUserId: user.id },
+    );
+    expect(secondRequest.ok).toBe(true);
+    if (!secondRequest.ok) throw new Error("expected second challenge request to succeed");
+
+    const secondClient = createFakeSleeperClient({
+      leagueUsersById: {
+        [pilotSleeperLeagueId]: [
+          {
+            user_id: "sleeper_reuse",
+            username: "commish_reuse",
+            display_name: "commish_reuse",
+            is_owner: true,
+            metadata: { team_name: `Team ${secondRequest.challenge}` },
+          },
+        ],
+      },
+      leaguesById: {
+        [pilotSleeperLeagueId]: {
+          league_id: pilotSleeperLeagueId,
+          name: "The Pilot",
+          season: "2026",
+          sport: "nfl",
+        },
+      },
+    });
+    const second = await verifyCommissionerChallenge(
+      makeDeps({ sleeperClient: secondClient, pilotSleeperLeagueId, now: () => requestNow + 3000 }),
+      { clerkUserId: user.id },
+    );
+    expect(second.ok).toBe(true);
+    if (!second.ok) throw new Error("expected second verify to succeed");
+    expect(second.league.id).toBe(first.league.id);
+    expect(second.league.sleeper_league_id).toBe(pilotSleeperLeagueId);
+    expect(second.league.id).not.toBe(pilotSleeperLeagueId);
   });
 
   it("returns challenge_already_used (not a raw error) when a concurrent request consumes the verification first", async () => {

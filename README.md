@@ -111,6 +111,12 @@ is **local-only**: it deletes `apps/web/.wrangler/state/v3/d1` and nothing else,
 pnpm run db:reset:local
 ```
 
+An existing **remote** D1 created from the pre-onboarding `0001_init.sql` will not pick up the
+rewritten migration — Wrangler does not re-run an already-applied `0001`. `ensureSchema` is
+additive only (`CREATE TABLE/INDEX IF NOT EXISTS`), and `pnpm run db:reset:local` never touches
+remote. That remote database needs a one-time wipe/recreate (or a future `0002` migration)
+before the onboarding schema can be used there. Do not invent a destructive remote reset script.
+
 Generate Env types:
 
 ```bash
