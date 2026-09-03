@@ -21,7 +21,7 @@ Prefer `pnpm run test` over driving the browser to verify behavior.
 - Do not create, mount, or commit `.dev.vars`. Local Vite reads secrets from `process.env` via `op run` and `CLOUDFLARE_INCLUDE_PROCESS_ENV`.
 - Do not commit live Cloudflare account, zone, D1, or KV IDs. Those belong only in a deploy Environment and the ignored `.wrangler.deploy.jsonc`.
 - v1 runtime uses one configured Sleeper league (`V1_LEAGUE_ID` from gitignored / 1Password `Cutman (dev)`, never a live id in tracked files). D1 is multi-league: `leagues.id` plus unique `sleeper_league_id`, memberships keyed by `(league_id, user_id)`.
-- Access is a Clerk session. Sign-in is the only gate. The first Clerk user in the league is commissioner. No allowlist, claim flow, FF-XXXX, or magic-link.
+- Access is a Clerk session. Sign-in is the only gate. Commissioner authority comes only from successfully completing Sleeper ownership verification (`league_verifications`) for that league — never from sign-in order. New members default to `role = "member"` until they verify. No allowlist, claim flow, FF-XXXX, or magic-link.
 - `ensureSchema` is purely additive (`CREATE TABLE/INDEX IF NOT EXISTS`, never `DROP`). If local D1 predates a schema change, run `pnpm run db:reset:local` (wipes only `apps/web/.wrangler/state/v3/d1`, then reapplies `0001_init.sql`) — never `--remote`.
 - Dashboard reads the LeagueBrain snapshot. Do not hit Sleeper on every page load.
 - Mail from `Cutman <hello@mail.cutman.io>` only. Visible from-name is **Cutman**.
