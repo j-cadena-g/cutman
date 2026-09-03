@@ -34,7 +34,7 @@ export async function loader(args: Route.LoaderArgs) {
     throw redirect("/onboarding");
   }
 
-  const stub = env.LEAGUE_BRAIN.get(env.LEAGUE_BRAIN.idFromName(access.league.sleeper_league_id));
+  const stub = env.LEAGUE_BRAIN.get(env.LEAGUE_BRAIN.idFromName(access.league.id));
   // A league can flip to "active" in D1 slightly before its LeagueBrain Durable Object has
   // actually been bootstrapped (Task 4 owns provisioning/activation — this should be a short,
   // transient window once it lands). Guard against `getDashboard()`'s "not bootstrapped" throw
@@ -75,7 +75,7 @@ export async function action(args: Route.ActionArgs) {
     if (!isTone(toneRaw)) return { error: "Pick a real tone." };
     const tone = parseTone(toneRaw);
     await setLeagueTone(env.DB, access.league.id, tone);
-    const stub = env.LEAGUE_BRAIN.get(env.LEAGUE_BRAIN.idFromName(access.league.sleeper_league_id));
+    const stub = env.LEAGUE_BRAIN.get(env.LEAGUE_BRAIN.idFromName(access.league.id));
     await stub.setTone(tone);
     return { ok: "tone" };
   }

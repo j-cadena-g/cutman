@@ -96,7 +96,9 @@ export type OnboardingErrorKind =
   | "challenge_not_found_in_team_name"
   | "challenge_already_used"
   | "pilot_league_not_found"
-  | "pilot_league_not_active";
+  | "pilot_league_not_active"
+  | "not_commissioner"
+  | "provisioning_failed";
 
 // Maps every onboarding.server.ts discriminated error kind to plain, action-oriented copy. Never
 // echoes an internal error/exception string — each kind gets its own hand-written sentence. The
@@ -132,6 +134,10 @@ export function describeOnboardingError(kind: OnboardingErrorKind): string {
       return "Cutman couldn't read this league from Sleeper right now. Try again in a moment.";
     case "pilot_league_not_active":
       return "This league isn't open for members yet.";
+    case "not_commissioner":
+      return "Only this league's commissioner can retry setup.";
+    case "provisioning_failed":
+      return "Cutman couldn't finish setting up this league. You can retry from this page.";
     default: {
       const exhaustive: never = kind;
       return exhaustive;
