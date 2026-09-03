@@ -17,7 +17,7 @@
     "db:migrate:remote:internal": "pnpm run wrangler:deploy-config && pnpm exec wrangler d1 migrations apply cutman --remote --config .wrangler.deploy.jsonc",
     "cf-typegen": "wrangler types",
     "typecheck": "wrangler types && react-router typegen && tsc -b",
-    "test": "vitest run",
+    "test": "vitest run && node --test ../../scripts/render-wrangler-deploy-config.test.mjs",
     "lint": "echo ok"
   },
   "dependencies": {

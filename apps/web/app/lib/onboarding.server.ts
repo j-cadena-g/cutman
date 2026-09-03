@@ -29,9 +29,9 @@ import type { SleeperClient } from "@cutman/sleeper";
 export type OnboardingDeps = {
   db: D1Database;
   sleeperClient: SleeperClient;
-  // The Sleeper league id for the single configured pilot league (the same value the rest of the
-  // app calls `V1_LEAGUE_ID` / `v1LeagueId(env)` — see app/lib/v1.server.ts). Passed explicitly
-  // here, rather than read from `Env`, to keep this module a plain, testable service.
+  // The Sleeper league id for the single configured pilot league (`PILOT_SLEEPER_LEAGUE_ID`
+  // via app/lib/v1.server.ts `pilotSleeperLeagueId`). Passed explicitly here, rather than
+  // read from `Env`, to keep this module a plain, testable service.
   pilotSleeperLeagueId: string;
   now: () => number;
   generateChallenge: () => string;

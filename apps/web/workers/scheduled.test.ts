@@ -73,7 +73,7 @@ describe("handleScheduled", () => {
     expect(result).toEqual({ polled: 0, recapped: 0 });
   });
 
-  it("polls every active league by internal id and ignores V1 env config, pending, error, and discovered-only leagues", async () => {
+  it("polls every active league by internal id and ignores leftover env names, V1-named DOs, pending, error, and discovered-only leagues", async () => {
     const now = 1_805_100_000_000;
     const first = await seedLeague("active_a", now, "active");
     const second = await seedLeague("active_b", now + 100, "active");
@@ -98,7 +98,8 @@ describe("handleScheduled", () => {
     expect(await settingKeys(errored.id)).toEqual([]);
     expect(await settingKeys(discoveredOnlySleeperId)).toEqual([]);
     expect(await settingKeys(V1_LEAGUE_ID)).toEqual([]);
-    expect(await settingKeys(env.V1_LEAGUE_ID)).toEqual([]);
+    expect("V1_LEAGUE_ID" in env).toBe(false);
+    expect(await settingKeys(env.PILOT_SLEEPER_LEAGUE_ID)).toEqual([]);
   });
 
   it("still recaps every active league on the Tuesday 9:00 America/New_York window", async () => {

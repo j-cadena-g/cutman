@@ -1,7 +1,7 @@
 /// <reference types="@cloudflare/vitest-pool-workers/types" />
 import { applyD1Migrations, env } from "cloudflare:test";
 import {
-  V1_LEAGUE_ID,
+  EXAMPLE_SLEEPER_LEAGUE_ID,
   activateLeague,
   consumeVerification,
   createLeague,
@@ -37,7 +37,7 @@ beforeAll(async () => {
 describe("schema", () => {
   it("does not insert placeholder league rows", async () => {
     await ensureSchema(env.DB);
-    expect(await getLeague(env.DB, V1_LEAGUE_ID)).toBeNull();
+    expect(await getLeague(env.DB, EXAMPLE_SLEEPER_LEAGUE_ID)).toBeNull();
   });
 
   it("does not create an allowlist table", async () => {

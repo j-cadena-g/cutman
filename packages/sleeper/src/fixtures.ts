@@ -1,5 +1,7 @@
 import type { NflState, SleeperLeague, SleeperLeagueUser, SleeperMatchup, SleeperRoster, SleeperTransaction, SleeperUser } from "./types.ts";
 
+// Fixture data for `createFixtureClient` only — not Worker env. Runtime league identity
+// is `PILOT_SLEEPER_LEAGUE_ID`.
 export const V1_LEAGUE_ID = "0000000000000000000";
 export const V1_LEAGUE_NAME = "Example League";
 export const EXAMPLE_SLEEPER_USER_ID = "0000000000000000001";

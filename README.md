@@ -8,8 +8,9 @@ Licensing is TBD.
 
 ## What you get
 
-- Clerk sign-in only. Recaps still go out through Cloudflare Email Service as `Cutman <hello@mail.cutman.io>`
-- v1 runs one configured Sleeper league. D1 already models many leagues; one LeagueBrain Durable Object per league id
+- Clerk sign-in is the only gate. Recaps still go out through Cloudflare Email Service as `Cutman <hello@mail.cutman.io>`
+- Commissioner authority comes only from Sleeper ownership verification: a team-name challenge, then LeagueBrain provision. Once the league is active, members join without a challenge. No allowlist, claim flow, FF-XXXX, or magic-link
+- One configured pilot Sleeper league (`PILOT_SLEEPER_LEAGUE_ID`). Other discovered leagues show Coming soon. D1 already models many leagues; one LeagueBrain Durable Object per internal `leagues.id`
 - Dashboard reads the Durable Object snapshot (bible, timeline, recaps). It does not hit Sleeper on every page load
 - D1 holds Clerk users, leagues, and per-league membership / recap opt-in. KV holds the NFL player map
 - Cron is hourly UTC; the handler uses `America/New_York`. Poll every 3 hours. One idempotent Tuesday recap at 9:00
@@ -77,12 +78,12 @@ Local `pnpm run dev` does not call Workers AI (no Cloudflare login). Gemma write
 
 | File / Source | Purpose |
 | --- | --- |
-| `apps/web/.dev.vars.example` | Key manifest for local dev (`op run` + `dev:verify`). Required: `APP_ENV`, `APP_ORIGIN`, `CLERK_PUBLISHABLE_KEY`, `CLERK_SECRET_KEY`. Optional: `V1_LEAGUE_ID`, `V1_LEAGUE_NAME`, `V1_SLEEPER_USER_ID`, `V1_SLEEPER_USERNAME` (fake placeholders in git; live values in 1Password) |
+| `apps/web/.dev.vars.example` | Key manifest for local dev (`op run` + `dev:verify`). Required: `APP_ENV`, `APP_ORIGIN`, `CLERK_PUBLISHABLE_KEY`, `CLERK_SECRET_KEY`. Optional: `PILOT_SLEEPER_LEAGUE_ID` (fake placeholder in git; live value in 1Password) |
 | `apps/web/.deploy.env.example` | Deploy binding IDs and Worker vars (rendered into `apps/web/.wrangler.deploy.jsonc`) |
 | `apps/web/.wrangler.secrets.example` | Worker secrets for deploy (`wrangler deploy --secrets-file`). Today: `CLERK_SECRET_KEY` |
 | `apps/web/.op/refs.env.example` | Template for local `OP_ENVIRONMENT_ID` (copy to gitignored `apps/web/.op/refs.env`) |
 | `apps/web/.op/refs.env` or `OP_ENVIRONMENT_ID` | 1Password Environment reference for `op run` (dev locally / cloud agents, prod in Workers Builds) |
-| `apps/web/wrangler.jsonc` | Public-safe Wrangler template. `V1_LEAGUE_ID` and `EMAIL_FROM` stay as vars; tracked `V1_*` values are fake placeholders |
+| `apps/web/wrangler.jsonc` | Public-safe Wrangler template. `PILOT_SLEEPER_LEAGUE_ID` and `EMAIL_FROM` stay as vars; tracked `PILOT_SLEEPER_LEAGUE_ID` is a fake placeholder |
 | `apps/web/.wrangler.deploy.jsonc` | Ignored production config rendered at deploy time |
 
 Current Worker bindings in the public `apps/web/wrangler.jsonc` template:
@@ -91,12 +92,12 @@ Current Worker bindings in the public `apps/web/wrangler.jsonc` template:
 | --- | --- | --- |
 | `DB` | D1 | Clerk users, leagues, memberships, recap opt-in |
 | `PLAYERS` | KV | NFL player map, fetched at most once per day |
-| `LEAGUE_BRAIN` | SQLite Durable Object | Snapshots, beats, bible, recaps. id = configured `V1_LEAGUE_ID` |
+| `LEAGUE_BRAIN` | SQLite Durable Object | Snapshots, beats, bible, recaps. id = internal `leagues.id` |
 | `AI` | Workers AI | `@cf/google/gemma-4-26b-a4b-it` only |
 | `EMAIL` | Email Service | `env.EMAIL.send` for Tuesday recaps. From-name is **Cutman** |
 | Cron | `0 * * * *` UTC | Handler uses Eastern Time: poll every 3h; recap Tuesday 9:00 |
 
-The worker applies D1 migration `0001_init.sql` (multi-league schema). v1 still `INSERT OR IGNORE`s the single configured league from Environment `V1_*` vars. Production renders require those vars so placeholder identities from `wrangler.jsonc` cannot ship. For a CLI-managed local D1:
+The worker applies D1 migration `0001_init.sql` (multi-league schema). Leagues are created during commissioner onboarding, not auto-seeded. Production renders require `PILOT_SLEEPER_LEAGUE_ID` so the fake placeholder from `wrangler.jsonc` cannot ship. For a CLI-managed local D1:
 
 ```bash
 pnpm run db:migrate:local
@@ -140,7 +141,7 @@ Suggested Environment display names (create these in **your** 1Password account;
 - **`Cutman (dev)`** — local `pnpm run dev` (`OP_ENVIRONMENT_ID` in `apps/web/.op/refs.env`).
 - **`cutman (prod)`** — Cloudflare Workers Builds / production deploy (`OP_ENVIRONMENT_ID` build secret). Only needed if you operate a deployment.
 
-Each Environment should define every key from the relevant manifests (dev vs prod values differ, e.g. `pk_test_` vs `pk_live_`). Local-dev Environments only need the **required** keys in `.dev.vars.example` for a first run. Live Sleeper league/user ids (`V1_LEAGUE_ID`, `V1_LEAGUE_NAME`, `V1_SLEEPER_USER_ID`, `V1_SLEEPER_USERNAME`) belong in **`Cutman (dev)`** (and the deploy Environment), not in git.
+Each Environment should define every key from the relevant manifests (dev vs prod values differ, e.g. `pk_test_` vs `pk_live_`). Local-dev Environments only need the **required** keys in `.dev.vars.example` for a first run. The live pilot Sleeper league id (`PILOT_SLEEPER_LEAGUE_ID`) belongs in **`Cutman (dev)`** (and the deploy Environment), not in git. Packages may still export a fixture league id named `V1_LEAGUE_ID` for `createFixtureClient` — that is canned test data, not a Worker env var.
 
 Local deploy (operators): copy [`apps/web/.op/refs.env.example`](./apps/web/.op/refs.env.example) to `apps/web/.op/refs.env`, set `OP_ENVIRONMENT_ID` to **your** production Environment UUID, then `pnpm run deploy`. The deploy renderer defaults `APP_ENV` to `production`.
 
