@@ -20,6 +20,7 @@ import {
   listActiveLeagues,
   listLeaguesForUser,
   provisionLeague,
+  recordVerificationAttempt,
   refreshSleeperAccount,
   upsertLeagueMember,
   upsertUserByClerkId,
@@ -513,5 +514,62 @@ describe("league verifications", () => {
     await expect(consumeVerification(env.DB, { id: created.id, now: now + 5000 })).rejects.toThrow();
     const expired = await getVerification(env.DB, created.id);
     expect(expired?.status).toBe("expired");
+  });
+
+  it("recordVerificationAttempt increments attempts on a wrong guess while still pending", async () => {
+    await ensureSchema(env.DB);
+    const now = 1_700_650_000_000;
+    const user = await upsertUserByClerkId(env.DB, { id: "user_verify_3", email: "verify3@example.test", now });
+    const created = await createVerification(env.DB, {
+      id: "verification_3",
+      userId: user.id,
+      sleeperUserId: "sleeper_verify_3",
+      sleeperLeagueId: "sleeper_league_verify_3",
+      challenge: "cutman-2244",
+      expiresAt: now + 600_000,
+      now,
+    });
+    const attempted = await recordVerificationAttempt(env.DB, { id: created.id, now: now + 10 });
+    expect(attempted.status).toBe("pending");
+    expect(attempted.attempts).toBe(1);
+    const attemptedAgain = await recordVerificationAttempt(env.DB, { id: created.id, now: now + 20 });
+    expect(attemptedAgain.attempts).toBe(2);
+  });
+
+  it("recordVerificationAttempt expires a stale pending verification instead of incrementing attempts", async () => {
+    await ensureSchema(env.DB);
+    const now = 1_700_650_100_000;
+    const user = await upsertUserByClerkId(env.DB, { id: "user_verify_4", email: "verify4@example.test", now });
+    const created = await createVerification(env.DB, {
+      id: "verification_4",
+      userId: user.id,
+      sleeperUserId: "sleeper_verify_4",
+      sleeperLeagueId: "sleeper_league_verify_4",
+      challenge: "cutman-9911",
+      expiresAt: now + 1000,
+      now,
+    });
+    const attempted = await recordVerificationAttempt(env.DB, { id: created.id, now: now + 5000 });
+    expect(attempted.status).toBe("expired");
+    expect(attempted.attempts).toBe(0);
+  });
+
+  it("recordVerificationAttempt is a no-op once a verification is already verified", async () => {
+    await ensureSchema(env.DB);
+    const now = 1_700_650_200_000;
+    const user = await upsertUserByClerkId(env.DB, { id: "user_verify_5", email: "verify5@example.test", now });
+    const created = await createVerification(env.DB, {
+      id: "verification_5",
+      userId: user.id,
+      sleeperUserId: "sleeper_verify_5",
+      sleeperLeagueId: "sleeper_league_verify_5",
+      challenge: "cutman-3355",
+      expiresAt: now + 600_000,
+      now,
+    });
+    await consumeVerification(env.DB, { id: created.id, now: now + 10 });
+    const attempted = await recordVerificationAttempt(env.DB, { id: created.id, now: now + 20 });
+    expect(attempted.status).toBe("verified");
+    expect(attempted.attempts).toBe(0);
   });
 });

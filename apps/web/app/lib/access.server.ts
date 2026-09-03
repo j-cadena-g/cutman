@@ -1,4 +1,4 @@
-import { ensureLeagueMember, getLeague, type LeagueMemberRow, type LeagueRow, type UserRow } from "@cutman/db";
+import { getLeague, getLeagueMember, type LeagueMemberRow, type LeagueRow, type UserRow } from "@cutman/db";
 import { cloudflareEnv } from "~/lib/env";
 import { ensureV1League, v1LeagueId } from "~/lib/v1.server";
 import { getCurrentUser } from "~/lib/session.server";
@@ -11,6 +11,10 @@ type AuthArgs = {
 
 export type AccessState =
   | { kind: "signed_out" }
+  // Clerk sign-in alone authenticates but does not grant a league membership. Onboarding
+  // (connecting a Sleeper account, then either the commissioner challenge or joining an already
+  // active league — see app/lib/onboarding.server.ts) is what actually creates the membership row.
+  | { kind: "no_membership"; user: UserRow; league: LeagueRow }
   | {
       kind: "member";
       user: UserRow;
@@ -30,16 +34,13 @@ export async function resolveAccess(args: AuthArgs): Promise<AccessState> {
   if (!league) {
     throw new Error("V1 league failed to initialize.");
   }
-  // Commissioner is no longer inferred from insertion order (see @cutman/db). `ensureLeagueMember`
-  // only inserts a "member" row when absent and never touches an existing member's role, so this
-  // can't race a concurrent explicit role change (e.g. verified commissioner promotion) by
-  // reading a role and writing it back stale. A later onboarding task assigns "commissioner"
-  // explicitly via league verification (`upsertLeagueMember`).
-  const membership = await ensureLeagueMember(env.DB, {
-    leagueId,
-    userId: user.id,
-    now: Date.now(),
-  });
+  // No automatic membership grant here: a signed-in Clerk user with no `league_members` row is
+  // "no_membership" until they complete onboarding (see app/lib/onboarding.server.ts), which
+  // writes an explicit "member" or "commissioner" role.
+  const membership = await getLeagueMember(env.DB, leagueId, user.id);
+  if (!membership) {
+    return { kind: "no_membership", user, league };
+  }
   return {
     kind: "member",
     user,
