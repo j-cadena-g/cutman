@@ -5,6 +5,7 @@ import type { Dashboard } from "../workers/league-brain.ts";
 function makeDashboard(overrides: Partial<Dashboard> = {}): Dashboard {
   return {
     leagueId: "pilot_league",
+    sleeperLeagueId: "sleeper_pilot_league",
     name: "The Pilot",
     tone: "playful",
     week: 3,

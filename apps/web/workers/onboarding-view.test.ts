@@ -273,6 +273,8 @@ describe("describeOnboardingError", () => {
     "challenge_already_used",
     "pilot_league_not_found",
     "pilot_league_not_active",
+    "not_commissioner",
+    "provisioning_failed",
   ];
 
   it("returns non-empty, distinct, plain-language copy for every error kind", () => {
@@ -291,5 +293,17 @@ describe("describeOnboardingError", () => {
 
   it("gives a clear retry path when the team name doesn't contain the challenge yet", () => {
     expect(describeOnboardingError("challenge_not_found_in_team_name")).toMatch(/team name|rename/i);
+  });
+
+  it("tells a member they cannot retry league setup", () => {
+    expect(describeOnboardingError("not_commissioner")).toBe(
+      "Only this league's commissioner can retry setup.",
+    );
+  });
+
+  it("gives a retryable setup-failed message without echoing internals", () => {
+    expect(describeOnboardingError("provisioning_failed")).toBe(
+      "Cutman couldn't finish setting up this league. You can retry from this page.",
+    );
   });
 });

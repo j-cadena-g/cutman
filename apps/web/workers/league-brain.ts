@@ -22,12 +22,14 @@ import { getPlayerMap, sleeperFromEnv } from "./sleeper.ts";
 
 type Settings = {
   leagueId: string;
+  sleeperLeagueId: string;
   name: string;
   tone: Tone;
 };
 
 export type Dashboard = {
   leagueId: string;
+  sleeperLeagueId: string;
   name: string;
   tone: Tone;
   week: number | null;
@@ -82,8 +84,9 @@ export class LeagueBrain extends DurableObject<Env> {
     `);
   }
 
-  async bootstrap(input: { leagueId: string; name: string; tone: Tone }): Promise<void> {
+  async bootstrap(input: { leagueId: string; sleeperLeagueId: string; name: string; tone: Tone }): Promise<void> {
     this.putSetting("leagueId", input.leagueId);
+    this.putSetting("sleeperLeagueId", input.sleeperLeagueId);
     this.putSetting("name", input.name);
     this.putSetting("tone", input.tone);
     const existing = this.ctx.storage.sql.exec("SELECT id FROM bible LIMIT 1").toArray();
@@ -114,6 +117,7 @@ export class LeagueBrain extends DurableObject<Env> {
       .toArray() as Array<{ week: number; subject: string; body: string; createdAt: number }>;
     return {
       leagueId: settings.leagueId,
+      sleeperLeagueId: settings.sleeperLeagueId,
       name: settings.name,
       tone: settings.tone,
       week: last?.week ?? null,
@@ -129,10 +133,10 @@ export class LeagueBrain extends DurableObject<Env> {
     const sleeper = sleeperFromEnv(this.env);
     const state = await sleeper.getNflState();
     const [users, rosters, matchups, transactions, players] = await Promise.all([
-      sleeper.getLeagueUsers(settings.leagueId),
-      sleeper.getRosters(settings.leagueId),
-      sleeper.getMatchups(settings.leagueId, state.week),
-      sleeper.getTransactions(settings.leagueId, state.week),
+      sleeper.getLeagueUsers(settings.sleeperLeagueId),
+      sleeper.getRosters(settings.sleeperLeagueId),
+      sleeper.getMatchups(settings.sleeperLeagueId, state.week),
+      sleeper.getTransactions(settings.sleeperLeagueId, state.week),
       getPlayerMap(this.env, sleeper),
     ]);
     const snapshot: LeagueSnapshot = {
@@ -300,10 +304,11 @@ export class LeagueBrain extends DurableObject<Env> {
 
   private readSettings(): Settings {
     const leagueId = this.getSetting("leagueId");
+    const sleeperLeagueId = this.getSetting("sleeperLeagueId");
     const name = this.getSetting("name") ?? "Example League";
     const tone = toneOrPlayful(this.getSetting("tone"));
-    if (!leagueId) throw new Error("Cutman is not bootstrapped");
-    return { leagueId, name, tone };
+    if (!leagueId || !sleeperLeagueId) throw new Error("Cutman is not bootstrapped");
+    return { leagueId, sleeperLeagueId, name, tone };
   }
 
   private getSetting(key: string): string | null {

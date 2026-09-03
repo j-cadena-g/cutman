@@ -15,6 +15,7 @@ import {
   type OnboardingDeps,
 } from "~/lib/onboarding.server";
 import { computePilotLeagueStep, describeOnboardingError, type PilotLeagueStep } from "~/lib/onboarding-view";
+import { provisionAndActivateLeague, provisioningDepsFromEnv, retryProvisionAndActivateLeague } from "~/lib/provisioning.server";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
 import { Card, CardDescription, CardTitle } from "~/components/ui/card";
@@ -28,11 +29,9 @@ import type { Route } from "./+types/onboarding";
 
 // `/onboarding`: connect one Sleeper account, discover current-season leagues, then either the
 // pilot league's commissioner challenge or (once active) joining as a member. Every other
-// discovered league stays visible but disabled ("Coming soon"). Actions here are thin wrappers
-// over app/lib/onboarding.server.ts — all the real rules (ownership, challenge matching,
-// lifecycle) live there and already have Task 2's tests; this file only wires Worker env
-// (`sleeperFromEnv`, `pilotSleeperLeagueId`) to those services and renders the resulting
-// `computePilotLeagueStep` view-state (app/lib/onboarding-view.ts).
+// discovered league stays visible but disabled ("Coming soon"). Verify and join stay in
+// app/lib/onboarding.server.ts; after a successful verify (and on commissioner retry) this
+// route calls app/lib/provisioning.server.ts to bootstrap LeagueBrain and activate the league.
 function onboardingDepsFromEnv(env: Env): OnboardingDeps {
   return {
     db: env.DB,
@@ -107,6 +106,7 @@ export async function loader(args: Route.LoaderArgs) {
     pilotLeagueName,
     comingSoonLeagues,
     step,
+    isCommissioner: membership?.role === "commissioner",
     now: Date.now(),
   };
 }
@@ -134,11 +134,25 @@ export async function action(args: Route.ActionArgs) {
   if (intent === "verify-challenge") {
     const result = await verifyCommissionerChallenge(deps, { clerkUserId: user.id });
     if (!result.ok) return { intent, error: describeOnboardingError(result.error.kind) };
+    const provisioned = await provisionAndActivateLeague(provisioningDepsFromEnv(env, result.league.id), result.league);
+    if (!provisioned.ok) return { intent, error: describeOnboardingError(provisioned.error.kind) };
     return { intent, ok: true as const };
   }
 
   if (intent === "join") {
     const result = await joinPilotLeague(deps, { clerkUserId: user.id });
+    if (!result.ok) return { intent, error: describeOnboardingError(result.error.kind) };
+    return { intent, ok: true as const };
+  }
+
+  if (intent === "retry-provision") {
+    const league = await getLeagueBySleeperId(env.DB, deps.pilotSleeperLeagueId);
+    if (!league) return { intent, error: describeOnboardingError("not_commissioner") };
+    const membership = await getLeagueMember(env.DB, league.id, user.id);
+    const result = await retryProvisionAndActivateLeague(provisioningDepsFromEnv(env, league.id), {
+      league,
+      membership,
+    });
     if (!result.ok) return { intent, error: describeOnboardingError(result.error.kind) };
     return { intent, ok: true as const };
   }
@@ -252,7 +266,7 @@ function ChallengeLabel({
 }
 
 export default function Onboarding({ loaderData, actionData }: Route.ComponentProps) {
-  const { sleeperUsername, pilotLeagueName, comingSoonLeagues, step, now } = loaderData;
+  const { sleeperUsername, pilotLeagueName, comingSoonLeagues, step, isCommissioner, now } = loaderData;
   const current = railStepFor(step);
   const errorForIntent = (intent: string) =>
     actionData && "error" in actionData && actionData.intent === intent ? actionData.error : undefined;
@@ -383,6 +397,17 @@ export default function Onboarding({ loaderData, actionData }: Route.ComponentPr
             <CardDescription>
               Something went wrong setting up this league. Try again shortly, or reach out if it keeps happening.
             </CardDescription>
+            {errorForIntent("retry-provision") ?? errorForIntent("verify-challenge") ? (
+              <p role="alert" className="mt-3 text-sm text-danger">
+                {errorForIntent("retry-provision") ?? errorForIntent("verify-challenge")}
+              </p>
+            ) : null}
+            {isCommissioner ? (
+              <Form method="post" className="mt-5">
+                <input type="hidden" name="intent" value="retry-provision" />
+                <Button type="submit">Retry setup</Button>
+              </Form>
+            ) : null}
           </Card>
         ) : null}
 
