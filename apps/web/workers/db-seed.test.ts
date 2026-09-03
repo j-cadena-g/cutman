@@ -6,6 +6,7 @@ import {
   consumeVerification,
   createLeague,
   createVerification,
+  ensureLeagueMember,
   ensureSchema,
   failLeague,
   findPendingVerification,
@@ -43,6 +44,21 @@ describe("schema", () => {
       "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'allowlist'",
     ).first<{ name: string }>();
     expect(table).toBeNull();
+  });
+
+  it("is idempotent and never drops existing rows on repeated calls", async () => {
+    await ensureSchema(env.DB);
+    const now = 1_700_000_500_000;
+    const league = await createLeague(env.DB, {
+      id: "league_ensure_idempotent",
+      sleeperLeagueId: "sleeper_league_ensure_idempotent",
+      name: "Ensure Idempotent",
+      season: "2026",
+      now,
+    });
+    await ensureSchema(env.DB);
+    await ensureSchema(env.DB);
+    expect(await getLeague(env.DB, league.id)).toEqual(league);
   });
 });
 
@@ -172,6 +188,7 @@ describe("leagues", () => {
 
   it("rejects a status outside provisioning, active, or error", async () => {
     await ensureSchema(env.DB);
+    // This table has no foreign keys, so a rejection here can only come from the `status` CHECK.
     await expect(
       env.DB.prepare(
         "INSERT INTO leagues (id, sleeper_league_id, name, season, status, tone, created_at) VALUES (?, ?, ?, ?, 'bogus', 'playful', ?)",
@@ -179,6 +196,95 @@ describe("leagues", () => {
         .bind("league_bad", "sleeper_league_bad", "Bad", "2026", 1)
         .run(),
     ).rejects.toThrow();
+  });
+
+  it("rejects creating a league when the internal id already maps to a different Sleeper league id", async () => {
+    await ensureSchema(env.DB);
+    const now = 1_700_210_000_000;
+    await createLeague(env.DB, {
+      id: "league_conflict_1",
+      sleeperLeagueId: "sleeper_league_conflict_1",
+      name: "Conflict A",
+      season: "2026",
+      now,
+    });
+    await expect(
+      createLeague(env.DB, {
+        id: "league_conflict_1",
+        sleeperLeagueId: "sleeper_league_conflict_1_other",
+        name: "Conflict A Retry",
+        season: "2026",
+        now: now + 1,
+      }),
+    ).rejects.toThrow(/sleeper league id/i);
+  });
+
+  it("rejects creating a league when the Sleeper league id already maps to a different internal id", async () => {
+    await ensureSchema(env.DB);
+    const now = 1_700_210_100_000;
+    await createLeague(env.DB, {
+      id: "league_conflict_2a",
+      sleeperLeagueId: "sleeper_league_conflict_2",
+      name: "Conflict B",
+      season: "2026",
+      now,
+    });
+    await expect(
+      createLeague(env.DB, {
+        id: "league_conflict_2b",
+        sleeperLeagueId: "sleeper_league_conflict_2",
+        name: "Conflict B Retry",
+        season: "2026",
+        now: now + 1,
+      }),
+    ).rejects.toThrow(/already linked/i);
+  });
+
+  it("never demotes an active league back to provisioning", async () => {
+    await ensureSchema(env.DB);
+    const now = 1_700_220_000_000;
+    const league = await createLeague(env.DB, {
+      id: "league_lifecycle_1",
+      sleeperLeagueId: "sleeper_league_lifecycle_1",
+      name: "Lifecycle",
+      season: "2026",
+      now,
+    });
+    await activateLeague(env.DB, league.id, now + 1);
+    await expect(provisionLeague(env.DB, league.id)).rejects.toThrow();
+    const stillActive = await getLeague(env.DB, league.id);
+    expect(stillActive?.status).toBe("active");
+  });
+
+  it("activates only from provisioning", async () => {
+    await ensureSchema(env.DB);
+    const now = 1_700_220_100_000;
+    const league = await createLeague(env.DB, {
+      id: "league_lifecycle_2",
+      sleeperLeagueId: "sleeper_league_lifecycle_2",
+      name: "Lifecycle 2",
+      season: "2026",
+      now,
+    });
+    await activateLeague(env.DB, league.id, now + 1);
+    await expect(activateLeague(env.DB, league.id, now + 2)).rejects.toThrow();
+  });
+
+  it("fails only from provisioning", async () => {
+    await ensureSchema(env.DB);
+    const now = 1_700_220_200_000;
+    const league = await createLeague(env.DB, {
+      id: "league_lifecycle_3",
+      sleeperLeagueId: "sleeper_league_lifecycle_3",
+      name: "Lifecycle 3",
+      season: "2026",
+      now,
+    });
+    await activateLeague(env.DB, league.id, now + 1);
+    await expect(failLeague(env.DB, league.id, "boom")).rejects.toThrow();
+    const stillActive = await getLeague(env.DB, league.id);
+    expect(stillActive?.status).toBe("active");
+    expect(stillActive?.provisioning_error).toBeNull();
   });
 });
 
@@ -236,20 +342,54 @@ describe("league members", () => {
 
   it("rejects a role outside commissioner or member", async () => {
     await ensureSchema(env.DB);
+    const now = 1_700_300_200_000;
     const league = await createLeague(env.DB, {
       id: "league_members_3",
       sleeperLeagueId: "sleeper_league_members_3",
       name: "Bad role",
       season: "2026",
-      now: 1_700_300_200_000,
+      now,
     });
+    // Use a real, existing user so a rejection here can only come from the `role` CHECK, not the
+    // `user_id` foreign key.
+    const user = await upsertUserByClerkId(env.DB, { id: "user_bad_role", email: "bad-role@example.test", now });
     await expect(
       env.DB.prepare(
         "INSERT INTO league_members (league_id, user_id, role, recap_email_opt_in, created_at) VALUES (?, ?, 'owner', 0, ?)",
       )
-        .bind(league.id, "user_bad_role", 1)
+        .bind(league.id, user.id, now)
         .run(),
     ).rejects.toThrow();
+  });
+
+  it("ensures membership without ever overwriting an existing role", async () => {
+    await ensureSchema(env.DB);
+    const now = 1_700_310_000_000;
+    const league = await createLeague(env.DB, {
+      id: "league_members_4",
+      sleeperLeagueId: "sleeper_league_members_4",
+      name: "Ensure",
+      season: "2026",
+      now,
+    });
+    const user = await upsertUserByClerkId(env.DB, { id: "user_m4", email: "m4@example.test", now });
+
+    const created = await ensureLeagueMember(env.DB, { leagueId: league.id, userId: user.id, now });
+    expect(created.role).toBe("member");
+
+    await upsertLeagueMember(env.DB, {
+      leagueId: league.id,
+      userId: user.id,
+      role: "commissioner",
+      now: now + 1,
+    });
+
+    const stillCommissioner = await ensureLeagueMember(env.DB, {
+      leagueId: league.id,
+      userId: user.id,
+      now: now + 2,
+    });
+    expect(stillCommissioner.role).toBe("commissioner");
   });
 });
 
@@ -316,6 +456,39 @@ describe("league verifications", () => {
     expect(
       await findPendingVerification(env.DB, { userId: user.id, sleeperLeagueId: "sleeper_league_verify_1" }),
     ).toBeNull();
+  });
+
+  it("allows only one of two concurrent consume attempts to succeed", async () => {
+    await ensureSchema(env.DB);
+    const now = 1_700_550_000_000;
+    const user = await upsertUserByClerkId(env.DB, {
+      id: "user_verify_concurrent",
+      email: "verify-concurrent@example.test",
+      now,
+    });
+    const created = await createVerification(env.DB, {
+      id: "verification_concurrent",
+      userId: user.id,
+      sleeperUserId: "sleeper_verify_concurrent",
+      sleeperLeagueId: "sleeper_league_verify_concurrent",
+      challenge: "cutman-7777",
+      expiresAt: now + 600_000,
+      now,
+    });
+
+    const outcomes = await Promise.allSettled([
+      consumeVerification(env.DB, { id: created.id, now: now + 1000 }),
+      consumeVerification(env.DB, { id: created.id, now: now + 1000 }),
+    ]);
+
+    const fulfilled = outcomes.filter((outcome) => outcome.status === "fulfilled");
+    const rejected = outcomes.filter((outcome) => outcome.status === "rejected");
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+
+    const finalRow = await getVerification(env.DB, created.id);
+    expect(finalRow?.status).toBe("verified");
+    expect(finalRow?.verified_at).toBe(now + 1000);
   });
 
   it("expires a stale pending verification and rejects consuming it", async () => {

@@ -3,12 +3,7 @@ export const EXAMPLE_SLEEPER_USERNAME = "example_user";
 export const V1_LEAGUE_ID = "0000000000000000000";
 export const V1_LEAGUE_NAME = "Example League";
 
-const SCHEMA_SQL = `DROP TABLE IF EXISTS magic_links;
-DROP TABLE IF EXISTS verification_codes;
-DROP TABLE IF EXISTS sessions;
-DROP TABLE IF EXISTS allowlist;
-
-CREATE TABLE IF NOT EXISTS users (
+const SCHEMA_SQL = `CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY,
   email TEXT NOT NULL UNIQUE COLLATE NOCASE,
   created_at INTEGER NOT NULL
@@ -74,34 +69,11 @@ function statements(): string[] {
     .filter((part) => part.length > 0);
 }
 
-async function tableColumns(db: D1Database, table: string): Promise<Set<string> | null> {
-  const exists = await db
-    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
-    .bind(table)
-    .first<{ name: string }>();
-  if (!exists) return null;
-  const columns = await db.prepare(`PRAGMA table_info(${table})`).all<{ name: string }>();
-  return new Set((columns.results ?? []).map((column) => column.name));
-}
-
-// The project is early: rather than hand-migrate legacy local shapes column by column, drop the
-// affected tables and let `CREATE TABLE IF NOT EXISTS` below rebuild them clean. Losing local/dev
-// rows here is acceptable; this must never run against a database with real production data.
-async function dropLegacyShapes(db: D1Database): Promise<void> {
-  const leagueCols = await tableColumns(db, "leagues");
-  const memberCols = await tableColumns(db, "league_members");
-  const leaguesAreCurrent = leagueCols === null || leagueCols.has("status");
-  const membersAreCurrent = memberCols === null || memberCols.has("role");
-  if (leaguesAreCurrent && membersAreCurrent) return;
-  await db.batch([
-    db.prepare("DROP TABLE IF EXISTS league_verifications"),
-    db.prepare("DROP TABLE IF EXISTS league_members"),
-    db.prepare("DROP TABLE IF EXISTS leagues"),
-  ]);
-}
-
+// Idempotent and non-destructive: only `CREATE TABLE/INDEX IF NOT EXISTS`, never a DROP. This must
+// be safe to run on every worker boot against a real database. This early project resets local D1
+// explicitly (e.g. wiping local wrangler state) when the schema shape changes; ensureSchema does
+// not attempt to detect or migrate legacy shapes at runtime.
 async function applySchema(db: D1Database): Promise<void> {
-  await dropLegacyShapes(db);
   await db.batch(statements().map((statement) => db.prepare(statement)));
 }
 

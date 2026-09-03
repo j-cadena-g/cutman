@@ -1,4 +1,4 @@
-import { getLeague, getLeagueMember, upsertLeagueMember, type LeagueMemberRow, type LeagueRow, type UserRow } from "@cutman/db";
+import { ensureLeagueMember, getLeague, type LeagueMemberRow, type LeagueRow, type UserRow } from "@cutman/db";
 import { cloudflareEnv } from "~/lib/env";
 import { ensureV1League, v1LeagueId } from "~/lib/v1.server";
 import { getCurrentUser } from "~/lib/session.server";
@@ -30,14 +30,14 @@ export async function resolveAccess(args: AuthArgs): Promise<AccessState> {
   if (!league) {
     throw new Error("V1 league failed to initialize.");
   }
-  // Commissioner is no longer inferred from insertion order (see @cutman/db). v1 has no
-  // verification flow wired up yet, so keep an existing member's role and default new members to
-  // "member"; a later onboarding task assigns "commissioner" explicitly via league verification.
-  const existingMembership = await getLeagueMember(env.DB, leagueId, user.id);
-  const membership = await upsertLeagueMember(env.DB, {
+  // Commissioner is no longer inferred from insertion order (see @cutman/db). `ensureLeagueMember`
+  // only inserts a "member" row when absent and never touches an existing member's role, so this
+  // can't race a concurrent explicit role change (e.g. verified commissioner promotion) by
+  // reading a role and writing it back stale. A later onboarding task assigns "commissioner"
+  // explicitly via league verification (`upsertLeagueMember`).
+  const membership = await ensureLeagueMember(env.DB, {
     leagueId,
     userId: user.id,
-    role: existingMembership?.role ?? "member",
     now: Date.now(),
   });
   return {

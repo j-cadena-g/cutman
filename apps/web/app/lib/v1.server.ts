@@ -4,6 +4,7 @@ import {
   activateLeague,
   createLeague,
   getLeagueBySleeperId,
+  provisionLeague,
   type LeagueRow,
 } from "@cutman/db";
 import { toneOrPlayful } from "@cutman/story";
@@ -20,6 +21,8 @@ export function v1LeagueName(env: Env): string {
 
 // v1 has no commissioner-driven provisioning flow yet, so the configured league is created and
 // activated immediately. Later onboarding tasks own the real provisioning/verification lifecycle.
+// `activateLeague` is only legal from "provisioning", so a league left in "error" from a prior
+// attempt is explicitly re-provisioned first.
 async function ensureV1LeagueRow(env: Env, now: number): Promise<LeagueRow> {
   const sleeperLeagueId = v1LeagueId(env);
   const existing = await getLeagueBySleeperId(env.DB, sleeperLeagueId);
@@ -34,7 +37,8 @@ async function ensureV1LeagueRow(env: Env, now: number): Promise<LeagueRow> {
       tone: "playful",
       now,
     }));
-  return activateLeague(env.DB, league.id, now);
+  const provisioning = league.status === "error" ? await provisionLeague(env.DB, league.id) : league;
+  return activateLeague(env.DB, provisioning.id, now);
 }
 
 export async function ensureV1League(env: Env, now = Date.now()): Promise<void> {
