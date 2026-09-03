@@ -24,13 +24,24 @@ export function v1LeagueName(env: Env): string {
 // `activateLeague` is only legal from "provisioning", so a league left in "error" from a prior
 // attempt is explicitly re-provisioned first.
 //
-// Two concurrent first loads (no league row yet) can race: `createLeague` idempotently resolves
-// to the same row either way (see its own concurrent-insert handling), but only one of the two
-// `activateLeague` calls can win the "provisioning" -> "active" compare-and-swap — the other
-// throws, because `activateLeague`'s lifecycle rule is intentionally strict and is not weakened
-// here. Instead of letting that reject bubble up as a 500, we re-check the row: if another
-// caller already won and it is now "active", that satisfies this caller's contract too, so we
-// return the current row instead of the stale error.
+// Two concurrent first loads (no league row yet, or a league stuck in "error") can race at
+// either transition: `createLeague` idempotently resolves to the same row either way (see its
+// own concurrent-insert handling), but only one of two concurrent `provisionLeague` calls, or
+// one of two concurrent `activateLeague` calls, can win its compare-and-swap — the other throws,
+// because both lifecycle rules are intentionally strict and are not weakened here. A caller can
+// lose at `provisionLeague` for two different reasons: a concurrent retry from the same
+// "error"/"provisioning" state (harmless, `provisionLeague` already tolerates that), or — the
+// case this specifically guards — a concurrent caller having *already* raced all the way through
+// to "active" by the time this call's own `provisionLeague` UPDATE executes. Either rejection is
+// handled the same way: re-check the row, and if another caller already won and it is now
+// "active", that satisfies this caller's contract too, so we return the current row instead of
+// the stale error.
+async function recoverToActiveOrRethrow(env: Env, sleeperLeagueId: string, error: unknown): Promise<LeagueRow> {
+  const current = await getLeagueBySleeperId(env.DB, sleeperLeagueId);
+  if (current?.status === "active") return current;
+  throw error;
+}
+
 export async function ensureV1LeagueRow(env: Env, now: number): Promise<LeagueRow> {
   const sleeperLeagueId = v1LeagueId(env);
   const existing = await getLeagueBySleeperId(env.DB, sleeperLeagueId);
@@ -45,13 +56,20 @@ export async function ensureV1LeagueRow(env: Env, now: number): Promise<LeagueRo
       tone: "playful",
       now,
     }));
-  const provisioning = league.status === "error" ? await provisionLeague(env.DB, league.id) : league;
+
+  let provisioning = league;
+  if (league.status === "error") {
+    try {
+      provisioning = await provisionLeague(env.DB, league.id);
+    } catch (error) {
+      return recoverToActiveOrRethrow(env, sleeperLeagueId, error);
+    }
+  }
+
   try {
     return await activateLeague(env.DB, provisioning.id, now);
   } catch (error) {
-    const current = await getLeagueBySleeperId(env.DB, sleeperLeagueId);
-    if (current?.status === "active") return current;
-    throw error;
+    return recoverToActiveOrRethrow(env, sleeperLeagueId, error);
   }
 }
 
