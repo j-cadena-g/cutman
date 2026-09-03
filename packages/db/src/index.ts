@@ -426,3 +426,34 @@ export async function consumeVerification(
   }
   throw new Error(`Verification is not pending (status: ${verification.status})`);
 }
+
+// Records a failed verification attempt (wrong challenge, or ownership no longer matches). If the
+// verification is still `pending` and past its `expires_at`, this expires it cleanly (matching
+// `consumeVerification`'s lazy-expire behavior) instead of incrementing attempts. If it is
+// `pending` and not yet expired, this increments `attempts`. Any other status (already
+// `verified`/`expired`/`failed`) is left untouched — this is only meant to be called for a
+// verification that `findPendingVerification` just returned as the active challenge.
+export async function recordVerificationAttempt(
+  db: D1Database,
+  input: { id: string; now: number },
+): Promise<LeagueVerificationRow> {
+  const expired = await db
+    .prepare(
+      `UPDATE league_verifications SET status = 'expired'
+       WHERE id = ? AND status = 'pending' AND expires_at <= ?`,
+    )
+    .bind(input.id, input.now)
+    .run();
+  if (expired.meta.changes === 0) {
+    await db
+      .prepare(
+        `UPDATE league_verifications SET attempts = attempts + 1
+         WHERE id = ? AND status = 'pending' AND expires_at > ?`,
+      )
+      .bind(input.id, input.now)
+      .run();
+  }
+  const row = await getVerification(db, input.id);
+  if (!row) throw new Error("Verification not found");
+  return row;
+}
