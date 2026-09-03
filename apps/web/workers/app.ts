@@ -22,8 +22,9 @@ const prepared = new WeakMap<D1Database, Promise<void>>();
 async function prepareDb(env: Env): Promise<void> {
   let pending = prepared.get(env.DB);
   if (!pending) {
-    // League creation/activation now happens lazily in `ensureV1League` (see
-    // app/lib/v1.server.ts) via the explicit provisioning lifecycle, not at worker boot.
+    // League creation/activation is never done implicitly on a request path (see
+    // app/lib/access.server.ts and app/lib/onboarding.server.ts) — this only ensures the D1
+    // schema exists at worker boot.
     pending = ensureSchema(env.DB).catch((error: unknown) => {
       prepared.delete(env.DB);
       throw error;

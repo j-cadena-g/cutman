@@ -1,15 +1,16 @@
 import {
   consumeVerification,
   createLeague,
-  createVerification,
   ensureLeagueMember,
   findPendingVerification,
   getLeagueBySleeperId,
   getSleeperAccountByUserId,
   getSleeperAccountBySleeperUserId,
+  getVerification,
   linkSleeperAccount,
   recordVerificationAttempt,
   refreshSleeperAccount,
+  reissueVerification,
   upsertLeagueMember,
   type LeagueMemberRow,
   type LeagueRow,
@@ -48,7 +49,16 @@ function challengeTtlMs(deps: OnboardingDeps): number {
 // into a Sleeper team name.
 const UNAMBIGUOUS_CHALLENGE_CHARS = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
 
-export function createChallengeCode(random: () => number = Math.random): string {
+// Cryptographically secure by default (Workers/Node both expose `crypto.getRandomValues` as a
+// global). Tests inject a deterministic `random` source instead of relying on this default.
+function secureRandom(): number {
+  const buffer = new Uint32Array(1);
+  crypto.getRandomValues(buffer);
+  // 2**32, so the result is always in [0, 1).
+  return buffer[0]! / 4_294_967_296;
+}
+
+export function createChallengeCode(random: () => number = secureRandom): string {
   let suffix = "";
   for (let i = 0; i < 4; i++) {
     const index = Math.floor(random() * UNAMBIGUOUS_CHALLENGE_CHARS.length);
@@ -117,14 +127,31 @@ export async function connectSleeperAccount(
     return { ok: true, account: refreshed, wasNewLink: false };
   }
 
-  const linked = await linkSleeperAccount(deps.db, {
-    userId: input.clerkUserId,
-    sleeperUserId: sleeperUser.user_id,
-    username: sleeperUser.username,
-    displayName: sleeperUser.display_name,
-    now,
-  });
-  return { ok: true, account: linked, wasNewLink: true };
+  try {
+    const linked = await linkSleeperAccount(deps.db, {
+      userId: input.clerkUserId,
+      sleeperUserId: sleeperUser.user_id,
+      username: sleeperUser.username,
+      displayName: sleeperUser.display_name,
+      now,
+    });
+    return { ok: true, account: linked, wasNewLink: true };
+  } catch (error) {
+    // A concurrent request may have inserted a `sleeper_accounts` row for this exact Sleeper
+    // user id (unique) or this exact Clerk user id (primary key) between our pre-checks above
+    // and this insert — the pre-checks above only ruled out rows that existed *before* this
+    // call started. Re-read instead of surfacing the raw D1 constraint error.
+    const raced = await getSleeperAccountBySleeperUserId(deps.db, sleeperUser.user_id);
+    if (raced && raced.user_id !== input.clerkUserId) {
+      return { ok: false, error: { kind: "sleeper_account_connected_to_another_user" } };
+    }
+    if (raced && raced.user_id === input.clerkUserId) {
+      // A concurrent duplicate request for this same Clerk user won the race first; treat this
+      // as the (idempotent) linked outcome instead of surfacing the raw constraint error.
+      return { ok: true, account: raced, wasNewLink: true };
+    }
+    throw error;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -160,21 +187,23 @@ export async function discoverLeagues(
   const season = nflState.league_season;
   const sleeperLeagues = await deps.sleeperClient.getUserLeagues(account.sleeper_user_id, season);
 
-  // Ownership is derived per-league from that league's own `getLeagueUsers` roster, never from
-  // discovery order — a user can be the owner of one discovered league and not another.
-  const leagues = await Promise.all(
-    sleeperLeagues.map(async (league): Promise<DiscoveredLeague> => {
-      const members = await deps.sleeperClient.getLeagueUsers(league.league_id);
-      const entry = members.find((member) => member.user_id === account.sleeper_user_id);
-      return {
-        sleeperLeagueId: league.league_id,
-        name: league.name,
-        season: league.season,
-        classification: league.league_id === deps.pilotSleeperLeagueId ? "pilot" : "coming_soon",
-        isOwner: Boolean(entry?.is_owner),
-      };
-    }),
-  );
+  // Sequential, bounded by design: a user can belong to many Sleeper leagues, and firing every
+  // `getLeagueUsers` call at once would be an unbounded fan-out against the Sleeper API for a
+  // single request. A plain sequential loop keeps at most one in-flight call, and — since
+  // ownership is derived per-league from that league's own roster, not from array order — the
+  // "not insertion order" requirement holds the same way it would with `Promise.all`.
+  const leagues: DiscoveredLeague[] = [];
+  for (const league of sleeperLeagues) {
+    const members = await deps.sleeperClient.getLeagueUsers(league.league_id);
+    const entry = members.find((member) => member.user_id === account.sleeper_user_id);
+    leagues.push({
+      sleeperLeagueId: league.league_id,
+      name: league.name,
+      season: league.season,
+      classification: league.league_id === deps.pilotSleeperLeagueId ? "pilot" : "coming_soon",
+      isOwner: Boolean(entry?.is_owner),
+    });
+  }
 
   return { ok: true, season, leagues };
 }
@@ -212,7 +241,10 @@ export async function requestCommissionerChallenge(
   }
 
   const now = deps.now();
-  const verification = await createVerification(deps.db, {
+  // `reissueVerification` supersedes (expires) any still-pending challenge for this user+league
+  // and carries its `attempts` count forward, so requesting a new challenge can't be used to
+  // trivially reset an attempts counter, and at most one challenge stays "pending" at a time.
+  const verification = await reissueVerification(deps.db, {
     id: deps.generateId(),
     userId: input.clerkUserId,
     sleeperUserId: account.sleeper_user_id,
@@ -237,9 +269,11 @@ export async function requestCommissionerChallenge(
 export type VerifyCommissionerChallengeError =
   | { kind: "sleeper_account_not_linked" }
   | { kind: "no_pending_challenge" }
+  | { kind: "sleeper_account_mismatch" }
   | { kind: "challenge_expired" }
   | { kind: "not_owner" }
   | { kind: "challenge_not_found_in_team_name" }
+  | { kind: "challenge_already_used" }
   | { kind: "pilot_league_not_found" };
 
 export type VerifyCommissionerChallengeResult =
@@ -263,6 +297,15 @@ export async function verifyCommissionerChallenge(
     return { ok: false, error: { kind: "no_pending_challenge" } };
   }
 
+  // The connected Sleeper account may have changed (disconnect/reconnect to a different Sleeper
+  // user) between requesting and verifying the challenge. Compare the *currently* connected
+  // stable Sleeper user id against the one the challenge was actually issued for — a mismatch
+  // means this challenge does not belong to whoever is connected right now, regardless of what
+  // Sleeper's league roster says.
+  if (account.sleeper_user_id !== verification.sleeper_user_id) {
+    return { ok: false, error: { kind: "sleeper_account_mismatch" } };
+  }
+
   const now = deps.now();
   if (verification.expires_at <= now) {
     await recordVerificationAttempt(deps.db, { id: verification.id, now });
@@ -270,8 +313,8 @@ export async function verifyCommissionerChallenge(
   }
 
   const members = await deps.sleeperClient.getLeagueUsers(deps.pilotSleeperLeagueId);
-  // Re-check against the *same stable Sleeper user* the challenge was issued for, not whatever
-  // account happens to be linked to this Clerk user right now.
+  // Re-check against the *same stable Sleeper user* the challenge was issued for (already
+  // confirmed above to match the currently connected account), not insertion order.
   const entry = members.find((member) => member.user_id === verification.sleeper_user_id);
   if (!entry || !entry.is_owner) {
     await recordVerificationAttempt(deps.db, { id: verification.id, now });
@@ -301,9 +344,23 @@ export async function verifyCommissionerChallenge(
     });
   }
 
-  // Consumes the challenge exactly once (atomic compare-and-swap in @cutman/db). Intentionally
-  // does not activate the league or bootstrap LeagueBrain — that belongs to a later task.
-  await consumeVerification(deps.db, { id: verification.id, now });
+  // Consumes the challenge exactly once via an atomic compare-and-swap in @cutman/db. That CAS
+  // can lose to a concurrent verify/expire of the *same* verification (e.g. a double-submitted
+  // request, or the TTL lapsing in the gap between the expiry check above and this call) — catch
+  // that instead of letting a raw Error escape this service's discriminated result type.
+  // Intentionally does not activate the league or bootstrap LeagueBrain — that belongs to a
+  // later task.
+  try {
+    await consumeVerification(deps.db, { id: verification.id, now });
+  } catch {
+    const current = await getVerification(deps.db, verification.id);
+    if (current?.status === "expired") {
+      return { ok: false, error: { kind: "challenge_expired" } };
+    }
+    // Already verified (a concurrent winner beat us to it) or failed: either way this exact
+    // one-time challenge cannot be consumed again.
+    return { ok: false, error: { kind: "challenge_already_used" } };
+  }
 
   const membership = await upsertLeagueMember(deps.db, {
     leagueId: league.id,

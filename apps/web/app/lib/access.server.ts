@@ -1,6 +1,6 @@
 import { getLeague, getLeagueMember, type LeagueMemberRow, type LeagueRow, type UserRow } from "@cutman/db";
 import { cloudflareEnv } from "~/lib/env";
-import { ensureV1League, v1LeagueId } from "~/lib/v1.server";
+import { v1LeagueId } from "~/lib/v1.server";
 import { getCurrentUser } from "~/lib/session.server";
 
 type AuthArgs = {
@@ -11,10 +11,13 @@ type AuthArgs = {
 
 export type AccessState =
   | { kind: "signed_out" }
-  // Clerk sign-in alone authenticates but does not grant a league membership. Onboarding
-  // (connecting a Sleeper account, then either the commissioner challenge or joining an already
-  // active league — see app/lib/onboarding.server.ts) is what actually creates the membership row.
-  | { kind: "no_membership"; user: UserRow; league: LeagueRow }
+  // Clerk sign-in alone authenticates but does not grant a league membership, and does not
+  // create, activate, or bootstrap anything either — this is a pure read. Onboarding (connecting
+  // a Sleeper account, then either the commissioner challenge or joining an already active
+  // league — see app/lib/onboarding.server.ts) is what actually creates the league row and the
+  // membership row. `league` is `null` until a commissioner has completed the challenge for the
+  // configured pilot league; Task 3's routes own presenting that "no league yet" state.
+  | { kind: "no_membership"; user: UserRow; league: LeagueRow | null }
   | {
       kind: "member";
       user: UserRow;
@@ -28,15 +31,13 @@ export async function resolveAccess(args: AuthArgs): Promise<AccessState> {
   const user = await getCurrentUser(args);
   if (!user) return { kind: "signed_out" };
 
-  await ensureV1League(env);
+  // No `ensureV1League`/auto-provisioning here: a signed-in request must never create,
+  // activate, or bootstrap a league on the read path. This only reads whatever already exists.
   const leagueId = v1LeagueId(env);
   const league = await getLeague(env.DB, leagueId);
   if (!league) {
-    throw new Error("V1 league failed to initialize.");
+    return { kind: "no_membership", user, league: null };
   }
-  // No automatic membership grant here: a signed-in Clerk user with no `league_members` row is
-  // "no_membership" until they complete onboarding (see app/lib/onboarding.server.ts), which
-  // writes an explicit "member" or "commissioner" role.
   const membership = await getLeagueMember(env.DB, leagueId, user.id);
   if (!membership) {
     return { kind: "no_membership", user, league };

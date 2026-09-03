@@ -457,3 +457,60 @@ export async function recordVerificationAttempt(
   if (!row) throw new Error("Verification not found");
   return row;
 }
+
+// Issues a fresh pending verification for (userId, sleeperLeagueId), first superseding
+// (expiring) any verification that is currently `pending` for that same pair. Guarantees at
+// most one `pending` row per (userId, sleeperLeagueId) after a serial call, and carries the
+// superseded verification's `attempts` count forward onto the new row instead of resetting it
+// to 0 — reissuing a challenge cannot be used to trivially reset an attempts counter. A prior
+// verification that is not `pending` (already `verified`/`expired`/`failed`) is left untouched
+// and the new row starts at `attempts = 0`.
+//
+// This is a best-effort (read-then-write) supersede, not a hard DB constraint: two truly
+// concurrent reissue calls for the same pair could both read "no pending row" and both insert,
+// leaving two pending rows momentarily. That race is accepted here (see the Task 2 fix-round
+// report) — this closes the serial/repeated-request gap the review flagged, not an adversarial
+// concurrent-request guarantee.
+export async function reissueVerification(
+  db: D1Database,
+  input: {
+    id: string;
+    userId: string;
+    sleeperUserId: string;
+    sleeperLeagueId: string;
+    challenge: string;
+    expiresAt: number;
+    now: number;
+  },
+): Promise<LeagueVerificationRow> {
+  const prior = await findPendingVerification(db, {
+    userId: input.userId,
+    sleeperLeagueId: input.sleeperLeagueId,
+  });
+  if (prior) {
+    await db
+      .prepare(`UPDATE league_verifications SET status = 'expired' WHERE id = ? AND status = 'pending'`)
+      .bind(prior.id)
+      .run();
+  }
+  await db
+    .prepare(
+      `INSERT INTO league_verifications
+        (id, user_id, sleeper_user_id, sleeper_league_id, challenge, status, attempts, expires_at, created_at)
+       VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?)`,
+    )
+    .bind(
+      input.id,
+      input.userId,
+      input.sleeperUserId,
+      input.sleeperLeagueId,
+      input.challenge,
+      prior?.attempts ?? 0,
+      input.expiresAt,
+      input.now,
+    )
+    .run();
+  const row = await getVerification(db, input.id);
+  if (!row) throw new Error("Failed to create verification");
+  return row;
+}
