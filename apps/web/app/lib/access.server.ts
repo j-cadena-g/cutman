@@ -1,7 +1,18 @@
-import { getLeague, getLeagueMember, type LeagueMemberRow, type LeagueRow, type UserRow } from "@cutman/db";
+import {
+  getLeague,
+  getLeagueMember,
+  getSleeperAccountByUserId,
+  listLeaguesForUser,
+  type LeagueMemberRow,
+  type LeagueRow,
+  type UserRow,
+} from "@cutman/db";
+import { authorizeLeagueAccess, computeHomeDestination } from "~/lib/access-rules";
 import { cloudflareEnv } from "~/lib/env";
-import { v1LeagueId } from "~/lib/v1.server";
 import { getCurrentUser } from "~/lib/session.server";
+
+export { authorizeLeagueAccess, computeHomeDestination };
+export type { HomeDestination, LeagueAuthorization } from "~/lib/access-rules";
 
 type AuthArgs = {
   request: Request;
@@ -9,44 +20,59 @@ type AuthArgs = {
   params?: Record<string, string | undefined>;
 };
 
-export type AccessState =
-  | { kind: "signed_out" }
-  // Clerk sign-in alone authenticates but does not grant a league membership, and does not
-  // create, activate, or bootstrap anything either — this is a pure read. Onboarding (connecting
-  // a Sleeper account, then either the commissioner challenge or joining an already active
-  // league — see app/lib/onboarding.server.ts) is what actually creates the league row and the
-  // membership row. `league` is `null` until a commissioner has completed the challenge for the
-  // configured pilot league; Task 3's routes own presenting that "no league yet" state.
-  | { kind: "no_membership"; user: UserRow; league: LeagueRow | null }
-  | {
-      kind: "member";
-      user: UserRow;
-      league: LeagueRow;
-      membership: LeagueMemberRow;
-      isOwner: boolean;
-    };
+// ---------------------------------------------------------------------------
+// `/` home hub: is this signed-in user connected to Sleeper, and how many *active* league
+// memberships do they have? `computeHomeDestination` (app/lib/access-rules.ts) turns this into
+// the actual redirect/card decision — this function is only responsible for reading the
+// (unfiltered) inputs from Clerk/D1.
+// ---------------------------------------------------------------------------
 
-export async function resolveAccess(args: AuthArgs): Promise<AccessState> {
+export type HomeAccessState =
+  | { kind: "signed_out" }
+  | { kind: "signed_in"; user: UserRow; sleeperConnected: boolean; activeLeagues: LeagueRow[] };
+
+export async function resolveHomeAccess(args: AuthArgs): Promise<HomeAccessState> {
+  const env = cloudflareEnv(args.context);
+  const user = await getCurrentUser(args);
+  if (!user) return { kind: "signed_out" };
+  const [sleeperAccount, leagues] = await Promise.all([
+    getSleeperAccountByUserId(env.DB, user.id),
+    listLeaguesForUser(env.DB, user.id),
+  ]);
+  return {
+    kind: "signed_in",
+    user,
+    sleeperConnected: Boolean(sleeperAccount),
+    activeLeagues: leagues.filter((league) => league.status === "active"),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// `/leagues/:leagueId` dashboard: require Clerk and membership in that exact active league.
+// `authorizeLeagueAccess` (app/lib/access-rules.ts) makes the actual not_found/not_active/
+// authorized decision; this function only reads the league/membership rows to feed it.
+// ---------------------------------------------------------------------------
+
+export type LeagueAccessState =
+  | { kind: "signed_out" }
+  | { kind: "not_found" }
+  | { kind: "not_active" }
+  | { kind: "member"; user: UserRow; league: LeagueRow; membership: LeagueMemberRow; isOwner: boolean };
+
+export async function resolveLeagueAccess(args: AuthArgs, leagueId: string): Promise<LeagueAccessState> {
   const env = cloudflareEnv(args.context);
   const user = await getCurrentUser(args);
   if (!user) return { kind: "signed_out" };
 
-  // No `ensureV1League`/auto-provisioning here: a signed-in request must never create,
-  // activate, or bootstrap a league on the read path. This only reads whatever already exists.
-  const leagueId = v1LeagueId(env);
   const league = await getLeague(env.DB, leagueId);
-  if (!league) {
-    return { kind: "no_membership", user, league: null };
+  const membership = league ? await getLeagueMember(env.DB, league.id, user.id) : null;
+  const authorization = authorizeLeagueAccess({ league, membership });
+
+  if (!league || !membership || authorization.kind === "not_found") {
+    return { kind: "not_found" };
   }
-  const membership = await getLeagueMember(env.DB, leagueId, user.id);
-  if (!membership) {
-    return { kind: "no_membership", user, league };
+  if (authorization.kind === "not_active") {
+    return { kind: "not_active" };
   }
-  return {
-    kind: "member",
-    user,
-    league,
-    membership,
-    isOwner: membership.role === "commissioner",
-  };
+  return { kind: "member", user, league, membership, isOwner: authorization.isOwner };
 }

@@ -17,3 +17,14 @@ export function v1LeagueName(env: Env): string {
   const name = env.V1_LEAGUE_NAME?.trim();
   return name || DEFAULT_V1_LEAGUE_NAME;
 }
+
+// The single configured pilot league's Sleeper league id, passed to
+// app/lib/onboarding.server.ts's `pilotSleeperLeagueId` dependency. Reads the dedicated
+// `PILOT_SLEEPER_LEAGUE_ID` var (see app/env.d.ts) so onboarding's pilot-league configuration is
+// not silently coupled to the `V1_*` naming this file is already flagged as legacy — but falls
+// back to `v1LeagueId(env)` (today's only configured league) so this works before the wrangler
+// manifest actually defines `PILOT_SLEEPER_LEAGUE_ID` (manifest cleanup is a later task).
+export function pilotSleeperLeagueId(env: Env): string {
+  const id = env.PILOT_SLEEPER_LEAGUE_ID?.trim();
+  return id || v1LeagueId(env);
+}
