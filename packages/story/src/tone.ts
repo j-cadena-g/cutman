@@ -11,6 +11,10 @@ export function parseTone(value: string): Tone {
   throw new Error(`Unknown tone: ${value}`);
 }
 
+export function toneOrPlayful(value: string | null | undefined): Tone {
+  return value && isTone(value) ? value : "playful";
+}
+
 export function toneLabel(tone: Tone): string {
   switch (tone) {
     case "savage":

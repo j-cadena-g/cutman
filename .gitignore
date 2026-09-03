@@ -1,6 +1,8 @@
 node_modules
 .turbo
 .wrangler
+.wrangler.deploy.jsonc
+.wrangler.dev.jsonc
 .react-router
 .dev.vars
 dist
@@ -18,3 +20,9 @@ apps/web/worker-configuration.d.ts
 .test
 *.tsbuildinfo
 agent-tools
+
+# Pinned 1Password CLI for Workers Builds
+.bin/
+
+# 1Password
+apps/web/.op/refs.env

@@ -1,6 +1,10 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
+  // Public template only. Real production identifiers are rendered into the
+  // ignored .wrangler.deploy.jsonc by scripts/render-wrangler-deploy-config.mjs.
+  // Keep placeholder IDs syntactically valid so local Wrangler commands work.
   "name": "cutman",
+  "account_id": "00000000000000000000000000000000",
   "main": "./workers/app.ts",
   "compatibility_date": "2026-08-22",
   "compatibility_flags": ["nodejs_compat"],
@@ -8,23 +12,32 @@
     "enabled": true
   },
   "upload_source_maps": true,
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [
+    { "pattern": "cutman.io", "custom_domain": true }
+  ],
   "vars": {
-    "APP_URL": "https://cutman.io",
+    "APP_ENV": "development",
+    "APP_ORIGIN": "http://127.0.0.1:41789",
+    "APP_URL": "http://127.0.0.1:41789",
     "EMAIL_FROM": "Cutman <hello@mail.cutman.io>",
-    "USE_SLEEPER_FIXTURES": "false"
+    "USE_SLEEPER_FIXTURES": "false",
+    "V1_LEAGUE_ID": "1389694122842918912",
+    "CLERK_PUBLISHABLE_KEY": "pk_test_replace_me"
   },
   "d1_databases": [
     {
       "binding": "DB",
       "database_name": "cutman",
-      "database_id": "local-cutman",
+      "database_id": "00000000-0000-0000-0000-000000000000",
       "migrations_dir": "./d1"
     }
   ],
   "kv_namespaces": [
     {
       "binding": "PLAYERS",
-      "id": "local-players-kv"
+      "id": "00000000000000000000000000000000"
     }
   ],
   "durable_objects": {
@@ -46,7 +59,8 @@
   },
   "send_email": [
     {
-      "name": "EMAIL"
+      "name": "EMAIL",
+      "allowed_sender_addresses": ["hello@mail.cutman.io"]
     }
   ],
   "triggers": {

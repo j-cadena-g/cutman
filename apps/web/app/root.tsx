@@ -1,6 +1,14 @@
+import { ClerkProvider } from "@clerk/react-router";
 import { isRouteErrorResponse, Links, Meta, Outlet, Scripts, ScrollRestoration } from "react-router";
+import { clerkRequestMiddleware, loadRootAuth } from "~/lib/clerk.server";
 import type { Route } from "./+types/root";
 import "./app.css";
+
+export const middleware = [clerkRequestMiddleware] as Route.MiddlewareFunction[];
+
+export function loader(args: Route.LoaderArgs) {
+  return loadRootAuth(args);
+}
 
 export function meta(): Route.MetaDescriptors {
   return [
@@ -37,8 +45,12 @@ export function Layout({ children }: { children: React.ReactNode }) {
   );
 }
 
-export default function App() {
-  return <Outlet />;
+export default function App({ loaderData }: Route.ComponentProps) {
+  return (
+    <ClerkProvider loaderData={loaderData}>
+      <Outlet />
+    </ClerkProvider>
+  );
 }
 
 export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {

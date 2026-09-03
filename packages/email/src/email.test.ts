@@ -24,5 +24,6 @@ describe("email sending", () => {
     const recap = recapEmail({ subject: "Week 3 belongs to James", body: "CeeDee changed hands." });
     await sendEmail(email, { from: "Cutman <hello@mail.cutman.io>", to: "manager@example.test", ...recap });
     expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({ from: "Cutman <hello@mail.cutman.io>" });
   });
 });

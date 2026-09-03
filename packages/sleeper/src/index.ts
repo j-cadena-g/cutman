@@ -1,8 +1,10 @@
 export type { FixtureOverrides } from "./fixture-client.ts";
 export { createFixtureClient } from "./fixture-client.ts";
 export {
-  FIXTURE_VERIFY_CODE,
-  FIXTURE_VERIFY_TOKEN,
+  JAMES_SLEEPER_USER_ID,
+  JAMES_SLEEPER_USERNAME,
+  V1_LEAGUE_ID,
+  V1_LEAGUE_NAME,
   fixtureLeagues,
   fixtureMatchupsFinal,
   fixtureMatchupsInProgress,
@@ -12,8 +14,13 @@ export {
   fixtureState,
   fixtureTransactions,
   fixtureUser,
-  fixtureUsersUnverified,
   fixtureUsersVerified,
+  v1FixtureLeague,
+  v1FixtureMatchups,
+  v1FixtureRosters,
+  v1FixtureState,
+  v1FixtureUser,
+  v1FixtureUsers,
 } from "./fixtures.ts";
 export { HttpSleeperClient } from "./http-client.ts";
 export type {

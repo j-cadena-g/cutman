@@ -1,32 +1,18 @@
+-- D1 holds identity, the James-owned allowlist, and recap opt-in.
+-- LeagueBrain DO holds bible, timeline, snapshot, and recaps.
+-- Do not invent James's Clerk email. Bind clerk_email when his Clerk account exists.
+
 CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY,
   email TEXT NOT NULL UNIQUE COLLATE NOCASE,
-  sleeper_username TEXT,
-  sleeper_user_id TEXT,
-  verified_at INTEGER,
   created_at INTEGER NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS sessions (
-  id TEXT PRIMARY KEY,
-  user_id TEXT NOT NULL,
-  expires_at INTEGER NOT NULL,
-  created_at INTEGER NOT NULL,
-  FOREIGN KEY (user_id) REFERENCES users(id)
-);
-
-CREATE TABLE IF NOT EXISTS magic_links (
-  token_hash TEXT PRIMARY KEY,
-  email TEXT NOT NULL COLLATE NOCASE,
-  expires_at INTEGER NOT NULL,
+CREATE TABLE IF NOT EXISTS allowlist (
+  sleeper_user_id TEXT PRIMARY KEY,
+  sleeper_username TEXT NOT NULL,
+  clerk_email TEXT UNIQUE COLLATE NOCASE,
   created_at INTEGER NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS verification_codes (
-  user_id TEXT PRIMARY KEY,
-  code TEXT NOT NULL,
-  created_at INTEGER NOT NULL,
-  FOREIGN KEY (user_id) REFERENCES users(id)
 );
 
 CREATE TABLE IF NOT EXISTS leagues (
@@ -34,10 +20,7 @@ CREATE TABLE IF NOT EXISTS leagues (
   name TEXT NOT NULL,
   season TEXT NOT NULL,
   enabled_at INTEGER NOT NULL,
-  enabled_by_user_id TEXT NOT NULL,
-  tone TEXT NOT NULL DEFAULT 'playful',
-  tone_control TEXT NOT NULL DEFAULT 'enabler',
-  FOREIGN KEY (enabled_by_user_id) REFERENCES users(id)
+  tone TEXT NOT NULL DEFAULT 'playful'
 );
 
 CREATE TABLE IF NOT EXISTS league_members (
@@ -50,3 +33,9 @@ CREATE TABLE IF NOT EXISTS league_members (
   FOREIGN KEY (sleeper_league_id) REFERENCES leagues(sleeper_league_id),
   FOREIGN KEY (user_id) REFERENCES users(id)
 );
+
+INSERT OR IGNORE INTO allowlist (sleeper_user_id, sleeper_username, clerk_email, created_at)
+VALUES ('994286029840424960', 'jcadenag', NULL, 0);
+
+INSERT OR IGNORE INTO leagues (sleeper_league_id, name, season, enabled_at, tone)
+VALUES ('1389694122842918912', '519 Keeper', '2026', 0, 'playful');

@@ -1,4 +1,21 @@
-# Copy to apps/web/.dev.vars. Do not put real tokens or personal data here.
-APP_URL=http://127.0.0.1:41789
-EMAIL_FROM=Cutman <hello@mail.cutman.io>
-USE_SLEEPER_FIXTURES=true
+# =============================================================================
+# CUTMAN - Local Development Secrets
+# =============================================================================
+# Key manifest for local Workers dev. `pnpm run dev` uses op run to inject these
+# keys into process.env; Wrangler reads them via CLOUDFLARE_INCLUDE_PROCESS_ENV.
+# `pnpm run dev:verify` requires every key here (names only; no values printed).
+# Do not create, mount, or commit `.dev.vars`.
+# Cloudflare account / zone / D1 / KV IDs belong in apps/web/.deploy.env.example.
+# Worker secrets for deploy live in apps/web/.wrangler.secrets.example.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Required — enough for first `pnpm run dev`
+# -----------------------------------------------------------------------------
+APP_ENV=development
+# Must match the Vite / Wrangler local preview port (41789).
+APP_ORIGIN=http://127.0.0.1:41789
+
+# Clerk authentication (create your own Clerk application; use pk_test_ / sk_test_)
+CLERK_SECRET_KEY=sk_test_...
+CLERK_PUBLISHABLE_KEY=pk_test_...

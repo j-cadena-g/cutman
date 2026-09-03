@@ -11,9 +11,7 @@
     "typecheck": "tsc --noEmit",
     "lint": "echo ok"
   },
-  "dependencies": {
-    "@cutman/db": "workspace:*"
-  },
+  "dependencies": {},
   "devDependencies": {
     "@cloudflare/workers-types": "5.20260902.1",
     "@cutman/tsconfig": "workspace:*",

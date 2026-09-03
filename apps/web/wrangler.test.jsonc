@@ -5,22 +5,27 @@
   "compatibility_date": "2026-08-22",
   "compatibility_flags": ["nodejs_compat"],
   "vars": {
+    "APP_ENV": "test",
+    "APP_ORIGIN": "http://127.0.0.1:41789",
     "APP_URL": "http://127.0.0.1:41789",
     "EMAIL_FROM": "Cutman <hello@mail.cutman.io>",
-    "USE_SLEEPER_FIXTURES": "true"
+    "USE_SLEEPER_FIXTURES": "true",
+    "V1_LEAGUE_ID": "1389694122842918912",
+    "CLERK_PUBLISHABLE_KEY": "pk_test_not_configured",
+    "CLERK_SECRET_KEY": "sk_test_not_configured"
   },
   "d1_databases": [
     {
       "binding": "DB",
       "database_name": "cutman-test",
-      "database_id": "local-cutman-test",
+      "database_id": "00000000-0000-0000-0000-000000000001",
       "migrations_dir": "./d1"
     }
   ],
   "kv_namespaces": [
     {
       "binding": "PLAYERS",
-      "id": "test-players-kv"
+      "id": "00000000000000000000000000000001"
     }
   ],
   "durable_objects": {

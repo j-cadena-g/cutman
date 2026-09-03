@@ -48,8 +48,8 @@ describe("LeagueBrain Durable Object", () => {
   it("skips Tuesday recap when the week is not final", async () => {
     const stub = await boot("not-final");
     await stub.ingestSnapshot(snapshot(fixtureMatchupsInProgress), fixturePlayers);
-    const result = await runInDurableObject(stub, async (instance: LeagueBrain) => {
-      return instance.attemptRecapWithGenerator(fixtureMatchupsInProgress, [], async () => ({
+    const result = await runInDurableObject(stub, async (instance) => {
+      return (instance as LeagueBrain).attemptRecapWithGenerator(fixtureMatchupsInProgress, [], async () => ({
         subject: "should not send",
         body: "nope",
       }));
@@ -61,14 +61,14 @@ describe("LeagueBrain Durable Object", () => {
   it("archives a single recap on double-run", async () => {
     const stub = await boot("once");
     await stub.ingestSnapshot(snapshot(), fixturePlayers);
-    const first = await runInDurableObject(stub, async (instance: LeagueBrain) => {
-      return instance.attemptRecapWithGenerator(fixtureMatchupsFinal, [], async () => ({
+    const first = await runInDurableObject(stub, async (instance) => {
+      return (instance as LeagueBrain).attemptRecapWithGenerator(fixtureMatchupsFinal, [], async () => ({
         subject: "Week 3 belongs to James",
         body: "CeeDee changed hands and the chat lost its mind.",
       }));
     });
-    const second = await runInDurableObject(stub, async (instance: LeagueBrain) => {
-      return instance.attemptRecapWithGenerator(fixtureMatchupsFinal, [], async () => ({
+    const second = await runInDurableObject(stub, async (instance) => {
+      return (instance as LeagueBrain).attemptRecapWithGenerator(fixtureMatchupsFinal, [], async () => ({
         subject: "Week 3 again",
         body: "Should not publish twice.",
       }));
@@ -83,8 +83,8 @@ describe("LeagueBrain Durable Object", () => {
   it("publishes nothing when the model errors", async () => {
     const stub = await boot("model-error");
     await stub.ingestSnapshot(snapshot(), fixturePlayers);
-    const result = await runInDurableObject(stub, async (instance: LeagueBrain) => {
-      return instance.attemptRecapWithGenerator(fixtureMatchupsFinal, [], async () => {
+    const result = await runInDurableObject(stub, async (instance) => {
+      return (instance as LeagueBrain).attemptRecapWithGenerator(fixtureMatchupsFinal, [], async () => {
         throw new Error("gemma down");
       });
     });

@@ -1,85 +1,41 @@
-import {
-  consumeMagicLink,
-  createSession,
-  deleteSession,
-  findSession,
-  findUserById,
-  putMagicLink,
-  type UserRow,
-  upsertUserByEmail,
-} from "@cutman/db";
-import {
-  clearSessionCookie,
-  isValidEmail,
-  magicLinkExpiry,
-  normalizeEmail,
-  randomId,
-  readSessionId,
-  sessionCookieValue,
-  sessionExpiry,
-  sha256Hex,
-} from "@cutman/auth";
+import { clerkClient, getAuth } from "@clerk/react-router/server";
+import { upsertUserByClerkId, type UserRow } from "@cutman/db";
+import { redirect } from "react-router";
+import { bindClerkEnv } from "~/lib/clerk.server";
+import { cloudflareEnv } from "~/lib/env";
 
 export type AuthedUser = UserRow;
 
-export async function getCurrentUser(request: Request, env: Env): Promise<AuthedUser | null> {
-  const sessionId = readSessionId(request);
-  if (!sessionId) return null;
-  const session = await findSession(env.DB, sessionId, Date.now());
-  if (!session) return null;
-  return findUserById(env.DB, session.user_id);
+type AuthArgs = {
+  request: Request;
+  context: unknown;
+};
+
+function clerkUserId(auth: Awaited<ReturnType<typeof getAuth>>): string | null {
+  if ("userId" in auth && typeof auth.userId === "string" && auth.userId.length > 0) {
+    return auth.userId;
+  }
+  return null;
 }
 
-export async function requireUser(request: Request, env: Env): Promise<AuthedUser> {
-  const user = await getCurrentUser(request, env);
-  if (!user) {
-    throw Response.redirect(new URL("/login", request.url), 302);
-  }
+export async function getCurrentUser(args: AuthArgs): Promise<AuthedUser | null> {
+  const env = cloudflareEnv(args.context);
+  bindClerkEnv(env);
+  const auth = await getAuth(args as Parameters<typeof getAuth>[0]);
+  const userId = clerkUserId(auth);
+  if (!userId) return null;
+  const client = clerkClient(args as Parameters<typeof clerkClient>[0]);
+  const clerkUser = await client.users.getUser(userId);
+  const email =
+    clerkUser.primaryEmailAddress?.emailAddress ??
+    clerkUser.emailAddresses[0]?.emailAddress ??
+    null;
+  if (!email) return null;
+  return upsertUserByClerkId(env.DB, { id: userId, email, now: Date.now() });
+}
+
+export async function requireUser(args: AuthArgs): Promise<AuthedUser> {
+  const user = await getCurrentUser(args);
+  if (!user) throw redirect("/sign-in");
   return user;
-}
-
-export async function startMagicLink(
-  env: Env,
-  rawEmail: string,
-  requestUrl: string,
-): Promise<{ email: string; url: string }> {
-  const email = normalizeEmail(rawEmail);
-  if (!isValidEmail(email)) {
-    throw new Error("Enter a real email address.");
-  }
-  const now = Date.now();
-  await upsertUserByEmail(env.DB, { id: randomId(), email, now });
-  const token = randomId(24);
-  await putMagicLink(env.DB, {
-    tokenHash: await sha256Hex(token),
-    email,
-    expiresAt: magicLinkExpiry(now),
-    now,
-  });
-  const url = new URL("/auth/callback", env.APP_URL || requestUrl);
-  url.searchParams.set("token", token);
-  return { email, url: url.toString() };
-}
-
-export async function completeMagicLink(env: Env, token: string, requestUrl: string): Promise<string> {
-  const now = Date.now();
-  const email = await consumeMagicLink(env.DB, await sha256Hex(token), now);
-  if (!email) {
-    throw new Error("That link is expired or already used.");
-  }
-  const user = await upsertUserByEmail(env.DB, { id: randomId(), email, now });
-  const sessionId = randomId(24);
-  await createSession(env.DB, {
-    id: sessionId,
-    userId: user.id,
-    expiresAt: sessionExpiry(now),
-    now,
-  });
-  return sessionCookieValue(sessionId, requestUrl);
-}
-
-export async function destroySession(request: Request, env: Env): Promise<string> {
-  const sessionId = readSessionId(request);
-  if (sessionId) await deleteSession(env.DB, sessionId);
-  return clearSessionCookie(request.url);
 }

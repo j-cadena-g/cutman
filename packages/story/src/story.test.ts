@@ -1,10 +1,9 @@
-import { fixtureMatchupsFinal, fixtureMatchupsInProgress, fixtureMatchupsNoPlayerPoints, fixturePlayers, fixtureRosters, fixtureTransactions, fixtureUsersUnverified, fixtureUsersVerified } from "@cutman/sleeper";
+import { fixtureMatchupsFinal, fixtureMatchupsInProgress, fixtureMatchupsNoPlayerPoints, fixturePlayers, fixtureRosters, fixtureTransactions, fixtureUsersVerified } from "@cutman/sleeper";
 import { describe, expect, it } from "vitest";
 import { diffSnapshots, factsIfChanged } from "./diff.ts";
 import { runRecapAttempt } from "./recap.ts";
 import { shouldAttemptTuesdayRecap, shouldPoll } from "./schedule.ts";
 import { hashSnapshot, type LeagueSnapshot } from "./snapshot.ts";
-import { formatVerifyToken, verifySleeperTeamName } from "./verify.ts";
 import { isWeekFinal } from "./week.ts";
 
 function snapshot(overrides: Partial<LeagueSnapshot> = {}): LeagueSnapshot {
@@ -45,27 +44,6 @@ describe("snapshot diff idempotency", () => {
       fixturePlayers,
     );
     expect(facts.some((fact) => fact.kind === "bench_shame")).toBe(false);
-  });
-});
-
-describe("sleeper team name verify", () => {
-  it("passes when FF-XXXX is appended to metadata.team_name", () => {
-    const result = verifySleeperTeamName(fixtureUsersVerified, "james", "A7K2");
-    expect(result).toEqual({
-      ok: true,
-      sleeperUserId: "u-james",
-      teamName: `Purdy Please ${formatVerifyToken("A7K2")}`,
-    });
-  });
-
-  it("fails when the token is missing from the team name", () => {
-    const result = verifySleeperTeamName(fixtureUsersUnverified, "james", "A7K2");
-    expect(result).toEqual({ ok: false, reason: "missing_token" });
-  });
-
-  it("fails when the username is not in the league", () => {
-    const result = verifySleeperTeamName(fixtureUsersVerified, "not-james", "A7K2");
-    expect(result).toEqual({ ok: false, reason: "not_found" });
   });
 });
 
@@ -169,12 +147,12 @@ describe("week final + Tuesday recap", () => {
 });
 
 describe("ET cron windows", () => {
-  it("polls every 3 ET hours and recaps Tuesday 9/13/19", () => {
+  it("polls every 3 ET hours and recaps Tuesday 9:00 only", () => {
     expect(shouldPoll({ hour: 0, weekday: 2, weekdayLabel: "Tue" })).toBe(true);
     expect(shouldPoll({ hour: 2, weekday: 2, weekdayLabel: "Tue" })).toBe(false);
     expect(shouldAttemptTuesdayRecap({ hour: 9, weekday: 2, weekdayLabel: "Tue" })).toBe(true);
-    expect(shouldAttemptTuesdayRecap({ hour: 13, weekday: 2, weekdayLabel: "Tue" })).toBe(true);
-    expect(shouldAttemptTuesdayRecap({ hour: 19, weekday: 2, weekdayLabel: "Tue" })).toBe(true);
+    expect(shouldAttemptTuesdayRecap({ hour: 13, weekday: 2, weekdayLabel: "Tue" })).toBe(false);
+    expect(shouldAttemptTuesdayRecap({ hour: 19, weekday: 2, weekdayLabel: "Tue" })).toBe(false);
     expect(shouldAttemptTuesdayRecap({ hour: 9, weekday: 3, weekdayLabel: "Wed" })).toBe(false);
     expect(shouldAttemptTuesdayRecap({ hour: 10, weekday: 2, weekdayLabel: "Tue" })).toBe(false);
   });

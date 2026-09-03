@@ -10,6 +10,8 @@ export type EmailBinding = {
   }) => Promise<SendEmailResult>;
 };
 
+export const EMAIL_FROM = "Cutman <hello@mail.cutman.io>";
+
 export async function sendEmail(
   email: EmailBinding,
   message: { from: string; to: string | string[]; subject: string; text: string; html?: string },
@@ -24,14 +26,6 @@ export async function sendEmail(
     text: message.text,
     html: message.html ?? `<pre>${escapeHtml(message.text)}</pre>`,
   });
-}
-
-export function magicLinkEmail(input: { appName?: string; url: string }): { subject: string; text: string } {
-  const appName = input.appName ?? "Cutman";
-  return {
-    subject: `Sign in to ${appName}`,
-    text: `Tap this link to sign in. It expires in 15 minutes.\n\n${input.url}\n\nIf you did not ask for this, ignore it.`,
-  };
 }
 
 export function recapEmail(input: { subject: string; body: string }): { subject: string; text: string } {

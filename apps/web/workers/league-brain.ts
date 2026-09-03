@@ -10,6 +10,7 @@ import {
   hashSnapshot,
   recapPrompt,
   runRecapAttempt,
+  toneOrPlayful,
   type BeatDraft,
   type LeagueSnapshot,
   type RecapAttemptResult,
@@ -299,8 +300,8 @@ export class LeagueBrain extends DurableObject<Env> {
 
   private readSettings(): Settings {
     const leagueId = this.getSetting("leagueId");
-    const name = this.getSetting("name") ?? "Untitled league";
-    const tone = (this.getSetting("tone") as Tone | null) ?? "playful";
+    const name = this.getSetting("name") ?? "519 Keeper";
+    const tone = toneOrPlayful(this.getSetting("tone"));
     if (!leagueId) throw new Error("Cutman is not bootstrapped");
     return { leagueId, name, tone };
   }

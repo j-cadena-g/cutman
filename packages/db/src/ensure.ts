@@ -1,32 +1,23 @@
-const SCHEMA_SQL = `CREATE TABLE IF NOT EXISTS users (
+export const JAMES_SLEEPER_USER_ID = "994286029840424960";
+export const JAMES_SLEEPER_USERNAME = "jcadenag";
+export const V1_LEAGUE_ID = "1389694122842918912";
+export const V1_LEAGUE_NAME = "519 Keeper";
+
+const SCHEMA_SQL = `DROP TABLE IF EXISTS magic_links;
+DROP TABLE IF EXISTS verification_codes;
+DROP TABLE IF EXISTS sessions;
+
+CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY,
   email TEXT NOT NULL UNIQUE COLLATE NOCASE,
-  sleeper_username TEXT,
-  sleeper_user_id TEXT,
-  verified_at INTEGER,
   created_at INTEGER NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS sessions (
-  id TEXT PRIMARY KEY,
-  user_id TEXT NOT NULL,
-  expires_at INTEGER NOT NULL,
-  created_at INTEGER NOT NULL,
-  FOREIGN KEY (user_id) REFERENCES users(id)
-);
-
-CREATE TABLE IF NOT EXISTS magic_links (
-  token_hash TEXT PRIMARY KEY,
-  email TEXT NOT NULL COLLATE NOCASE,
-  expires_at INTEGER NOT NULL,
+CREATE TABLE IF NOT EXISTS allowlist (
+  sleeper_user_id TEXT PRIMARY KEY,
+  sleeper_username TEXT NOT NULL,
+  clerk_email TEXT UNIQUE COLLATE NOCASE,
   created_at INTEGER NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS verification_codes (
-  user_id TEXT PRIMARY KEY,
-  code TEXT NOT NULL,
-  created_at INTEGER NOT NULL,
-  FOREIGN KEY (user_id) REFERENCES users(id)
 );
 
 CREATE TABLE IF NOT EXISTS leagues (
@@ -34,10 +25,7 @@ CREATE TABLE IF NOT EXISTS leagues (
   name TEXT NOT NULL,
   season TEXT NOT NULL,
   enabled_at INTEGER NOT NULL,
-  enabled_by_user_id TEXT NOT NULL,
-  tone TEXT NOT NULL DEFAULT 'playful',
-  tone_control TEXT NOT NULL DEFAULT 'enabler',
-  FOREIGN KEY (enabled_by_user_id) REFERENCES users(id)
+  tone TEXT NOT NULL DEFAULT 'playful'
 );
 
 CREATE TABLE IF NOT EXISTS league_members (
@@ -50,6 +38,12 @@ CREATE TABLE IF NOT EXISTS league_members (
   FOREIGN KEY (sleeper_league_id) REFERENCES leagues(sleeper_league_id),
   FOREIGN KEY (user_id) REFERENCES users(id)
 );
+
+INSERT OR IGNORE INTO allowlist (sleeper_user_id, sleeper_username, clerk_email, created_at)
+VALUES ('${JAMES_SLEEPER_USER_ID}', '${JAMES_SLEEPER_USERNAME}', NULL, 0);
+
+INSERT OR IGNORE INTO leagues (sleeper_league_id, name, season, enabled_at, tone)
+VALUES ('${V1_LEAGUE_ID}', '${V1_LEAGUE_NAME}', '2026', 0, 'playful');
 `;
 
 const applying = new WeakMap<D1Database, Promise<void>>();

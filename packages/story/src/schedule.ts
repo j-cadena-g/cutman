@@ -34,5 +34,5 @@ export function shouldPoll(parts: EasternParts): boolean {
 }
 
 export function shouldAttemptTuesdayRecap(parts: EasternParts): boolean {
-  return parts.weekday === 2 && (parts.hour === 9 || parts.hour === 13 || parts.hour === 19);
+  return parts.weekday === 2 && parts.hour === 9;
 }
