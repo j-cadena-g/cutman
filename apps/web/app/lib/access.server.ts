@@ -1,17 +1,7 @@
-import {
-  findAllowlistByEmail,
-  getLeague,
-  getLeagueMember,
-  upsertLeagueMember,
-  type AllowlistRow,
-  type LeagueMemberRow,
-  type LeagueRow,
-  type UserRow,
-} from "@cutman/db";
+import { getLeague, getLeagueMember, upsertLeagueMember, type LeagueMemberRow, type LeagueRow, type UserRow } from "@cutman/db";
 import { cloudflareEnv } from "~/lib/env";
 import { ensureV1League, v1LeagueId } from "~/lib/v1.server";
 import { getCurrentUser } from "~/lib/session.server";
-import { sleeperFromEnv } from "../../workers/sleeper";
 
 type AuthArgs = {
   request: Request;
@@ -22,14 +12,8 @@ type AuthArgs = {
 export type AccessState =
   | { kind: "signed_out" }
   | {
-      kind: "signed_in";
-      user: UserRow;
-      reason: "not_allowlisted" | "not_in_league";
-    }
-  | {
       kind: "member";
       user: UserRow;
-      allowlist: AllowlistRow;
       league: LeagueRow;
       membership: LeagueMemberRow;
       isOwner: boolean;
@@ -40,37 +24,27 @@ export async function resolveAccess(args: AuthArgs): Promise<AccessState> {
   const user = await getCurrentUser(args);
   if (!user) return { kind: "signed_out" };
 
-  const allowlist = await findAllowlistByEmail(env.DB, user.email);
-  if (!allowlist) {
-    return { kind: "signed_in", user, reason: "not_allowlisted" };
-  }
-
-  const leagueId = v1LeagueId(env);
-  const sleeper = sleeperFromEnv(env);
-  const members = await sleeper.getLeagueUsers(leagueId);
-  const sleeperMember = members.find((entry) => entry.user_id === allowlist.sleeper_user_id);
-  if (!sleeperMember) {
-    return { kind: "signed_in", user, reason: "not_in_league" };
-  }
-
   await ensureV1League(env);
-  await upsertLeagueMember(env.DB, {
+  const leagueId = v1LeagueId(env);
+  const league = await getLeague(env.DB, leagueId);
+  if (!league) {
+    throw new Error("V1 league failed to initialize.");
+  }
+  // Commissioner is no longer inferred from insertion order (see @cutman/db). v1 has no
+  // verification flow wired up yet, so keep an existing member's role and default new members to
+  // "member"; a later onboarding task assigns "commissioner" explicitly via league verification.
+  const existingMembership = await getLeagueMember(env.DB, leagueId, user.id);
+  const membership = await upsertLeagueMember(env.DB, {
     leagueId,
     userId: user.id,
-    sleeperUserId: allowlist.sleeper_user_id,
-    isOwner: Boolean(sleeperMember.is_owner),
+    role: existingMembership?.role ?? "member",
+    now: Date.now(),
   });
-  const league = await getLeague(env.DB, leagueId);
-  const membership = await getLeagueMember(env.DB, leagueId, user.id);
-  if (!league || !membership) {
-    return { kind: "signed_in", user, reason: "not_in_league" };
-  }
   return {
     kind: "member",
     user,
-    allowlist,
     league,
     membership,
-    isOwner: Boolean(membership.is_owner),
+    isOwner: membership.role === "commissioner",
   };
 }

@@ -1,6 +1,6 @@
--- D1 holds identity, the allowlist, and recap opt-in.
--- LeagueBrain DO holds bible, timeline, snapshot, and recaps.
--- Live league/user rows are seeded at runtime from Environment V1_* vars.
+-- D1 holds Clerk identity, linked Sleeper accounts, leagues, and per-league membership / recap opt-in.
+-- LeagueBrain DO holds bible, timeline, snapshot, and recaps (one DO per league id).
+-- Schema is multi-league. v1 runtime still seeds the single configured V1_LEAGUE_ID.
 
 CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY,
@@ -8,28 +8,53 @@ CREATE TABLE IF NOT EXISTS users (
   created_at INTEGER NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS allowlist (
-  sleeper_user_id TEXT PRIMARY KEY,
-  sleeper_username TEXT NOT NULL,
-  clerk_email TEXT UNIQUE COLLATE NOCASE,
-  created_at INTEGER NOT NULL
+CREATE TABLE IF NOT EXISTS sleeper_accounts (
+  user_id TEXT PRIMARY KEY,
+  sleeper_user_id TEXT NOT NULL UNIQUE,
+  username TEXT NOT NULL,
+  display_name TEXT NOT NULL,
+  updated_at INTEGER NOT NULL,
+  FOREIGN KEY (user_id) REFERENCES users(id)
 );
 
 CREATE TABLE IF NOT EXISTS leagues (
-  sleeper_league_id TEXT PRIMARY KEY,
+  id TEXT PRIMARY KEY,
+  sleeper_league_id TEXT NOT NULL UNIQUE,
   name TEXT NOT NULL,
   season TEXT NOT NULL,
-  enabled_at INTEGER NOT NULL,
-  tone TEXT NOT NULL DEFAULT 'playful'
+  status TEXT NOT NULL DEFAULT 'provisioning' CHECK (status IN ('provisioning', 'active', 'error')),
+  tone TEXT NOT NULL DEFAULT 'playful',
+  created_at INTEGER NOT NULL,
+  activated_at INTEGER,
+  provisioning_error TEXT
 );
 
 CREATE TABLE IF NOT EXISTS league_members (
-  sleeper_league_id TEXT NOT NULL,
+  league_id TEXT NOT NULL,
   user_id TEXT NOT NULL,
-  sleeper_user_id TEXT NOT NULL,
-  is_owner INTEGER NOT NULL DEFAULT 0,
+  role TEXT NOT NULL CHECK (role IN ('commissioner', 'member')),
   recap_email_opt_in INTEGER NOT NULL DEFAULT 0,
-  PRIMARY KEY (sleeper_league_id, user_id),
-  FOREIGN KEY (sleeper_league_id) REFERENCES leagues(sleeper_league_id),
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (league_id, user_id),
+  FOREIGN KEY (league_id) REFERENCES leagues(id),
   FOREIGN KEY (user_id) REFERENCES users(id)
 );
+
+CREATE INDEX IF NOT EXISTS league_members_user_id_idx ON league_members (user_id);
+
+CREATE TABLE IF NOT EXISTS league_verifications (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  sleeper_user_id TEXT NOT NULL,
+  sleeper_league_id TEXT NOT NULL,
+  challenge TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'verified', 'expired', 'failed')),
+  attempts INTEGER NOT NULL DEFAULT 0,
+  expires_at INTEGER NOT NULL,
+  created_at INTEGER NOT NULL,
+  verified_at INTEGER,
+  FOREIGN KEY (user_id) REFERENCES users(id)
+);
+
+CREATE INDEX IF NOT EXISTS league_verifications_user_id_idx ON league_verifications (user_id);
+CREATE INDEX IF NOT EXISTS league_verifications_sleeper_league_id_idx ON league_verifications (sleeper_league_id);
