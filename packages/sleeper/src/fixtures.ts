@@ -1,9 +1,9 @@
 import type { NflState, SleeperLeague, SleeperLeagueUser, SleeperMatchup, SleeperRoster, SleeperTransaction, SleeperUser } from "./types.ts";
 
-export const V1_LEAGUE_ID = "1389694122842918912";
-export const V1_LEAGUE_NAME = "519 Keeper";
-export const JAMES_SLEEPER_USER_ID = "994286029840424960";
-export const JAMES_SLEEPER_USERNAME = "jcadenag";
+export const V1_LEAGUE_ID = "0000000000000000000";
+export const V1_LEAGUE_NAME = "Example League";
+export const EXAMPLE_SLEEPER_USER_ID = "0000000000000000001";
+export const EXAMPLE_SLEEPER_USERNAME = "example_user";
 
 export const fixtureState: NflState = {
   week: 3,
@@ -17,10 +17,10 @@ export const fixtureState: NflState = {
 };
 
 export const fixtureUser: SleeperUser = {
-  username: "james",
-  user_id: "u-james",
-  display_name: "James",
-  avatar: "avatar-james",
+  username: "alex",
+  user_id: "u-alex",
+  display_name: "Alex",
+  avatar: "avatar-alex",
 };
 
 export const fixtureLeagues: SleeperLeague[] = [
@@ -36,9 +36,9 @@ export const fixtureLeagues: SleeperLeague[] = [
 
 export const fixtureUsersVerified: SleeperLeagueUser[] = [
   {
-    user_id: "u-james",
-    username: "james",
-    display_name: "James",
+    user_id: "u-alex",
+    username: "alex",
+    display_name: "Alex",
     is_owner: true,
     metadata: { team_name: "Purdy Please" },
   },
@@ -68,7 +68,7 @@ export const fixtureUsersVerified: SleeperLeagueUser[] = [
 export const fixtureRosters: SleeperRoster[] = [
   {
     roster_id: 1,
-    owner_id: "u-james",
+    owner_id: "u-alex",
     players: ["4046", "6794", "8134", "4984", "PHI"],
     starters: ["4046", "6794", "8134", "PHI"],
   },
@@ -142,7 +142,7 @@ export const fixtureTransactions: SleeperTransaction[] = [
     transaction_id: "tx-trade-1",
     status: "complete",
     roster_ids: [1, 2],
-    creator: "u-james",
+    creator: "u-alex",
     created: 1_725_000_000_000,
     leg: 3,
     adds: { "4984": 1, "9226": 2 },
@@ -181,9 +181,9 @@ export const v1FixtureState: NflState = {
 };
 
 export const v1FixtureUser: SleeperUser = {
-  username: JAMES_SLEEPER_USERNAME,
-  user_id: JAMES_SLEEPER_USER_ID,
-  display_name: JAMES_SLEEPER_USERNAME,
+  username: EXAMPLE_SLEEPER_USERNAME,
+  user_id: EXAMPLE_SLEEPER_USER_ID,
+  display_name: EXAMPLE_SLEEPER_USERNAME,
   avatar: null,
 };
 
@@ -210,11 +210,11 @@ const v1Teammates: Array<{ username: string; user_id: string; team: string }> = 
 
 export const v1FixtureUsers: SleeperLeagueUser[] = [
   {
-    user_id: JAMES_SLEEPER_USER_ID,
-    username: JAMES_SLEEPER_USERNAME,
-    display_name: JAMES_SLEEPER_USERNAME,
+    user_id: EXAMPLE_SLEEPER_USER_ID,
+    username: EXAMPLE_SLEEPER_USERNAME,
+    display_name: EXAMPLE_SLEEPER_USERNAME,
     is_owner: false,
-    metadata: { team_name: "jcadenag" },
+    metadata: { team_name: "Example Squad" },
   },
   ...v1Teammates.map((teammate) => ({
     user_id: teammate.user_id,
@@ -226,7 +226,7 @@ export const v1FixtureUsers: SleeperLeagueUser[] = [
 ];
 
 export const v1FixtureRosters: SleeperRoster[] = [
-  { roster_id: 1, owner_id: JAMES_SLEEPER_USER_ID, players: ["4046", "6794", "8134", "PHI"], starters: ["4046", "6794", "8134", "PHI"] },
+  { roster_id: 1, owner_id: EXAMPLE_SLEEPER_USER_ID, players: ["4046", "6794", "8134", "PHI"], starters: ["4046", "6794", "8134", "PHI"] },
   { roster_id: 2, owner_id: "u-mina", players: ["4881", "4035", "7564", "SF"], starters: ["4881", "4035", "7564", "SF"] },
   { roster_id: 3, owner_id: "u-devin", players: ["5849", "3198", "8146", "KC"], starters: ["5849", "3198", "KC"] },
   { roster_id: 4, owner_id: "u-ash", players: ["4988", "6786", "8112", "DAL"], starters: ["4988", "6786", "DAL"] },

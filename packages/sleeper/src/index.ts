@@ -1,8 +1,8 @@
 export type { FixtureOverrides } from "./fixture-client.ts";
 export { createFixtureClient } from "./fixture-client.ts";
 export {
-  JAMES_SLEEPER_USER_ID,
-  JAMES_SLEEPER_USERNAME,
+  EXAMPLE_SLEEPER_USER_ID,
+  EXAMPLE_SLEEPER_USERNAME,
   V1_LEAGUE_ID,
   V1_LEAGUE_NAME,
   fixtureLeagues,

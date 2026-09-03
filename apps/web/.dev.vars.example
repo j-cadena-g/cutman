@@ -3,7 +3,8 @@
 # =============================================================================
 # Key manifest for local Workers dev. `pnpm run dev` uses op run to inject these
 # keys into process.env; Wrangler reads them via CLOUDFLARE_INCLUDE_PROCESS_ENV.
-# `pnpm run dev:verify` requires every key here (names only; no values printed).
+# `pnpm run dev:verify` requires the keys in the Required section (names only;
+# no values printed). Optional V1_* keys may be unset for a first run.
 # Do not create, mount, or commit `.dev.vars`.
 # Cloudflare account / zone / D1 / KV IDs belong in apps/web/.deploy.env.example.
 # Worker secrets for deploy live in apps/web/.wrangler.secrets.example.
@@ -19,3 +20,13 @@ APP_ORIGIN=http://127.0.0.1:41789
 # Clerk authentication (create your own Clerk application; use pk_test_ / sk_test_)
 CLERK_SECRET_KEY=sk_test_...
 CLERK_PUBLISHABLE_KEY=pk_test_...
+
+# -----------------------------------------------------------------------------
+# Optional — one-league identity (override via 1Password; these values are fake)
+# Live Sleeper league/user ids belong in gitignored / 1Password config, not git.
+# -----------------------------------------------------------------------------
+V1_LEAGUE_ID=0000000000000000000
+V1_LEAGUE_NAME=Example League
+V1_SLEEPER_USER_ID=0000000000000000001
+V1_SLEEPER_USERNAME=example_user
+USE_SLEEPER_FIXTURES=false

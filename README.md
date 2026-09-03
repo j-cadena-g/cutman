@@ -9,14 +9,12 @@ Licensing is TBD.
 ## What you get
 
 - Clerk sign-in only. Recaps still go out through Cloudflare Email Service as `Cutman <hello@mail.cutman.io>`
-- James-owned allowlist: Clerk email → Sleeper `user_id` in D1. After sign-in, Cutman live-checks that Sleeper user is still in **519 Keeper** (`1389694122842918912`). Fail either check and you are signed in with no dashboard
+- Allowlist: Clerk email → Sleeper `user_id` in D1. After sign-in, Cutman live-checks that Sleeper user is still in the one configured league. Fail either check and you are signed in with no dashboard
 - One league. One LeagueBrain Durable Object keyed by that Sleeper league id
 - Dashboard reads the Durable Object snapshot (bible, timeline, recaps). It does not hit Sleeper on every page load
 - D1 holds identity, the allowlist, and recap opt-in. KV holds the NFL player map
 - Cron is hourly UTC; the handler uses `America/New_York`. Poll every 3 hours. One idempotent Tuesday recap at 9:00
 - Default tone is playful when unset
-
-James is seeded as Sleeper user `jcadenag` / `994286029840424960`. His Clerk email is left unset on purpose — bind `allowlist.clerk_email` when that account exists. Do not invent it.
 
 ## Quick Start
 
@@ -36,7 +34,7 @@ You do **not** need a Cloudflare account, Workers Builds, Cursor Cloud Agent sec
 
 ### Install and Run
 
-1. Create a personal 1Password Environment for local development (a common display name is `cutman (dev)`), **or** plan to export required vars in your shell.
+1. Create a personal 1Password Environment for local development (a common display name is `Cutman (dev)`), **or** plan to export required vars in your shell.
 2. Set the **required** keys from [`apps/web/.dev.vars.example`](./apps/web/.dev.vars.example): `APP_ENV`, `APP_ORIGIN`, `CLERK_SECRET_KEY`, `CLERK_PUBLISHABLE_KEY`. Cloudflare account / zone / D1 / KV IDs belong only on the deploy manifest.
 
 ```bash
@@ -53,7 +51,7 @@ pnpm run dev
 Or, if you are signed into the 1Password CLI:
 
 ```bash
-op run --environment "cutman (dev)" -- pnpm dev
+op run --environment "Cutman (dev)" -- pnpm dev
 ```
 
 App: http://127.0.0.1:41789
@@ -63,14 +61,14 @@ pnpm test
 pnpm typecheck
 ```
 
-Set `USE_SLEEPER_FIXTURES=true` in your Environment to use canned 519 Keeper data (CI always does). Leave it `false` to hit the live Sleeper API for membership checks and cron polls.
+Set `USE_SLEEPER_FIXTURES=true` in your Environment to use canned example-league data (CI always does). Leave it `false` to hit the live Sleeper API for membership checks and cron polls.
 
 Local `pnpm run dev` does not call Workers AI (no Cloudflare login). Gemma writes beats and recaps after deploy.
 
 ### Local Environment Notes
 
 - Copy [`apps/web/.op/refs.env.example`](./apps/web/.op/refs.env.example) to `apps/web/.op/refs.env` and set `OP_ENVIRONMENT_ID` to the UUID of **your** local-dev Environment. Prefer `op run`; if `OP_ENVIRONMENT_ID` is unset, [`scripts/run-with-1password-environment.sh`](./scripts/run-with-1password-environment.sh) falls through to your current shell environment.
-- `cutman (dev)` / `cutman (prod)` in this repo are **suggested display names** for personal or operator Environments — not shared Environments contributors are expected to join.
+- `Cutman (dev)` / `cutman (prod)` in this repo are **suggested display names** for personal or operator Environments — not shared Environments contributors are expected to join.
 - `pnpm run dev` uses `op run --environment` (when configured) to inject secrets into `process.env`; the Cloudflare Vite plugin reads them directly (`CLOUDFLARE_INCLUDE_PROCESS_ENV`). Do not create, mount, or commit a `.dev.vars` file.
 - `pnpm run dev:verify` checks **required** keys from `apps/web/.dev.vars.example` (names only).
 - Secrets and deploy identifiers should live in each person’s (or each operator’s) 1Password Environments; the repo only tracks variable **names** in `*.example` manifests.
@@ -80,12 +78,12 @@ Local `pnpm run dev` does not call Workers AI (no Cloudflare login). Gemma write
 
 | File / Source | Purpose |
 | --- | --- |
-| `apps/web/.dev.vars.example` | Key manifest for local dev (`op run` + `dev:verify`). Required: `APP_ENV`, `APP_ORIGIN`, `CLERK_PUBLISHABLE_KEY`, `CLERK_SECRET_KEY` |
+| `apps/web/.dev.vars.example` | Key manifest for local dev (`op run` + `dev:verify`). Required: `APP_ENV`, `APP_ORIGIN`, `CLERK_PUBLISHABLE_KEY`, `CLERK_SECRET_KEY`. Optional: `V1_LEAGUE_ID`, `V1_LEAGUE_NAME`, `V1_SLEEPER_USER_ID`, `V1_SLEEPER_USERNAME` (fake placeholders in git; live values in 1Password) |
 | `apps/web/.deploy.env.example` | Deploy binding IDs and Worker vars (rendered into `apps/web/.wrangler.deploy.jsonc`) |
 | `apps/web/.wrangler.secrets.example` | Worker secrets for deploy (`wrangler deploy --secrets-file`). Today: `CLERK_SECRET_KEY` |
 | `apps/web/.op/refs.env.example` | Template for local `OP_ENVIRONMENT_ID` (copy to gitignored `apps/web/.op/refs.env`) |
 | `apps/web/.op/refs.env` or `OP_ENVIRONMENT_ID` | 1Password Environment reference for `op run` (dev locally / cloud agents, prod in Workers Builds) |
-| `apps/web/wrangler.jsonc` | Public-safe Wrangler template. `V1_LEAGUE_ID` and `EMAIL_FROM` stay as vars |
+| `apps/web/wrangler.jsonc` | Public-safe Wrangler template. `V1_LEAGUE_ID` and `EMAIL_FROM` stay as vars; tracked `V1_*` values are fake placeholders |
 | `apps/web/.wrangler.deploy.jsonc` | Ignored production config rendered at deploy time |
 
 Current Worker bindings in the public `apps/web/wrangler.jsonc` template:
@@ -94,12 +92,12 @@ Current Worker bindings in the public `apps/web/wrangler.jsonc` template:
 | --- | --- | --- |
 | `DB` | D1 | Users, allowlist, recap opt-in, the one enabled league |
 | `PLAYERS` | KV | NFL player map, fetched at most once per day |
-| `LEAGUE_BRAIN` | SQLite Durable Object | Snapshots, beats, bible, recaps. id = `1389694122842918912` |
+| `LEAGUE_BRAIN` | SQLite Durable Object | Snapshots, beats, bible, recaps. id = configured `V1_LEAGUE_ID` |
 | `AI` | Workers AI | `@cf/google/gemma-4-26b-a4b-it` only |
 | `EMAIL` | Email Service | `env.EMAIL.send` for Tuesday recaps. From-name is **Cutman** |
 | Cron | `0 * * * *` UTC | Handler uses Eastern Time: poll every 3h; recap Tuesday 9:00 |
 
-The worker applies `apps/web/d1/0001_init.sql` on first request (`CREATE TABLE IF NOT EXISTS` plus the James allowlist seed). For a CLI-managed local D1:
+The worker applies `apps/web/d1/0001_init.sql` on first request (`CREATE TABLE IF NOT EXISTS`). Live league/user rows are `INSERT OR IGNORE`d from Environment `V1_*` vars. Production renders require those vars so placeholder identities from `wrangler.jsonc` cannot ship. For a CLI-managed local D1:
 
 ```bash
 pnpm run db:migrate:local
@@ -131,10 +129,10 @@ Operators should store production and development secrets in [1Password Environm
 
 Suggested Environment display names (create these in **your** 1Password account; they are not shared project vaults):
 
-- **`cutman (dev)`** — local `pnpm run dev` (`OP_ENVIRONMENT_ID` in `apps/web/.op/refs.env`).
+- **`Cutman (dev)`** — local `pnpm run dev` (`OP_ENVIRONMENT_ID` in `apps/web/.op/refs.env`).
 - **`cutman (prod)`** — Cloudflare Workers Builds / production deploy (`OP_ENVIRONMENT_ID` build secret). Only needed if you operate a deployment.
 
-Each Environment should define every key from the relevant manifests (dev vs prod values differ, e.g. `pk_test_` vs `pk_live_`). Local-dev Environments only need the **required** keys in `.dev.vars.example`.
+Each Environment should define every key from the relevant manifests (dev vs prod values differ, e.g. `pk_test_` vs `pk_live_`). Local-dev Environments only need the **required** keys in `.dev.vars.example` for a first run. Live Sleeper league/user ids (`V1_LEAGUE_ID`, `V1_LEAGUE_NAME`, `V1_SLEEPER_USER_ID`, `V1_SLEEPER_USERNAME`) belong in **`Cutman (dev)`** (and the deploy Environment), not in git.
 
 Local deploy (operators): copy [`apps/web/.op/refs.env.example`](./apps/web/.op/refs.env.example) to `apps/web/.op/refs.env`, set `OP_ENVIRONMENT_ID` to **your** production Environment UUID, then `pnpm run deploy`. The deploy renderer defaults `APP_ENV` to `production`.
 
@@ -146,7 +144,7 @@ Git-connected production deploys must not use the placeholder [`apps/web/wrangle
 
 This section is for **operators** of a deployment:
 
-1. Use **your** production 1Password Environment (commonly named `cutman (prod)`) for production binding IDs and deploy keys. Keep a separate local-dev Environment (commonly `cutman (dev)`) for day-to-day development.
+1. Use **your** production 1Password Environment (commonly named `cutman (prod)`) for production binding IDs and deploy keys. Keep a separate local-dev Environment (commonly `Cutman (dev)`) for day-to-day development.
 2. Add every key from [`apps/web/.deploy.env.example`](./apps/web/.deploy.env.example) and [`apps/web/.wrangler.secrets.example`](./apps/web/.wrangler.secrets.example) to that production Environment.
 3. Add Workers Builds secrets: **only** `OP_SERVICE_ACCOUNT_TOKEN` (read-only service account) and `OP_ENVIRONMENT_ID` set to **your** production Environment UUID.
 4. Workers Builds commands (Worker **Settings → Build**):

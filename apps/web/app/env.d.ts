@@ -14,4 +14,7 @@ interface Env {
   EMAIL_FROM: string;
   USE_SLEEPER_FIXTURES: string;
   V1_LEAGUE_ID: string;
+  V1_LEAGUE_NAME: string;
+  V1_SLEEPER_USER_ID: string;
+  V1_SLEEPER_USERNAME: string;
 }

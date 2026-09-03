@@ -63,7 +63,7 @@ describe("LeagueBrain Durable Object", () => {
     await stub.ingestSnapshot(snapshot(), fixturePlayers);
     const first = await runInDurableObject(stub, async (instance) => {
       return (instance as LeagueBrain).attemptRecapWithGenerator(fixtureMatchupsFinal, [], async () => ({
-        subject: "Week 3 belongs to James",
+        subject: "Week 3 belongs to Alex",
         body: "CeeDee changed hands and the chat lost its mind.",
       }));
     });
@@ -77,7 +77,7 @@ describe("LeagueBrain Durable Object", () => {
     expect(second.status).toBe("skipped_already");
     const recaps = await stub.listRecaps();
     expect(recaps).toHaveLength(1);
-    expect(recaps[0]?.subject).toBe("Week 3 belongs to James");
+    expect(recaps[0]?.subject).toBe("Week 3 belongs to Alex");
   });
 
   it("publishes nothing when the model errors", async () => {

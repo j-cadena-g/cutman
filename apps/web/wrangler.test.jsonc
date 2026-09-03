@@ -10,7 +10,10 @@
     "APP_URL": "http://127.0.0.1:41789",
     "EMAIL_FROM": "Cutman <hello@mail.cutman.io>",
     "USE_SLEEPER_FIXTURES": "true",
-    "V1_LEAGUE_ID": "1389694122842918912",
+    "V1_LEAGUE_ID": "0000000000000000000",
+    "V1_LEAGUE_NAME": "Example League",
+    "V1_SLEEPER_USER_ID": "0000000000000000001",
+    "V1_SLEEPER_USERNAME": "example_user",
     "CLERK_PUBLISHABLE_KEY": "pk_test_not_configured",
     "CLERK_SECRET_KEY": "sk_test_not_configured"
   },

@@ -9,8 +9,9 @@ export async function handleScheduled(env: Env, now = new Date()): Promise<{ pol
     return { polled: 0, recapped: 0 };
   }
   const leagueId = env.V1_LEAGUE_ID?.trim() || V1_LEAGUE_ID;
+  const leagueName = env.V1_LEAGUE_NAME?.trim() || V1_LEAGUE_NAME;
   const stub = env.LEAGUE_BRAIN.get(env.LEAGUE_BRAIN.idFromName(leagueId));
-  await stub.bootstrap({ leagueId, name: V1_LEAGUE_NAME, tone: toneOrPlayful(undefined) });
+  await stub.bootstrap({ leagueId, name: leagueName, tone: toneOrPlayful(undefined) });
   let polled = 0;
   let recapped = 0;
   if (poll) {

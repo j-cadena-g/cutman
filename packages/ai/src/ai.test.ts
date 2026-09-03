@@ -6,7 +6,7 @@ describe("gemma json dress-up", () => {
     const ai: WorkersAi = {
       async run(model) {
         expect(model).toBe(GEMMA_MODEL);
-        return { response: '{"copy":"James just fleeced the chat for CeeDee."}' };
+        return { response: '{"copy":"Alex just fleeced the chat for CeeDee."}' };
       },
     };
     const beat = await generateBeat(ai, "sys", "user");
@@ -17,7 +17,7 @@ describe("gemma json dress-up", () => {
     const ai: WorkersAi = {
       async run() {
         return {
-          response: '{"subject":"Week 3 belongs to James","body":"CeeDee changed hands and the chat lost its mind."}',
+          response: '{"subject":"Week 3 belongs to Alex","body":"CeeDee changed hands and the chat lost its mind."}',
         };
       },
     };

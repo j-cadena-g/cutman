@@ -1,7 +1,7 @@
-export const JAMES_SLEEPER_USER_ID = "994286029840424960";
-export const JAMES_SLEEPER_USERNAME = "jcadenag";
-export const V1_LEAGUE_ID = "1389694122842918912";
-export const V1_LEAGUE_NAME = "519 Keeper";
+export const EXAMPLE_SLEEPER_USER_ID = "0000000000000000001";
+export const EXAMPLE_SLEEPER_USERNAME = "example_user";
+export const V1_LEAGUE_ID = "0000000000000000000";
+export const V1_LEAGUE_NAME = "Example League";
 
 const SCHEMA_SQL = `DROP TABLE IF EXISTS magic_links;
 DROP TABLE IF EXISTS verification_codes;
@@ -38,12 +38,6 @@ CREATE TABLE IF NOT EXISTS league_members (
   FOREIGN KEY (sleeper_league_id) REFERENCES leagues(sleeper_league_id),
   FOREIGN KEY (user_id) REFERENCES users(id)
 );
-
-INSERT OR IGNORE INTO allowlist (sleeper_user_id, sleeper_username, clerk_email, created_at)
-VALUES ('${JAMES_SLEEPER_USER_ID}', '${JAMES_SLEEPER_USERNAME}', NULL, 0);
-
-INSERT OR IGNORE INTO leagues (sleeper_league_id, name, season, enabled_at, tone)
-VALUES ('${V1_LEAGUE_ID}', '${V1_LEAGUE_NAME}', '2026', 0, 'playful');
 `;
 
 const applying = new WeakMap<D1Database, Promise<void>>();

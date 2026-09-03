@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { JAMES_SLEEPER_USERNAME, V1_LEAGUE_ID, V1_LEAGUE_NAME, createFixtureClient, v1FixtureUser } from "./index.ts";
+import { EXAMPLE_SLEEPER_USERNAME, V1_LEAGUE_ID, V1_LEAGUE_NAME, createFixtureClient, v1FixtureUser } from "./index.ts";
 
 describe("fixture sleeper client", () => {
-  it("serves 519 Keeper and jcadenag without a live API", async () => {
+  it("serves Example League and example_user without a live API", async () => {
     const client = createFixtureClient();
     const state = await client.getNflState();
     expect(state.league_season).toBe("2026");
-    const user = await client.getUser(JAMES_SLEEPER_USERNAME);
+    const user = await client.getUser(EXAMPLE_SLEEPER_USERNAME);
     expect(user).toEqual(v1FixtureUser);
     const leagues = await client.getUserLeagues(user!.user_id, state.league_season);
     expect(leagues.map((league) => league.league_id)).toEqual([V1_LEAGUE_ID]);
