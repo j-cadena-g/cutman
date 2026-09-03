@@ -36,6 +36,7 @@ describe("computePilotLeagueStep", () => {
   it("asks to connect a Sleeper account first, regardless of any other input", () => {
     const result = computePilotLeagueStep({
       sleeperConnected: false,
+      discoveryFailed: false,
       pilotEntry: { isOwner: true },
       league: makeLeague({ status: "active" }),
       membership: makeMembership(),
@@ -47,6 +48,7 @@ describe("computePilotLeagueStep", () => {
   it("shows provisioning (setup in progress) once a league row exists, even for its own verified commissioner", () => {
     const result = computePilotLeagueStep({
       sleeperConnected: true,
+      discoveryFailed: false,
       pilotEntry: { isOwner: true },
       league: makeLeague({ status: "provisioning" }),
       membership: makeMembership({ role: "commissioner" }),
@@ -58,6 +60,7 @@ describe("computePilotLeagueStep", () => {
   it("shows already_member once the league is active and this user already has a membership row", () => {
     const result = computePilotLeagueStep({
       sleeperConnected: true,
+      discoveryFailed: false,
       pilotEntry: { isOwner: false },
       league: makeLeague({ status: "active" }),
       membership: makeMembership({ role: "member" }),
@@ -66,9 +69,10 @@ describe("computePilotLeagueStep", () => {
     expect(result).toEqual({ kind: "already_member" });
   });
 
-  it("reports not_a_pilot_league_member when the connected Sleeper account isn't in the pilot league", () => {
+  it("reports not_a_pilot_league_member when the connected Sleeper account isn't in the pilot league and no league row exists yet", () => {
     const result = computePilotLeagueStep({
       sleeperConnected: true,
+      discoveryFailed: false,
       pilotEntry: null,
       league: null,
       membership: null,
@@ -80,6 +84,7 @@ describe("computePilotLeagueStep", () => {
   it("reports setup_error when the pilot league failed provisioning", () => {
     const result = computePilotLeagueStep({
       sleeperConnected: true,
+      discoveryFailed: false,
       pilotEntry: { isOwner: false },
       league: makeLeague({ status: "error" }),
       membership: null,
@@ -91,6 +96,7 @@ describe("computePilotLeagueStep", () => {
   it("reports provisioning when the league exists but isn't active yet and the user has no membership", () => {
     const result = computePilotLeagueStep({
       sleeperConnected: true,
+      discoveryFailed: false,
       pilotEntry: { isOwner: false },
       league: makeLeague({ status: "provisioning" }),
       membership: null,
@@ -99,9 +105,10 @@ describe("computePilotLeagueStep", () => {
     expect(result).toEqual({ kind: "provisioning" });
   });
 
-  it("reports join_available when the league is active and the user has no membership yet", () => {
+  it("reports join_available when the league is active, the connected Sleeper account is discovered as a member, and the user has no membership row yet", () => {
     const result = computePilotLeagueStep({
       sleeperConnected: true,
+      discoveryFailed: false,
       pilotEntry: { isOwner: false },
       league: makeLeague({ status: "active" }),
       membership: null,
@@ -113,6 +120,7 @@ describe("computePilotLeagueStep", () => {
   it("reports challenge_pending with the challenge/expiry/attempts when a verification is outstanding", () => {
     const result = computePilotLeagueStep({
       sleeperConnected: true,
+      discoveryFailed: false,
       pilotEntry: { isOwner: true },
       league: null,
       membership: null,
@@ -124,6 +132,7 @@ describe("computePilotLeagueStep", () => {
   it("reports request_challenge for a current Sleeper owner with no league and no pending challenge", () => {
     const result = computePilotLeagueStep({
       sleeperConnected: true,
+      discoveryFailed: false,
       pilotEntry: { isOwner: true },
       league: null,
       membership: null,
@@ -135,12 +144,116 @@ describe("computePilotLeagueStep", () => {
   it("reports awaiting_commissioner for a non-owner with no league yet and no pending challenge", () => {
     const result = computePilotLeagueStep({
       sleeperConnected: true,
+      discoveryFailed: false,
       pilotEntry: { isOwner: false },
       league: null,
       membership: null,
       pendingVerification: null,
     });
     expect(result).toEqual({ kind: "awaiting_commissioner" });
+  });
+
+  // --- Precedence fix: an existing pilot league row must never offer "Join" (or, at the route
+  // level, reveal its name) to someone the current Sleeper discovery does NOT confirm as a member
+  // of that exact league. A persisted `membership` row remains authoritative regardless.
+  it("reports not_a_pilot_league_member for an active pilot league when the connected account isn't discovered as a member and has no membership row", () => {
+    const result = computePilotLeagueStep({
+      sleeperConnected: true,
+      discoveryFailed: false,
+      pilotEntry: null,
+      league: makeLeague({ status: "active" }),
+      membership: null,
+      pendingVerification: null,
+    });
+    expect(result).toEqual({ kind: "not_a_pilot_league_member" });
+  });
+
+  it("reports not_a_pilot_league_member for a provisioning pilot league when the connected account isn't discovered as a member and has no membership row", () => {
+    const result = computePilotLeagueStep({
+      sleeperConnected: true,
+      discoveryFailed: false,
+      pilotEntry: null,
+      league: makeLeague({ status: "provisioning" }),
+      membership: null,
+      pendingVerification: null,
+    });
+    expect(result).toEqual({ kind: "not_a_pilot_league_member" });
+  });
+
+  it("reports not_a_pilot_league_member for an errored pilot league when the connected account isn't discovered as a member and has no membership row", () => {
+    const result = computePilotLeagueStep({
+      sleeperConnected: true,
+      discoveryFailed: false,
+      pilotEntry: null,
+      league: makeLeague({ status: "error" }),
+      membership: null,
+      pendingVerification: null,
+    });
+    expect(result).toEqual({ kind: "not_a_pilot_league_member" });
+  });
+
+  it("still reports already_member when a membership row exists even though pilotEntry is null (e.g. the member later left the league on Sleeper)", () => {
+    const result = computePilotLeagueStep({
+      sleeperConnected: true,
+      discoveryFailed: false,
+      pilotEntry: null,
+      league: makeLeague({ status: "active" }),
+      membership: makeMembership(),
+      pendingVerification: null,
+    });
+    expect(result).toEqual({ kind: "already_member" });
+  });
+
+  // --- Discovery-failure handling: a transient Sleeper discovery failure must not be
+  // misclassified as "not a member" (false negative) or allowed to leak "join available"/the
+  // league's identity (false positive). A persisted membership row is DB-only and doesn't need
+  // live discovery at all, so it still resolves normally even when discovery failed.
+  it("reports discovery_unavailable when Sleeper discovery failed and there's no membership row to fall back on", () => {
+    const result = computePilotLeagueStep({
+      sleeperConnected: true,
+      discoveryFailed: true,
+      pilotEntry: null,
+      league: null,
+      membership: null,
+      pendingVerification: null,
+    });
+    expect(result).toEqual({ kind: "discovery_unavailable" });
+  });
+
+  it("reports discovery_unavailable instead of not_a_pilot_league_member even when a pilot league row already exists", () => {
+    const result = computePilotLeagueStep({
+      sleeperConnected: true,
+      discoveryFailed: true,
+      pilotEntry: null,
+      league: makeLeague({ status: "active" }),
+      membership: null,
+      pendingVerification: null,
+    });
+    expect(result).toEqual({ kind: "discovery_unavailable" });
+  });
+
+  it("still resolves already_member from the DB alone when discovery failed but a membership row exists", () => {
+    const result = computePilotLeagueStep({
+      sleeperConnected: true,
+      discoveryFailed: true,
+      pilotEntry: null,
+      league: makeLeague({ status: "active" }),
+      membership: makeMembership(),
+      pendingVerification: null,
+    });
+    expect(result).toEqual({ kind: "already_member" });
+  });
+
+  it("still resolves provisioning from the DB alone when discovery failed but a membership row exists", () => {
+    const result = computePilotLeagueStep({
+      sleeperConnected: true,
+      discoveryFailed: true,
+      pilotEntry: null,
+      league: makeLeague({ status: "provisioning" }),
+      membership: makeMembership({ role: "commissioner" }),
+      pendingVerification: null,
+    });
+    expect(result).toEqual({ kind: "provisioning" });
   });
 });
 
