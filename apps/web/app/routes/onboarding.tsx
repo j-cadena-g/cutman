@@ -22,6 +22,7 @@ import {
   type PilotLeagueStep,
 } from "~/lib/onboarding-view";
 import { provisionAndActivateLeague, provisioningDepsFromEnv, retryProvisionAndActivateLeague } from "~/lib/provisioning.server";
+import { BrandNav } from "~/components/brand-nav";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
 import { Card, CardDescription, CardTitle } from "~/components/ui/card";
@@ -329,9 +330,7 @@ export default function Onboarding({ loaderData, actionData }: Route.ComponentPr
 
   return (
     <main className="mx-auto max-w-2xl px-6 py-16">
-      <p className="text-xs font-semibold uppercase tracking-[0.24em] text-flag">
-        <Link to="/">Cutman</Link>
-      </p>
+      <BrandNav />
       <h1 className="mt-3 font-display text-4xl">Set up your league</h1>
       <p className="mt-2 text-muted">Connect your Sleeper account, then verify or join the pilot league.</p>
 

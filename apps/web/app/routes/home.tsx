@@ -2,6 +2,7 @@ import { SignInButton, SignUpButton } from "@clerk/react-router";
 import type { LeagueRow } from "@cutman/db";
 import { Link, redirect } from "react-router";
 import { computeHomeDestination, resolveHomeAccess } from "~/lib/access.server";
+import { BrandNav } from "~/components/brand-nav";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
 import { Card, CardDescription, CardTitle } from "~/components/ui/card";
@@ -78,7 +79,7 @@ export default function Home({ loaderData }: Route.ComponentProps) {
   // loader) — the commissioner's-scorecard "which book do you want to open" view.
   return (
     <main className="mx-auto max-w-3xl px-6 py-16">
-      <p className="text-xs font-semibold uppercase tracking-[0.24em] text-flag">Cutman</p>
+      <BrandNav />
       <h1 className="mt-4 font-display text-4xl">Your leagues</h1>
       <p className="mt-2 text-muted">Pick a book to open.</p>
       <ol className="mt-8 space-y-4">

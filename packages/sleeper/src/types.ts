@@ -24,6 +24,7 @@ export type SleeperLeague = {
   status?: string;
   total_rosters?: number;
   avatar?: string | null;
+  roster_positions?: string[] | null;
 };
 
 export type SleeperLeagueUser = {

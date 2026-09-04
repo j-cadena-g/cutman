@@ -1,8 +1,9 @@
 import { Show, SignOutButton, UserButton } from "@clerk/react-router";
 import { setLeagueTone, setRecapOptIn } from "@cutman/db";
 import { isTone, parseTone, toneBlurb, toneLabel, toneOrPlayful, TONES } from "@cutman/story";
-import { Form, Link, redirect } from "react-router";
+import { Form, redirect } from "react-router";
 import { resolveLeagueAccess } from "~/lib/access.server";
+import { BrandNav } from "~/components/brand-nav";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
 import { Card, CardDescription, CardTitle } from "~/components/ui/card";
@@ -118,9 +119,7 @@ export default function League({ loaderData, actionData }: Route.ComponentProps)
     <main className="mx-auto max-w-5xl px-6 py-10">
       <header className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.24em] text-flag">
-            <Link to="/">Cutman</Link>
-          </p>
+          <BrandNav />
           <h1 className="mt-2 font-display text-4xl md:text-5xl">{leagueName}</h1>
           <p className="mt-2 text-muted">
             Week {dashboard?.week ?? "—"} · living dashboard from the last snapshot
