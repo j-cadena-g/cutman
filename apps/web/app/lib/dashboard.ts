@@ -13,7 +13,8 @@ export type DashboardStub = { getDashboard(): Promise<Dashboard> };
 export async function getDashboardOrNull(stub: DashboardStub): Promise<Dashboard | null> {
   try {
     return await stub.getDashboard();
-  } catch {
+  } catch (error) {
+    console.error("getDashboard failed; rendering empty state", error);
     return null;
   }
 }

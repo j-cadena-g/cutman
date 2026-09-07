@@ -4,6 +4,7 @@ import {
   getLeagueMember,
   getSleeperAccountByUserId,
 } from "@cutman/db";
+import { useEffect, useState } from "react";
 import { Form, Link, redirect } from "react-router";
 import {
   connectSleeperAccount,
@@ -14,7 +15,12 @@ import {
   verifyCommissionerChallenge,
   type OnboardingDeps,
 } from "~/lib/onboarding.server";
-import { computePilotLeagueStep, describeOnboardingError, type PilotLeagueStep } from "~/lib/onboarding-view";
+import {
+  computePilotLeagueStep,
+  describeOnboardingError,
+  isStuckProvisioning,
+  type PilotLeagueStep,
+} from "~/lib/onboarding-view";
 import { provisionAndActivateLeague, provisioningDepsFromEnv, retryProvisionAndActivateLeague } from "~/lib/provisioning.server";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
@@ -62,11 +68,16 @@ export async function loader(args: Route.LoaderArgs) {
         comingSoonLeagues = discovery.leagues
           .filter((league) => league.classification === "coming_soon")
           .map((league) => ({ sleeperLeagueId: league.sleeperLeagueId, name: league.name, season: league.season }));
+      } else {
+        // Typed failure (today: account vanished between the loader read and discovery).
+        // Do not treat this as "confirmed not a member".
+        discoveryFailed = true;
       }
-    } catch {
+    } catch (error) {
       // Sleeper's API (or the network path to it) failed. Never let this reach the root error
       // boundary as an uncaught 500 — render a typed, retryable "could not reach Sleeper" state
       // instead (see computePilotLeagueStep's "discovery_unavailable").
+      console.error("onboarding: sleeper discovery failed", error);
       discoveryFailed = true;
     }
   }
@@ -107,7 +118,7 @@ export async function loader(args: Route.LoaderArgs) {
     comingSoonLeagues,
     step,
     isCommissioner: membership?.role === "commissioner",
-    now: Date.now(),
+    provisioningStartedAt: league?.status === "provisioning" ? league.created_at : null,
   };
 }
 
@@ -213,15 +224,18 @@ function ChallengeLabel({
   challenge,
   expiresAt,
   attempts,
-  now,
   error,
 }: {
   challenge: string;
   expiresAt: number;
   attempts: number;
-  now: number;
   error?: string;
 }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = window.setInterval(() => setNow(Date.now()), 15_000);
+    return () => window.clearInterval(id);
+  }, []);
   const minutesLeft = Math.max(0, Math.round((expiresAt - now) / 60000));
   return (
     <Card className="border-2 border-dashed border-flag/50 bg-ink/40">
@@ -265,8 +279,49 @@ function ChallengeLabel({
   );
 }
 
+function ProvisioningCard({
+  leagueName,
+  isCommissioner,
+  startedAt,
+  error,
+}: {
+  leagueName: string | null;
+  isCommissioner: boolean;
+  startedAt: number | null;
+  error?: string;
+}) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = window.setInterval(() => setNow(Date.now()), 15_000);
+    return () => window.clearInterval(id);
+  }, []);
+  const stuck = isStuckProvisioning(startedAt, now);
+
+  return (
+    <Card>
+      <Badge>Verified</Badge>
+      <CardTitle className="mt-3">Setting up {leagueName ?? "your league"}</CardTitle>
+      <CardDescription>
+        Verification is done. Cutman is setting up the season book for this league — check back soon.
+      </CardDescription>
+      {error ? (
+        <p role="alert" className="mt-3 text-sm text-danger">
+          {error}
+        </p>
+      ) : null}
+      {isCommissioner && stuck ? (
+        <Form method="post" className="mt-5">
+          <input type="hidden" name="intent" value="retry-provision" />
+          <Button type="submit">Retry setup</Button>
+        </Form>
+      ) : null}
+    </Card>
+  );
+}
+
 export default function Onboarding({ loaderData, actionData }: Route.ComponentProps) {
-  const { sleeperUsername, pilotLeagueName, comingSoonLeagues, step, isCommissioner, now } = loaderData;
+  const { sleeperUsername, pilotLeagueName, comingSoonLeagues, step, isCommissioner, provisioningStartedAt } =
+    loaderData;
   const current = railStepFor(step);
   const errorForIntent = (intent: string) =>
     actionData && "error" in actionData && actionData.intent === intent ? actionData.error : undefined;
@@ -327,7 +382,7 @@ export default function Onboarding({ loaderData, actionData }: Route.ComponentPr
             </CardDescription>
             <div className="mt-5">
               <Button asChild variant="secondary">
-                <a href="/onboarding">Try again</a>
+                <Link to="/onboarding">Try again</Link>
               </Button>
             </div>
           </Card>
@@ -366,7 +421,6 @@ export default function Onboarding({ loaderData, actionData }: Route.ComponentPr
             challenge={step.challenge}
             expiresAt={step.expiresAt}
             attempts={step.attempts}
-            now={now}
             error={errorForIntent("verify-challenge") ?? errorForIntent("request-challenge")}
           />
         ) : null}
@@ -382,13 +436,12 @@ export default function Onboarding({ loaderData, actionData }: Route.ComponentPr
         ) : null}
 
         {step.kind === "provisioning" ? (
-          <Card>
-            <Badge>Verified</Badge>
-            <CardTitle className="mt-3">Setting up {pilotLeagueName ?? "your league"}</CardTitle>
-            <CardDescription>
-              Verification is done. Cutman is setting up the season book for this league — check back soon.
-            </CardDescription>
-          </Card>
+          <ProvisioningCard
+            leagueName={pilotLeagueName}
+            isCommissioner={isCommissioner}
+            startedAt={provisioningStartedAt}
+            error={errorForIntent("retry-provision")}
+          />
         ) : null}
 
         {step.kind === "setup_error" ? (

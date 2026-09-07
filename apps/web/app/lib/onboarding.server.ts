@@ -187,22 +187,44 @@ export async function discoverLeagues(
   const season = nflState.league_season;
   const sleeperLeagues = await deps.sleeperClient.getUserLeagues(account.sleeper_user_id, season);
 
-  // Sequential, bounded by design: a user can belong to many Sleeper leagues, and firing every
-  // `getLeagueUsers` call at once would be an unbounded fan-out against the Sleeper API for a
-  // single request. A plain sequential loop keeps at most one in-flight call, and — since
-  // ownership is derived per-league from that league's own roster, not from array order — the
-  // "not insertion order" requirement holds the same way it would with `Promise.all`.
+  // Ownership is only consumed for the configured pilot league. Coming-soon cards never show
+  // owner, so skip their roster reads. One `getLeagueUsers` per discovery request when the
+  // pilot appears in current-season leagues; if Sleeper omits it, one extra getLeague +
+  // getLeagueUsers confirms membership before we treat the user as not a member.
   const leagues: DiscoveredLeague[] = [];
+  let foundPilot = false;
   for (const league of sleeperLeagues) {
-    const members = await deps.sleeperClient.getLeagueUsers(league.league_id);
-    const entry = members.find((member) => member.user_id === account.sleeper_user_id);
+    const isPilot = league.league_id === deps.pilotSleeperLeagueId;
+    if (isPilot) foundPilot = true;
+    const entry = isPilot
+      ? (await deps.sleeperClient.getLeagueUsers(league.league_id)).find(
+          (member) => member.user_id === account.sleeper_user_id,
+        )
+      : undefined;
     leagues.push({
       sleeperLeagueId: league.league_id,
       name: league.name,
       season: league.season,
-      classification: league.league_id === deps.pilotSleeperLeagueId ? "pilot" : "coming_soon",
+      classification: isPilot ? "pilot" : "coming_soon",
       isOwner: Boolean(entry?.is_owner),
     });
+  }
+
+  if (!foundPilot) {
+    const [pilotLeague, members] = await Promise.all([
+      deps.sleeperClient.getLeague(deps.pilotSleeperLeagueId),
+      deps.sleeperClient.getLeagueUsers(deps.pilotSleeperLeagueId),
+    ]);
+    const entry = members.find((member) => member.user_id === account.sleeper_user_id);
+    if (pilotLeague && entry) {
+      leagues.unshift({
+        sleeperLeagueId: pilotLeague.league_id,
+        name: pilotLeague.name,
+        season: pilotLeague.season,
+        classification: "pilot",
+        isOwner: Boolean(entry.is_owner),
+      });
+    }
   }
 
   return { ok: true, season, leagues };
@@ -338,15 +360,23 @@ export async function verifyCommissionerChallenge(
     }
     const consumed = await consumePendingChallenge(deps, verification.id, now);
     if (!consumed.ok) return consumed;
-    // Internal `leagues.id` is generated and distinct from the Sleeper snowflake. Does not
-    // activate the league or bootstrap LeagueBrain — that belongs to a later task.
-    const league = await createLeague(deps.db, {
-      id: deps.generateId(),
-      sleeperLeagueId: deps.pilotSleeperLeagueId,
-      name: sleeperLeague.name,
-      season: sleeperLeague.season,
-      now,
-    });
+    // A concurrent verify may have inserted this Sleeper league under a different internal id
+    // between our no-row read and this insert. Reuse that row instead of failing after the
+    // one-time challenge is already consumed.
+    let league;
+    try {
+      league = await createLeague(deps.db, {
+        id: deps.generateId(),
+        sleeperLeagueId: deps.pilotSleeperLeagueId,
+        name: sleeperLeague.name,
+        season: sleeperLeague.season,
+        now,
+      });
+    } catch (error) {
+      const raced = await getLeagueBySleeperId(deps.db, deps.pilotSleeperLeagueId);
+      if (!raced) throw error;
+      league = raced;
+    }
     return commissionerResult(deps, { league, clerkUserId: input.clerkUserId, now });
   }
 
@@ -355,10 +385,10 @@ export async function verifyCommissionerChallenge(
   return commissionerResult(deps, { league: existingLeague, clerkUserId: input.clerkUserId, now });
 }
 
-// Consumes the challenge exactly once via an atomic compare-and-swap in @cutman/db. That CAS
-// can lose to a concurrent verify/expire of the *same* verification (e.g. a double-submitted
-// request, or the TTL lapsing in the gap between the expiry check above and this call) — catch
-// that instead of letting a raw Error escape this service's discriminated result type.
+// Consumes the challenge exactly once via an atomic compare-and-swap in @cutman/db. A CAS
+// miss that left the row expired/verified/failed maps to a typed error. Any other failure
+// (including a still-pending row) is rethrown so a transient D1 error is not reported as
+// "already used".
 async function consumePendingChallenge(
   deps: OnboardingDeps,
   verificationId: string,
@@ -367,14 +397,15 @@ async function consumePendingChallenge(
   try {
     await consumeVerification(deps.db, { id: verificationId, now });
     return { ok: true };
-  } catch {
+  } catch (error) {
     const current = await getVerification(deps.db, verificationId);
     if (current?.status === "expired") {
       return { ok: false, error: { kind: "challenge_expired" } };
     }
-    // Already verified (a concurrent winner beat us to it) or failed: either way this exact
-    // one-time challenge cannot be consumed again.
-    return { ok: false, error: { kind: "challenge_already_used" } };
+    if (current?.status === "verified" || current?.status === "failed") {
+      return { ok: false, error: { kind: "challenge_already_used" } };
+    }
+    throw error;
   }
 }
 
@@ -413,15 +444,15 @@ export async function joinPilotLeague(
     return { ok: false, error: { kind: "sleeper_account_not_linked" } };
   }
 
-  const league = await getLeagueBySleeperId(deps.db, deps.pilotSleeperLeagueId);
-  if (!league || league.status !== "active") {
-    return { ok: false, error: { kind: "pilot_league_not_active" } };
-  }
-
   const members = await deps.sleeperClient.getLeagueUsers(deps.pilotSleeperLeagueId);
   const entry = members.find((member) => member.user_id === account.sleeper_user_id);
   if (!entry) {
     return { ok: false, error: { kind: "not_a_pilot_league_member" } };
+  }
+
+  const league = await getLeagueBySleeperId(deps.db, deps.pilotSleeperLeagueId);
+  if (!league || league.status !== "active") {
+    return { ok: false, error: { kind: "pilot_league_not_active" } };
   }
 
   // `ensureLeagueMember` defaults a brand-new row to "member" and never overwrites an existing

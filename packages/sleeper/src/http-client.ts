@@ -2,22 +2,51 @@ import type { NflState, PlayerMap, SleeperClient, SleeperLeague, SleeperLeagueUs
 
 const DEFAULT_BASE = "https://api.sleeper.app/v1";
 
+function normalizedSleeperPath(path: string): string {
+  const segments = path.split("/").filter((segment) => segment.length > 0);
+  if (segments[0] === "user" && segments[1]) {
+    segments[1] = ":id";
+    if (segments[2] === "leagues" && segments[3] === "nfl" && segments[4]) {
+      segments[4] = ":id";
+    }
+  } else if (segments[0] === "league" && segments[1]) {
+    segments[1] = ":id";
+    if ((segments[2] === "matchups" || segments[2] === "transactions") && segments[3]) {
+      segments[3] = ":id";
+    }
+  }
+  return `/${segments.join("/")}`;
+}
+
 export class SleeperRequestError extends Error {
-  constructor(
-    public readonly path: string,
-    public readonly status: number,
-  ) {
-    super(`Sleeper ${path} failed: ${status}`);
+  declare readonly path: string;
+  readonly status: number;
+
+  constructor(path: string, status: number) {
+    super(`Sleeper ${normalizedSleeperPath(path)} failed: ${status}`);
     this.name = "SleeperRequestError";
+    this.status = status;
+    Object.defineProperty(this, "path", {
+      value: path,
+      enumerable: false,
+      writable: false,
+      configurable: false,
+    });
   }
 }
 
+// Prefer `instanceof` + `status`. The message regex remains for RPC / structured-clone
+// boundaries, where the `SleeperRequestError` prototype and custom fields can be lost while
+// `message` survives. Do not "fix" that with `Object.setPrototypeOf`.
 export function isSleeperRateLimited(error: unknown): boolean {
   if (error instanceof SleeperRequestError) return error.status === 429;
   return error instanceof Error && / failed: 429$/.test(error.message);
 }
 
 export class HttpSleeperClient implements SleeperClient {
+  private static readonly REQUEST_TIMEOUT_MS = 10_000;
+  private static readonly PLAYERS_TIMEOUT_MS = 30_000;
+
   constructor(
     private readonly fetchImpl: typeof fetch = fetch,
     private readonly baseUrl: string = DEFAULT_BASE,
@@ -56,11 +85,12 @@ export class HttpSleeperClient implements SleeperClient {
   }
 
   async getPlayers(): Promise<PlayerMap> {
-    return this.getJson<PlayerMap>("/players/nfl");
+    return this.getJson<PlayerMap>("/players/nfl", HttpSleeperClient.PLAYERS_TIMEOUT_MS);
   }
 
-  private async getJson<T>(path: string): Promise<T> {
-    const response = await this.fetchImpl(`${this.baseUrl}${path}`);
+  private async getJson<T>(path: string, timeoutMs = HttpSleeperClient.REQUEST_TIMEOUT_MS): Promise<T> {
+    const signal = AbortSignal.timeout(timeoutMs);
+    const response = await this.fetchPath(path, signal);
     if (!response.ok) {
       throw new SleeperRequestError(path, response.status);
     }
@@ -68,12 +98,20 @@ export class HttpSleeperClient implements SleeperClient {
   }
 
   private async getJsonOrNull<T>(path: string): Promise<T | null> {
-    const response = await this.fetchImpl(`${this.baseUrl}${path}`);
+    const signal = AbortSignal.timeout(HttpSleeperClient.REQUEST_TIMEOUT_MS);
+    const response = await this.fetchPath(path, signal);
     if (response.status === 404) return null;
     if (!response.ok) {
       throw new SleeperRequestError(path, response.status);
     }
     const body: unknown = await response.json();
     return body === null ? null : (body as T);
+  }
+
+  // Native `fetch` is this-sensitive. `this.fetchImpl(url)` makes `this` the client and throws
+  // Illegal invocation in Workers. Call it as a free function instead.
+  private fetchPath(path: string, signal: AbortSignal): Promise<Response> {
+    const fetchImpl = this.fetchImpl;
+    return fetchImpl(`${this.baseUrl}${path}`, { signal });
   }
 }

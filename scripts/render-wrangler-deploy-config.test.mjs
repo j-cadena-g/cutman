@@ -12,8 +12,12 @@ const scriptPath = path.join(repoRoot, "scripts/render-wrangler-deploy-config.mj
 const FAKE_PILOT_ID = "1111111111111111111";
 
 function baseEnv(overrides = {}) {
-  const env = {
-    ...process.env,
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) {
+    if (key.startsWith("V1_")) delete env[key];
+  }
+  return {
+    ...env,
     CLOUDFLARE_ACCOUNT_ID: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     CLOUDFLARE_D1_DATABASE_ID: "00000000-0000-0000-0000-000000000000",
     CLOUDFLARE_KV_NAMESPACE_ID: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
@@ -23,11 +27,6 @@ function baseEnv(overrides = {}) {
     PILOT_SLEEPER_LEAGUE_ID: FAKE_PILOT_ID,
     ...overrides,
   };
-  delete env.V1_LEAGUE_ID;
-  delete env.V1_LEAGUE_NAME;
-  delete env.V1_SLEEPER_USER_ID;
-  delete env.V1_SLEEPER_USERNAME;
-  return env;
 }
 
 function render(env, outputPath) {
@@ -51,7 +50,12 @@ describe("render-wrangler-deploy-config", () => {
       assert.match(missing.stderr, /PILOT_SLEEPER_LEAGUE_ID/);
       assert.doesNotMatch(missing.stderr, /V1_LEAGUE_ID/);
 
-      const ok = render(baseEnv(), outputPath);
+      const leftover = baseEnv();
+      leftover.V1_LEAGUE_ID = "legacy-v1-league-id";
+      leftover.V1_LEAGUE_NAME = "Legacy V1 League";
+      leftover.V1_SLEEPER_USER_ID = "legacy-v1-user-id";
+      leftover.V1_SLEEPER_USERNAME = "legacy_v1_user";
+      const ok = render(leftover, outputPath);
       assert.equal(ok.status, 0, ok.stderr);
       const rendered = await readFile(outputPath, "utf8");
       assert.match(rendered, new RegExp(`"PILOT_SLEEPER_LEAGUE_ID"\\s*:\\s*"${FAKE_PILOT_ID}"`));
@@ -67,6 +71,18 @@ describe("render-wrangler-deploy-config", () => {
   it("rejects a non-snowflake PILOT_SLEEPER_LEAGUE_ID", async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "cutman-wrangler-render-"));
     const outputPath = path.join(dir, ".wrangler.deploy.jsonc");
+    try {
+      const result = render(baseEnv({ PILOT_SLEEPER_LEAGUE_ID: "not-a-league" }), outputPath);
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /PILOT_SLEEPER_LEAGUE_ID/);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a non-snowflake PILOT_SLEEPER_LEAGUE_ID on local-dev render", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "cutman-wrangler-render-"));
+    const outputPath = path.join(dir, ".wrangler.dev.jsonc");
     try {
       const result = render(baseEnv({ PILOT_SLEEPER_LEAGUE_ID: "not-a-league" }), outputPath);
       assert.notEqual(result.status, 0);

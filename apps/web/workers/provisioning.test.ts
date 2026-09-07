@@ -105,8 +105,9 @@ describe("provisionAndActivateLeague", () => {
   it("polls Sleeper using the Sleeper league id so fixture users land on a distinct internal league", async () => {
     await ensureSchema(env.DB);
     const now = 1_804_010_000_000;
+    const { internalId } = nextIds("poll_v1");
     const league = await createLeague(env.DB, {
-      id: "internal_prov_poll_v1",
+      id: internalId,
       sleeperLeagueId: V1_LEAGUE_ID,
       name: "V1 Sleeper Poll",
       season: "2026",
@@ -202,6 +203,18 @@ describe("provisionAndActivateLeague", () => {
     if (!result.ok) throw new Error("expected ok");
     expect(result.league.status).toBe("active");
     expect((await getLeague(env.DB, league.id))?.provisioning_error).toBeNull();
+  });
+
+  it("returns a typed failure when an error-row retry cannot reread the league", async () => {
+    const now = 1_804_072_000_000;
+    const league = await seedProvisioningLeague("missing_row", now);
+    await failLeague(env.DB, league.id, "previous poll failed");
+    const errored = (await getLeague(env.DB, league.id))!;
+    await env.DB.prepare("DELETE FROM leagues WHERE id = ?").bind(league.id).run();
+
+    const result = await provisionAndActivateLeague(depsWithBrain(silentBrain(), now + 1), errored);
+
+    expect(result).toEqual({ ok: false, error: { kind: "provisioning_failed" } });
   });
 
   it("returns success when a stale error row retries after a peer already activated", async () => {

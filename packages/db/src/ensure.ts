@@ -2,7 +2,7 @@ export const EXAMPLE_SLEEPER_USER_ID = "0000000000000000001";
 export const EXAMPLE_SLEEPER_USERNAME = "example_user";
 export const EXAMPLE_SLEEPER_LEAGUE_ID = "0000000000000000000";
 
-const SCHEMA_SQL = `CREATE TABLE IF NOT EXISTS users (
+export const SCHEMA_SQL = `CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY,
   email TEXT NOT NULL UNIQUE COLLATE NOCASE,
   created_at INTEGER NOT NULL
@@ -58,10 +58,15 @@ CREATE TABLE IF NOT EXISTS league_verifications (
 
 CREATE INDEX IF NOT EXISTS league_verifications_user_id_idx ON league_verifications (user_id);
 CREATE INDEX IF NOT EXISTS league_verifications_sleeper_league_id_idx ON league_verifications (sleeper_league_id);
+CREATE UNIQUE INDEX IF NOT EXISTS league_verifications_pending_user_league_idx
+  ON league_verifications (user_id, sleeper_league_id)
+  WHERE status = 'pending';
 `;
 
 const applying = new WeakMap<D1Database, Promise<void>>();
 
+// Split on `;`. Schema statements must not contain embedded semicolons in literals, expressions,
+// or trigger bodies — this parser is not quote-aware.
 function statements(): string[] {
   return SCHEMA_SQL.split(";")
     .map((part) => part.trim())
@@ -72,7 +77,7 @@ function statements(): string[] {
 // be safe to run on every worker boot against a real database. This early project resets local D1
 // explicitly (e.g. wiping local wrangler state) when the schema shape changes; ensureSchema does
 // not attempt to detect or migrate legacy shapes at runtime.
-async function applySchema(db: D1Database): Promise<void> {
+export async function applySchema(db: D1Database): Promise<void> {
   await db.batch(statements().map((statement) => db.prepare(statement)));
 }
 

@@ -17,6 +17,9 @@ describe("pilotSleeperLeagueId", () => {
   });
 
   it("throws when PILOT_SLEEPER_LEAGUE_ID is blank", () => {
+    expect(() => pilotSleeperLeagueId(envWith({ PILOT_SLEEPER_LEAGUE_ID: "" }))).toThrow(
+      /PILOT_SLEEPER_LEAGUE_ID/,
+    );
     expect(() => pilotSleeperLeagueId(envWith({ PILOT_SLEEPER_LEAGUE_ID: "   " }))).toThrow(
       /PILOT_SLEEPER_LEAGUE_ID/,
     );
@@ -24,12 +27,7 @@ describe("pilotSleeperLeagueId", () => {
 
   it("does not fall back to V1_LEAGUE_ID or the example fixture id", () => {
     expect(() =>
-      pilotSleeperLeagueId(
-        envWith({
-          PILOT_SLEEPER_LEAGUE_ID: "",
-          V1_LEAGUE_ID: "0000000000000000000",
-        }),
-      ),
+      pilotSleeperLeagueId(envWith({ V1_LEAGUE_ID: "0000000000000000000" })),
     ).toThrow(/PILOT_SLEEPER_LEAGUE_ID/);
   });
 });

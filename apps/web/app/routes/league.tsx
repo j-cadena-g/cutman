@@ -1,6 +1,6 @@
 import { Show, SignOutButton, UserButton } from "@clerk/react-router";
 import { setLeagueTone, setRecapOptIn } from "@cutman/db";
-import { isTone, parseTone, toneBlurb, toneLabel, toneOrPlayful, type Tone } from "@cutman/story";
+import { isTone, parseTone, toneBlurb, toneLabel, toneOrPlayful, TONES } from "@cutman/story";
 import { Form, Link, redirect } from "react-router";
 import { resolveLeagueAccess } from "~/lib/access.server";
 import { Badge } from "~/components/ui/badge";
@@ -74,9 +74,13 @@ export async function action(args: Route.ActionArgs) {
     const toneRaw = String(form.get("tone") ?? "");
     if (!isTone(toneRaw)) return { error: "Pick a real tone." };
     const tone = parseTone(toneRaw);
-    await setLeagueTone(env.DB, access.league.id, tone);
     const stub = env.LEAGUE_BRAIN.get(env.LEAGUE_BRAIN.idFromName(access.league.id));
-    await stub.setTone(tone);
+    try {
+      await stub.setTone(tone);
+    } catch {
+      return { error: "Cutman couldn't save that tone. Try again." };
+    }
+    await setLeagueTone(env.DB, access.league.id, tone);
     return { ok: "tone" };
   }
 
@@ -105,7 +109,6 @@ function SignedInUserControls() {
 
 export default function League({ loaderData, actionData }: Route.ComponentProps) {
   const { access, dashboard, optIn } = loaderData;
-  const tones: Tone[] = ["playful", "savage", "sportscenter"];
   const tone = toneOrPlayful(access.league.tone);
   // Falls back to the D1 `leagues` row's own name/week-less state whenever the Durable Object
   // hasn't been bootstrapped yet (`dashboard === null` — see getDashboardOrNull in the loader).
@@ -154,7 +157,7 @@ export default function League({ loaderData, actionData }: Route.ComponentProps)
             <input type="hidden" name="intent" value="tone" />
             <p className="text-xs font-semibold uppercase tracking-[0.18em] text-muted">Voice</p>
             <div className="flex flex-wrap gap-2">
-              {tones.map((option) => (
+              {TONES.map((option) => (
                 <Button
                   key={option}
                   name="tone"
@@ -196,7 +199,7 @@ export default function League({ loaderData, actionData }: Route.ComponentProps)
                     <li key={beat.id}>
                       <Card>
                         <p className="text-[11px] uppercase tracking-[0.18em] text-flag">
-                          Week {beat.week} · {beat.kind.replace("_", " ")}
+                          Week {beat.week} · {beat.kind.replaceAll("_", " ")}
                         </p>
                         <p className="mt-2 text-lg leading-relaxed">{beat.copy}</p>
                       </Card>

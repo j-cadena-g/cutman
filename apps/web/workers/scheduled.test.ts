@@ -122,6 +122,7 @@ describe("handleScheduled", () => {
 
     const originalPoll = LeagueBrain.prototype.poll;
     const originalError = console.error;
+    const errors: unknown[][] = [];
     LeagueBrain.prototype.poll = async function (this: LeagueBrain) {
       const dashboard = await this.getDashboard();
       if (dashboard.leagueId === failing.id) {
@@ -129,12 +130,15 @@ describe("handleScheduled", () => {
       }
       return originalPoll.call(this);
     };
-    console.error = () => {};
+    console.error = (...args: unknown[]) => {
+      errors.push(args);
+    };
 
     try {
       const result = await handleScheduled(env, POLL_NOW);
       const activeCount = (await listActiveLeagues(env.DB)).length;
       expect(result.polled).toBe(activeCount - 1);
+      expect(errors).toHaveLength(1);
       const survived = await env.LEAGUE_BRAIN.getByName(surviving.id).getDashboard();
       expect(survived.leagueId).toBe(surviving.id);
       expect(survived.week).not.toBeNull();

@@ -1,4 +1,5 @@
 export {
+  applySchema,
   ensureSchema,
   EXAMPLE_SLEEPER_USER_ID,
   EXAMPLE_SLEEPER_USERNAME,
@@ -230,15 +231,25 @@ async function transitionLeagueStatus(
   return row;
 }
 
-// Retries provisioning from `provisioning` (no-op) or `error`. Never demotes an `active` league.
+// Retries provisioning from `provisioning` (idempotent no-op when already clean) or `error`.
+// Never demotes an `active` league.
 export async function provisionLeague(db: D1Database, leagueId: string): Promise<LeagueRow> {
-  return transitionLeagueStatus(db, {
-    leagueId,
-    sql: `UPDATE leagues SET status = 'provisioning', provisioning_error = NULL
-          WHERE id = ? AND status IN ('provisioning', 'error')`,
-    params: [leagueId],
-    fromDescription: "provisioning only retries from \"provisioning\" or \"error\"",
-  });
+  const result = await db
+    .prepare(
+      `UPDATE leagues SET status = 'provisioning', provisioning_error = NULL
+       WHERE id = ? AND status IN ('provisioning', 'error')`,
+    )
+    .bind(leagueId)
+    .run();
+  const existing = await getLeague(db, leagueId);
+  if (!existing) throw new Error("League not found");
+  if (existing.status === "provisioning") return existing;
+  if (result.meta.changes !== 1) {
+    throw new Error(
+      `Cannot move league "${leagueId}" from status "${existing.status}"; provisioning only retries from "provisioning" or "error"`,
+    );
+  }
+  return existing;
 }
 
 // Activates a league. Only legal from `provisioning`.
@@ -272,6 +283,8 @@ export async function setLeagueTone(db: D1Database, leagueId: string, tone: stri
 // promotion) — it is a genuine "set the role to X" operation, not a safe-to-call-repeatedly probe.
 export async function upsertLeagueMember(
   db: D1Database,
+  // `recapOptIn` applies to a newly inserted row only. An existing member's opt-in is never
+  // overwritten here; use `setRecapOptIn` to change it.
   input: { leagueId: string; userId: string; role: LeagueMemberRole; recapOptIn?: boolean; now: number },
 ): Promise<LeagueMemberRow> {
   await db
@@ -461,15 +474,14 @@ export async function recordVerificationAttempt(
 // (expiring) any verification that is currently `pending` for that same pair. Guarantees at
 // most one `pending` row per (userId, sleeperLeagueId) after a serial call, and carries the
 // superseded verification's `attempts` count forward onto the new row instead of resetting it
-// to 0 — reissuing a challenge cannot be used to trivially reset an attempts counter. A prior
-// verification that is not `pending` (already `verified`/`expired`/`failed`) is left untouched
-// and the new row starts at `attempts = 0`.
+// to 0 — reissuing a challenge cannot be used to trivially reset an attempts counter. Attempts
+// are informational only; there is no max-attempt cutoff. A prior verification that is not
+// `pending` (already `verified`/`expired`/`failed`) is left untouched and the new row starts at
+// `attempts = 0`.
 //
-// This is a best-effort (read-then-write) supersede, not a hard DB constraint: two truly
-// concurrent reissue calls for the same pair could both read "no pending row" and both insert,
-// leaving two pending rows momentarily. That race is accepted here (see the Task 2 fix-round
-// report) — this closes the serial/repeated-request gap the review flagged, not an adversarial
-// concurrent-request guarantee.
+// A partial unique index enforces at most one `pending` row per (userId, sleeperLeagueId). Two
+// concurrent reissue calls can still race the expire-then-insert: the loser hits that unique
+// constraint and returns the winner's pending row instead of inserting a second challenge.
 export async function reissueVerification(
   db: D1Database,
   input: {
@@ -486,13 +498,7 @@ export async function reissueVerification(
     userId: input.userId,
     sleeperLeagueId: input.sleeperLeagueId,
   });
-  if (prior) {
-    await db
-      .prepare(`UPDATE league_verifications SET status = 'expired' WHERE id = ? AND status = 'pending'`)
-      .bind(prior.id)
-      .run();
-  }
-  await db
+  const insert = db
     .prepare(
       `INSERT INTO league_verifications
         (id, user_id, sleeper_user_id, sleeper_league_id, challenge, status, attempts, expires_at, created_at)
@@ -507,8 +513,28 @@ export async function reissueVerification(
       prior?.attempts ?? 0,
       input.expiresAt,
       input.now,
-    )
-    .run();
+    );
+  try {
+    await db.batch(
+      prior
+        ? [
+            db
+              .prepare(`UPDATE league_verifications SET status = 'expired' WHERE id = ? AND status = 'pending'`)
+              .bind(prior.id),
+            insert,
+          ]
+        : [insert],
+    );
+  } catch (error) {
+    const raced = await findPendingVerification(db, {
+      userId: input.userId,
+      sleeperLeagueId: input.sleeperLeagueId,
+    });
+    // A uniqueness race produces a different pending row (the winner). The same `prior` row
+    // means the batch rolled back — this is not a newly issued challenge.
+    if (raced && raced.id !== prior?.id) return raced;
+    throw error;
+  }
   const row = await getVerification(db, input.id);
   if (!row) throw new Error("Failed to create verification");
   return row;

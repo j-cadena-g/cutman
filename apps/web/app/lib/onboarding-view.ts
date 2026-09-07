@@ -1,9 +1,16 @@
 import type { LeagueMemberRow, LeagueRow } from "@cutman/db";
+import type {
+  ConnectSleeperAccountError,
+  DiscoverLeaguesError,
+  JoinPilotLeagueError,
+  RequestCommissionerChallengeError,
+  VerifyCommissionerChallengeError,
+} from "./onboarding.server.ts";
+import type { RetryProvisionError } from "./provisioning.server.ts";
 
 // Pure view-state for the `/onboarding` pilot-league step, plus typed-error copy shared by every
-// onboarding action. Deliberately free of D1/Sleeper/Clerk imports — app/routes/onboarding.tsx's
-// loader gathers the inputs (Sleeper connection, discovered pilot-league membership, the DB
-// league/membership rows, and any pending verification) and this module decides what to render,
+// onboarding action. Runtime-free of D1/Sleeper/Clerk; error kinds are type-only imports from the
+// server modules. The onboarding loader gathers the inputs and this module decides what to render,
 // so the decision itself is unit-testable without a database or the real Sleeper API.
 export type PilotLeagueStep =
   | { kind: "connect_sleeper_account" }
@@ -82,23 +89,23 @@ export function computePilotLeagueStep(input: {
   return input.pilotEntry?.isOwner ? { kind: "request_challenge" } : { kind: "awaiting_commissioner" };
 }
 
+export const STUCK_PROVISIONING_MS = 2 * 60 * 1000;
+
+export function isStuckProvisioning(
+  startedAt: number | null,
+  now: number,
+  thresholdMs: number = STUCK_PROVISIONING_MS,
+): boolean {
+  return startedAt != null && now - startedAt >= thresholdMs;
+}
+
 export type OnboardingErrorKind =
-  | "invalid_username"
-  | "sleeper_user_not_found"
-  | "sleeper_account_connected_to_another_user"
-  | "clerk_user_already_connected_to_different_sleeper_account"
-  | "sleeper_account_not_linked"
-  | "not_a_pilot_league_member"
-  | "not_owner"
-  | "no_pending_challenge"
-  | "sleeper_account_mismatch"
-  | "challenge_expired"
-  | "challenge_not_found_in_team_name"
-  | "challenge_already_used"
-  | "pilot_league_not_found"
-  | "pilot_league_not_active"
-  | "not_commissioner"
-  | "provisioning_failed";
+  | ConnectSleeperAccountError["kind"]
+  | DiscoverLeaguesError["kind"]
+  | RequestCommissionerChallengeError["kind"]
+  | VerifyCommissionerChallengeError["kind"]
+  | JoinPilotLeagueError["kind"]
+  | RetryProvisionError["kind"];
 
 // Maps every onboarding.server.ts discriminated error kind to plain, action-oriented copy. Never
 // echoes an internal error/exception string — each kind gets its own hand-written sentence. The

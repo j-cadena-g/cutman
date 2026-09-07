@@ -59,3 +59,6 @@ CREATE TABLE IF NOT EXISTS league_verifications (
 
 CREATE INDEX IF NOT EXISTS league_verifications_user_id_idx ON league_verifications (user_id);
 CREATE INDEX IF NOT EXISTS league_verifications_sleeper_league_id_idx ON league_verifications (sleeper_league_id);
+CREATE UNIQUE INDEX IF NOT EXISTS league_verifications_pending_user_league_idx
+  ON league_verifications (user_id, sleeper_league_id)
+  WHERE status = 'pending';

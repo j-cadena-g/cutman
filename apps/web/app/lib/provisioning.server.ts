@@ -52,10 +52,12 @@ function safeProvisioningError(error: unknown): string {
   return "League setup failed";
 }
 
-async function readLeague(db: D1Database, leagueId: string): Promise<LeagueRow> {
-  const row = await getLeague(db, leagueId);
-  if (!row) throw new Error(`League "${leagueId}" not found`);
-  return row;
+async function recoverLeagueRow(db: D1Database, leagueId: string): Promise<LeagueRow | null> {
+  try {
+    return await getLeague(db, leagueId);
+  } catch {
+    return null;
+  }
 }
 
 export async function provisionAndActivateLeague(
@@ -71,9 +73,9 @@ export async function provisionAndActivateLeague(
     try {
       current = await provisionLeague(deps.db, current.id);
     } catch {
-      const raced = await readLeague(deps.db, current.id);
+      const raced = await recoverLeagueRow(deps.db, current.id);
+      if (!raced || raced.status === "error") return { ok: false, error: { kind: "provisioning_failed" } };
       if (raced.status === "active") return { ok: true, league: raced };
-      if (raced.status === "error") return { ok: false, error: { kind: "provisioning_failed" } };
       current = raced;
     }
   }
@@ -94,9 +96,9 @@ export async function provisionAndActivateLeague(
     const activated = await activateLeague(deps.db, current.id, deps.now());
     return { ok: true, league: activated };
   } catch {
-    const raced = await readLeague(deps.db, current.id);
+    const raced = await recoverLeagueRow(deps.db, current.id);
+    if (!raced || raced.status === "error") return { ok: false, error: { kind: "provisioning_failed" } };
     if (raced.status === "active") return { ok: true, league: raced };
-    if (raced.status === "error") return { ok: false, error: { kind: "provisioning_failed" } };
     return failOrConverge(deps, current.id, new Error("Could not activate league"));
   }
 }
@@ -111,8 +113,8 @@ async function failOrConverge(
     await failLeague(deps.db, leagueId, diagnostic);
     return { ok: false, error: { kind: "provisioning_failed" } };
   } catch {
-    const raced = await readLeague(deps.db, leagueId);
-    if (raced.status === "active") return { ok: true, league: raced };
+    const raced = await recoverLeagueRow(deps.db, leagueId);
+    if (raced?.status === "active") return { ok: true, league: raced };
     return { ok: false, error: { kind: "provisioning_failed" } };
   }
 }

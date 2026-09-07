@@ -3,6 +3,7 @@ import { applyD1Migrations, env } from "cloudflare:test";
 import {
   EXAMPLE_SLEEPER_LEAGUE_ID,
   activateLeague,
+  applySchema,
   consumeVerification,
   createLeague,
   createVerification,
@@ -38,6 +39,7 @@ describe("schema", () => {
   it("does not insert placeholder league rows", async () => {
     await ensureSchema(env.DB);
     expect(await getLeague(env.DB, EXAMPLE_SLEEPER_LEAGUE_ID)).toBeNull();
+    expect(await getLeagueBySleeperId(env.DB, EXAMPLE_SLEEPER_LEAGUE_ID)).toBeNull();
   });
 
   it("does not create an allowlist table", async () => {
@@ -58,8 +60,10 @@ describe("schema", () => {
       season: "2026",
       now,
     });
-    await ensureSchema(env.DB);
-    await ensureSchema(env.DB);
+    // `applySchema`, not `ensureSchema`: `ensureSchema` memoizes per D1Database instance, so a
+    // second call would be a no-op and would not exercise the CREATE ... IF NOT EXISTS path.
+    await applySchema(env.DB);
+    await applySchema(env.DB);
     expect(await getLeague(env.DB, league.id)).toEqual(league);
   });
 });
@@ -258,6 +262,21 @@ describe("leagues", () => {
     );
     const stillActive = await getLeague(env.DB, league.id);
     expect(stillActive?.status).toBe("active");
+  });
+
+  it("treats a second provisionLeague on an already-provisioning row as success", async () => {
+    await ensureSchema(env.DB);
+    const now = 1_700_220_050_000;
+    const league = await createLeague(env.DB, {
+      id: "league_lifecycle_provision_idempotent",
+      sleeperLeagueId: "sleeper_league_provision_idempotent",
+      name: "Already Provisioning",
+      season: "2026",
+      now,
+    });
+    const again = await provisionLeague(env.DB, league.id);
+    expect(again.status).toBe("provisioning");
+    expect(again.id).toBe(league.id);
   });
 
   it("activates only from provisioning", async () => {
@@ -657,5 +676,64 @@ describe("league verifications", () => {
     expect(reissued.attempts).toBe(0);
     const untouched = await getVerification(env.DB, first.id);
     expect(untouched?.status).toBe("verified");
+  });
+
+  it("rejects a second pending verification for the same user and Sleeper league", async () => {
+    await ensureSchema(env.DB);
+    const now = 1_700_660_300_000;
+    const user = await upsertUserByClerkId(env.DB, { id: "user_verify_9", email: "verify9@example.test", now });
+    await createVerification(env.DB, {
+      id: "verification_9a",
+      userId: user.id,
+      sleeperUserId: "sleeper_verify_9",
+      sleeperLeagueId: "sleeper_league_verify_9",
+      challenge: "cutman-1111",
+      expiresAt: now + 600_000,
+      now,
+    });
+    await expect(
+      createVerification(env.DB, {
+        id: "verification_9b",
+        userId: user.id,
+        sleeperUserId: "sleeper_verify_9",
+        sleeperLeagueId: "sleeper_league_verify_9",
+        challenge: "cutman-2222",
+        expiresAt: now + 600_000,
+        now: now + 1,
+      }),
+    ).rejects.toThrow();
+    expect(
+      await findPendingVerification(env.DB, { userId: user.id, sleeperLeagueId: "sleeper_league_verify_9" }),
+    ).toMatchObject({ id: "verification_9a" });
+  });
+
+  it("does not treat a rolled-back reissue as a newly issued challenge", async () => {
+    await ensureSchema(env.DB);
+    const now = 1_700_660_400_000;
+    const user = await upsertUserByClerkId(env.DB, { id: "user_verify_10", email: "verify10@example.test", now });
+    const first = await createVerification(env.DB, {
+      id: "verification_10a",
+      userId: user.id,
+      sleeperUserId: "sleeper_verify_10",
+      sleeperLeagueId: "sleeper_league_verify_10",
+      challenge: "cutman-1010",
+      expiresAt: now + 600_000,
+      now,
+    });
+    await expect(
+      reissueVerification(env.DB, {
+        id: first.id,
+        userId: user.id,
+        sleeperUserId: "sleeper_verify_10",
+        sleeperLeagueId: "sleeper_league_verify_10",
+        challenge: "cutman-2020",
+        expiresAt: now + 600_000,
+        now: now + 1,
+      }),
+    ).rejects.toThrow();
+    expect(await getVerification(env.DB, first.id)).toEqual(first);
+    expect(
+      await findPendingVerification(env.DB, { userId: user.id, sleeperLeagueId: "sleeper_league_verify_10" }),
+    ).toEqual(first);
   });
 });

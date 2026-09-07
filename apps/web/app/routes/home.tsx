@@ -1,4 +1,4 @@
-import { Show, SignInButton, SignUpButton } from "@clerk/react-router";
+import { SignInButton, SignUpButton } from "@clerk/react-router";
 import type { LeagueRow } from "@cutman/db";
 import { Link, redirect } from "react-router";
 import { computeHomeDestination, resolveHomeAccess } from "~/lib/access.server";
@@ -24,7 +24,7 @@ export async function loader(args: Route.LoaderArgs) {
   // `leagues` is always present (empty when signed out) so the component never has to reason
   // about a field that only exists on some loader return paths.
   if (access.kind === "signed_out") {
-    return { access, clerkConfigured, leagues: [] as LeagueRow[] };
+    return { kind: "signed_out" as const, clerkConfigured, leagues: [] as LeagueRow[] };
   }
 
   const destination = computeHomeDestination({
@@ -37,13 +37,13 @@ export async function loader(args: Route.LoaderArgs) {
   if (destination.kind === "single_league") {
     throw redirect(`/leagues/${destination.league.id}`);
   }
-  return { access, clerkConfigured, leagues: destination.leagues };
+  return { kind: "signed_in" as const, clerkConfigured, leagues: destination.leagues };
 }
 
 export default function Home({ loaderData }: Route.ComponentProps) {
-  const { access, clerkConfigured, leagues } = loaderData;
+  const { kind, clerkConfigured, leagues } = loaderData;
 
-  if (access.kind === "signed_out") {
+  if (kind === "signed_out") {
     return (
       <main className="mx-auto flex min-h-screen max-w-lg flex-col justify-center px-6 py-16">
         <p className="text-xs font-semibold uppercase tracking-[0.24em] text-flag">Cutman</p>
@@ -52,16 +52,14 @@ export default function Home({ loaderData }: Route.ComponentProps) {
           Cutman keeps the book for your Sleeper league. Sign in with Clerk to open the dashboard.
         </p>
         {clerkConfigured ? (
-          <Show when="signed-out">
-            <div className="mt-10 flex flex-wrap gap-3">
-              <SignInButton>
-                <Button>Sign in</Button>
-              </SignInButton>
-              <SignUpButton>
-                <Button variant="secondary">Sign up</Button>
-              </SignUpButton>
-            </div>
-          </Show>
+          <div className="mt-10 flex flex-wrap gap-3">
+            <SignInButton>
+              <Button>Sign in</Button>
+            </SignInButton>
+            <SignUpButton>
+              <Button variant="secondary">Sign up</Button>
+            </SignUpButton>
+          </div>
         ) : (
           <div className="mt-10 flex flex-wrap gap-3">
             <Button asChild>

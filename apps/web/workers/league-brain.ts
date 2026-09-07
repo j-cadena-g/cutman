@@ -82,6 +82,13 @@ export class LeagueBrain extends DurableObject<Env> {
         created_at INTEGER NOT NULL
       );
     `);
+    // Pre-split brains stored the Sleeper snowflake as `leagueId` and had no `sleeperLeagueId`.
+    // Copy only a numeric snowflake so generated internal ids are never treated as Sleeper ids.
+    const leagueId = this.getSetting("leagueId");
+    const sleeperLeagueId = this.getSetting("sleeperLeagueId");
+    if (leagueId && !sleeperLeagueId && /^\d{6,}$/.test(leagueId)) {
+      this.putSetting("sleeperLeagueId", leagueId);
+    }
   }
 
   async bootstrap(input: { leagueId: string; sleeperLeagueId: string; name: string; tone: Tone }): Promise<void> {

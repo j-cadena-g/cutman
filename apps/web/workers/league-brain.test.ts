@@ -1,6 +1,8 @@
 /// <reference types="@cloudflare/vitest-pool-workers/types" />
 import { applyD1Migrations, env, runInDurableObject } from "cloudflare:test";
 import {
+  activateLeague,
+  createLeague,
   ensureSchema,
   listRecapRecipients,
   setRecapOptIn,
@@ -167,12 +169,14 @@ describe("LeagueBrain internal vs Sleeper identity", () => {
   it("looks up recap recipients by the internal league id, not the Sleeper id", async () => {
     await ensureSchema(env.DB);
     const now = 1_803_000_000_000;
-    await env.DB.prepare(
-      `INSERT INTO leagues (id, sleeper_league_id, name, season, status, tone, created_at)
-       VALUES (?, ?, 'Split Identity League', '2026', 'active', 'playful', ?)`,
-    )
-      .bind(INTERNAL_ID, SLEEPER_ID, now)
-      .run();
+    const league = await createLeague(env.DB, {
+      id: INTERNAL_ID,
+      sleeperLeagueId: SLEEPER_ID,
+      name: "Split Identity League",
+      season: "2026",
+      now,
+    });
+    await activateLeague(env.DB, league.id, now + 1);
     const user = await upsertUserByClerkId(env.DB, {
       id: "user_brain_recap_1",
       email: "brain-recap-1@example.test",
@@ -199,20 +203,61 @@ describe("LeagueBrain internal vs Sleeper identity", () => {
         env: { EMAIL: { send(message: { to: string | string[] }): Promise<unknown> } };
         attemptRecapWithGenerator: LeagueBrain["attemptRecapWithGenerator"];
       };
-      brain.env.EMAIL = {
-        async send(message) {
-          if (typeof message.to === "string") captured.push(message.to);
-          else captured.push(...message.to);
-          return {};
-        },
-      };
-      await brain.attemptRecapWithGenerator(fixtureMatchupsFinal, [], async () => ({
-        subject: "Week 3 recap",
-        body: "The chat survived another Sunday.",
-      }));
-      return captured;
+      const originalEmail = brain.env.EMAIL;
+      try {
+        brain.env.EMAIL = {
+          async send(message) {
+            if (typeof message.to === "string") captured.push(message.to);
+            else captured.push(...message.to);
+            return {};
+          },
+        };
+        await brain.attemptRecapWithGenerator(fixtureMatchupsFinal, [], async () => ({
+          subject: "Week 3 recap",
+          body: "The chat survived another Sunday.",
+        }));
+        return captured;
+      } finally {
+        brain.env.EMAIL = originalEmail;
+      }
     });
 
     expect(sentTo).toEqual(["brain-recap-1@example.test"]);
+  });
+
+  it("backfills sleeperLeagueId from a pre-split snowflake leagueId", async () => {
+    const stub = env.LEAGUE_BRAIN.getByName("legacy-snowflake-id");
+    const dashboard = await runInDurableObject(stub, async (instance) => {
+      const brain = instance as unknown as {
+        migrate(): void;
+        putSetting(key: string, value: string): void;
+        getDashboard: LeagueBrain["getDashboard"];
+      };
+      brain.putSetting("leagueId", "123456789012345678");
+      brain.putSetting("name", "Legacy");
+      brain.putSetting("tone", "playful");
+      brain.migrate();
+      return brain.getDashboard();
+    });
+    expect(dashboard.leagueId).toBe("123456789012345678");
+    expect(dashboard.sleeperLeagueId).toBe("123456789012345678");
+  });
+
+  it("does not treat a generated internal league id as a Sleeper id", async () => {
+    const stub = env.LEAGUE_BRAIN.getByName("internal-id-no-backfill");
+    await expect(
+      runInDurableObject(stub, async (instance) => {
+        const brain = instance as unknown as {
+          migrate(): void;
+          putSetting(key: string, value: string): void;
+          getDashboard: LeagueBrain["getDashboard"];
+        };
+        brain.putSetting("leagueId", "league_internal_1");
+        brain.putSetting("name", "Internal");
+        brain.putSetting("tone", "playful");
+        brain.migrate();
+        return brain.getDashboard();
+      }),
+    ).rejects.toThrow(/not bootstrapped/i);
   });
 });

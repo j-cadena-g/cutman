@@ -102,6 +102,15 @@ function getOptionalValue(name) {
   return globalThis.process.env[name]?.trim() || "";
 }
 
+function getOptionalValidatedValue(name) {
+  const value = getOptionalValue(name);
+  const rule = requiredValues[name];
+  if (value && !rule.pattern.test(value)) {
+    throw new Error(`Invalid ${name}; expected ${rule.description}.`);
+  }
+  return value;
+}
+
 function getRequiredValue(name) {
   const value = globalThis.process.env[name]?.trim();
   const rule = requiredValues[name];
@@ -154,7 +163,7 @@ async function main() {
       globalThis.process.env.APP_ENV?.trim() ||
       (isDevConfig ? "development" : "production"),
     PILOT_SLEEPER_LEAGUE_ID: isDevConfig
-      ? getOptionalValue("PILOT_SLEEPER_LEAGUE_ID")
+      ? getOptionalValidatedValue("PILOT_SLEEPER_LEAGUE_ID")
       : getRequiredValue("PILOT_SLEEPER_LEAGUE_ID"),
   };
   let rendered = template;

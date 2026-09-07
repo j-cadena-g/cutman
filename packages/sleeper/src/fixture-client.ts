@@ -63,9 +63,11 @@ export function createFixtureClient(overrides: FixtureOverrides = {}): SleeperCl
     directory.set(user.username, user);
     directory.set(user.user_id, user);
   }
-  directory.set(mutableFixtureUser.username, mutableFixtureUser);
-  directory.set(mutableFixtureUser.user_id, mutableFixtureUser);
-  directory.set(MUTABLE_SLEEPER_PREVIOUS_USERNAME, mutableFixtureUser);
+  if (!overrides.usersByLeagueId && !overrides.users) {
+    directory.set(mutableFixtureUser.username, mutableFixtureUser);
+    directory.set(mutableFixtureUser.user_id, mutableFixtureUser);
+    directory.set(MUTABLE_SLEEPER_PREVIOUS_USERNAME, mutableFixtureUser);
+  }
   const rosters = overrides.rosters ?? v1FixtureRosters;
   const matchups = overrides.matchups ?? v1FixtureMatchups;
   const transactions = overrides.transactions ?? fixtureTransactions;
@@ -73,6 +75,12 @@ export function createFixtureClient(overrides: FixtureOverrides = {}): SleeperCl
 
   function usersForLeague(leagueId: string): SleeperLeagueUser[] {
     return usersByLeagueId[leagueId] ?? [];
+  }
+
+  function rowsForLeague<T>(leagueId: string, rows: T[], overrideSet: boolean): T[] {
+    if (leagueId === V1_LEAGUE_ID) return rows;
+    if (overrideSet && leagues.some((league) => league.league_id === leagueId)) return rows;
+    return [];
   }
 
   return {
@@ -92,15 +100,13 @@ export function createFixtureClient(overrides: FixtureOverrides = {}): SleeperCl
       return usersForLeague(leagueId);
     },
     async getRosters(leagueId) {
-      if (leagueId === V1_LEAGUE_ID) return rosters;
-      if (overrides.rosters && leagues.some((league) => league.league_id === leagueId)) return rosters;
-      return [];
+      return rowsForLeague(leagueId, rosters, Boolean(overrides.rosters));
     },
-    async getMatchups() {
-      return matchups;
+    async getMatchups(leagueId) {
+      return rowsForLeague(leagueId, matchups, Boolean(overrides.matchups));
     },
-    async getTransactions() {
-      return transactions;
+    async getTransactions(leagueId) {
+      return rowsForLeague(leagueId, transactions, Boolean(overrides.transactions));
     },
     async getPlayers() {
       return players;

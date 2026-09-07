@@ -47,9 +47,6 @@ importers:
       '@cutman/ai':
         specifier: workspace:*
         version: link:../../packages/ai
-      '@cutman/auth':
-        specifier: workspace:*
-        version: link:../../packages/auth
       '@cutman/db':
         specifier: workspace:*
         version: link:../../packages/db
@@ -181,6 +178,9 @@ importers:
       '@cutman/tsconfig':
         specifier: workspace:*
         version: link:../tsconfig
+      '@types/node':
+        specifier: 24.10.1
+        version: 24.10.1
       typescript:
         specifier: 'catalog:'
         version: 5.9.3

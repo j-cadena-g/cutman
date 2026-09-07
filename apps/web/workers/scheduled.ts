@@ -9,6 +9,8 @@ export async function handleScheduled(env: Env, now = new Date()): Promise<{ pol
     return { polled: 0, recapped: 0 };
   }
 
+  // Process active leagues serially so a single tick never fans out unbounded Durable Object
+  // calls. Add bounded concurrency before multi-league rollout.
   const leagues = await listActiveLeagues(env.DB);
   let polled = 0;
   let recapped = 0;

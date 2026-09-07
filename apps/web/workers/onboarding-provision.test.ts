@@ -92,14 +92,15 @@ describe("verify then provision", () => {
   it("does not bootstrap a Durable Object; verify leaves the league in provisioning", async () => {
     const user = await seedUser("user_verify_no_do", "verify-no-do@example.test");
     const pilotSleeperLeagueId = "sleeper_verify_no_do";
+    const sleeperUserId = "sleeper_user_verify_no_do";
     const sleeperClient = createFakeSleeperClient({
       usersByLookup: {
-        commish: { user_id: "sleeper_verify_no_do", username: "commish", display_name: "Commish" },
+        commish: { user_id: sleeperUserId, username: "commish", display_name: "Commish" },
       },
       leagueUsersById: {
         [pilotSleeperLeagueId]: [
           {
-            user_id: "sleeper_verify_no_do",
+            user_id: sleeperUserId,
             username: "commish",
             display_name: "Commish",
             is_owner: true,

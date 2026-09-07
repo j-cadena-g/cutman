@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   COMING_SOON_LEAGUE_ID,
   COMING_SOON_LEAGUE_NAME,
@@ -17,10 +17,13 @@ import {
   comingSoonFixtureLeague,
   comingSoonFixtureUsers,
   createFixtureClient,
+  fixtureTransactions,
   isSleeperRateLimited,
   mutableFixtureUser,
   SleeperRequestError,
   v1FixtureCommissioner,
+  v1FixtureMatchups,
+  v1FixtureRosters,
   v1FixtureUser,
   v1FixtureUsers,
 } from "./index.ts";
@@ -62,6 +65,13 @@ describe("fixture sleeper client", () => {
     expect(comingSoonMembers).not.toEqual(v1FixtureUsers);
     expect(comingSoonMembers).toHaveLength(4);
 
+    expect(await client.getRosters(COMING_SOON_LEAGUE_ID)).toEqual([]);
+    expect(await client.getRosters(V1_LEAGUE_ID)).toEqual(v1FixtureRosters);
+    expect(await client.getMatchups(COMING_SOON_LEAGUE_ID, 1)).toEqual([]);
+    expect(await client.getMatchups(V1_LEAGUE_ID, 1)).toEqual(v1FixtureMatchups);
+    expect(await client.getTransactions(COMING_SOON_LEAGUE_ID, 1)).toEqual([]);
+    expect(await client.getTransactions(V1_LEAGUE_ID, 1)).toEqual(fixtureTransactions);
+
     const unknownMembers = await client.getLeagueUsers("not-a-fixture-league");
     expect(unknownMembers).toEqual([]);
   });
@@ -102,17 +112,126 @@ describe("fixture sleeper client", () => {
 
     expect(await client.getUser("nobody_here")).toBeNull();
   });
+
+  it("does not alias the previous username onto a custom users override", async () => {
+    const client = createFixtureClient({
+      users: [{ user_id: "custom", username: "custom", display_name: "Custom", is_owner: false }],
+    });
+    expect(await client.getUser(MUTABLE_SLEEPER_PREVIOUS_USERNAME)).toBeNull();
+    expect(await client.getUser("custom")).toEqual({
+      user_id: "custom",
+      username: "custom",
+      display_name: "Custom",
+    });
+  });
+
+  it("does not alias the previous username onto a usersByLeagueId override", async () => {
+    const client = createFixtureClient({
+      usersByLeagueId: {
+        [V1_LEAGUE_ID]: [{ user_id: "custom", username: "custom", display_name: "Custom", is_owner: false }],
+      },
+    });
+    expect(await client.getUser(MUTABLE_SLEEPER_PREVIOUS_USERNAME)).toBeNull();
+    expect(await client.getUser("custom")).toEqual({
+      user_id: "custom",
+      username: "custom",
+      display_name: "Custom",
+    });
+  });
+
+  it("isolates usersByLeagueId to the mapped league", async () => {
+    const client = createFixtureClient({
+      usersByLeagueId: {
+        [V1_LEAGUE_ID]: [{ user_id: "only_pilot", username: "only_pilot", display_name: "Only Pilot", is_owner: false }],
+      },
+    });
+    expect(await client.getLeagueUsers(V1_LEAGUE_ID)).toEqual([
+      { user_id: "only_pilot", username: "only_pilot", display_name: "Only Pilot", is_owner: false },
+    ]);
+    expect(await client.getLeagueUsers(COMING_SOON_LEAGUE_ID)).toEqual([]);
+  });
 });
 
 describe("HttpSleeperClient errors", () => {
   it("throws SleeperRequestError on a 429 so callers can serve stale cache", async () => {
     const client = new HttpSleeperClient(async () => new Response("slow down", { status: 429 }));
     await expect(client.getNflState()).rejects.toEqual(expect.objectContaining({ status: 429, path: "/state/nfl" }));
+    const error = await client.getNflState().then(
+      () => {
+        throw new Error("expected getNflState to reject");
+      },
+      (rejection: unknown) => rejection,
+    );
+    expect(error).toBeInstanceOf(SleeperRequestError);
+    expect(isSleeperRateLimited(error)).toBe(true);
+    expect((error as Error).message).toBe("Sleeper /state/nfl failed: 429");
+  });
+
+  it("keeps the raw path on the error but redacts it from the message", async () => {
+    const client = new HttpSleeperClient(async () => new Response("nope", { status: 502 }));
+    const error = await client.getUser("alice").then(
+      () => {
+        throw new Error("expected getUser to reject");
+      },
+      (rejection: unknown) => rejection,
+    );
+    expect(error).toEqual(expect.objectContaining({ path: "/user/alice", status: 502 }));
+    expect((error as Error).message).toBe("Sleeper /user/:id failed: 502");
+    expect((error as Error).message).not.toContain("alice");
+    expect(Object.keys(error as object)).not.toContain("path");
+    expect((error as SleeperRequestError).path).toBe("/user/alice");
+    expect(isSleeperRateLimited(new Error("Sleeper /user/:id failed: 429"))).toBe(true);
+
+    const reserved = await client.getUser("league").then(
+      () => {
+        throw new Error("expected getUser to reject");
+      },
+      (rejection: unknown) => rejection,
+    );
+    expect((reserved as Error).message).toBe("Sleeper /user/:id failed: 502");
+    expect((reserved as Error).message).not.toContain("league");
+  });
+
+  it("does not call fetch as a method of the client (Workers native fetch throws Illegal invocation)", async () => {
+    const nflState = { week: 1, season_type: "regular", season: "2026", league_season: "2026" };
+    function thisSensitiveFetch(this: unknown, _input: Parameters<typeof fetch>[0]) {
+      if (this !== undefined && this !== globalThis) {
+        throw new TypeError(
+          "Illegal invocation: function called with incorrect this reference. See https://developers.cloudflare.com/workers/observability/errors/#illegal-invocation-errors for details.",
+        );
+      }
+      return Promise.resolve(new Response(JSON.stringify(nflState), { status: 200 }));
+    }
+    const client = new HttpSleeperClient(thisSensitiveFetch as typeof fetch);
+    await expect(client.getNflState()).resolves.toEqual(nflState);
+  });
+
+  it("passes a timeout AbortSignal so a hung Sleeper call cannot stall forever", async () => {
+    let signal: AbortSignal | null | undefined;
+    const nflState = { week: 1, season_type: "regular", season: "2026", league_season: "2026" };
+    const client = new HttpSleeperClient(async (_input, init) => {
+      signal = init?.signal;
+      return new Response(JSON.stringify(nflState), { status: 200 });
+    });
+    await expect(client.getNflState()).resolves.toEqual(nflState);
+    expect(signal).toBeDefined();
+    expect(signal?.aborted).toBe(false);
+  });
+
+  it("uses a longer timeout for getPlayers so the body read is covered", async () => {
+    const requested: number[] = [];
+    const original = AbortSignal.timeout.bind(AbortSignal);
+    const spy = vi.spyOn(AbortSignal, "timeout").mockImplementation((ms: number) => {
+      requested.push(ms);
+      return original(ms);
+    });
     try {
-      await client.getNflState();
-    } catch (error) {
-      expect(error).toBeInstanceOf(SleeperRequestError);
-      expect(isSleeperRateLimited(error)).toBe(true);
+      const client = new HttpSleeperClient(async () => new Response("{}", { status: 200 }));
+      await expect(client.getPlayers()).resolves.toEqual({});
+      expect(requested).toEqual([30_000]);
+    } finally {
+      spy.mockRestore();
     }
   });
 });
+

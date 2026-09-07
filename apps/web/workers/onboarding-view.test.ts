@@ -3,13 +3,14 @@ import { describe, expect, it } from "vitest";
 import {
   computePilotLeagueStep,
   describeOnboardingError,
+  isStuckProvisioning,
   type OnboardingErrorKind,
 } from "../app/lib/onboarding-view.ts";
 
 function makeLeague(overrides: Partial<LeagueRow> = {}): LeagueRow {
   return {
     id: "pilot_league",
-    sleeper_league_id: "pilot_league",
+    sleeper_league_id: "sleeper_pilot_league",
     name: "The Pilot",
     season: "2026",
     status: "provisioning",
@@ -257,30 +258,39 @@ describe("computePilotLeagueStep", () => {
   });
 });
 
+describe("isStuckProvisioning", () => {
+  it("is false until the threshold, then true", () => {
+    expect(isStuckProvisioning(1_000, 1_000 + 119_999, 120_000)).toBe(false);
+    expect(isStuckProvisioning(1_000, 1_000 + 120_000, 120_000)).toBe(true);
+    expect(isStuckProvisioning(null, 1_000)).toBe(false);
+  });
+});
+
 describe("describeOnboardingError", () => {
-  const kinds: OnboardingErrorKind[] = [
-    "invalid_username",
-    "sleeper_user_not_found",
-    "sleeper_account_connected_to_another_user",
-    "clerk_user_already_connected_to_different_sleeper_account",
-    "sleeper_account_not_linked",
-    "not_a_pilot_league_member",
-    "not_owner",
-    "no_pending_challenge",
-    "sleeper_account_mismatch",
-    "challenge_expired",
-    "challenge_not_found_in_team_name",
-    "challenge_already_used",
-    "pilot_league_not_found",
-    "pilot_league_not_active",
-    "not_commissioner",
-    "provisioning_failed",
-  ];
+  const allKinds: Record<OnboardingErrorKind, true> = {
+    invalid_username: true,
+    sleeper_user_not_found: true,
+    sleeper_account_connected_to_another_user: true,
+    clerk_user_already_connected_to_different_sleeper_account: true,
+    sleeper_account_not_linked: true,
+    not_a_pilot_league_member: true,
+    not_owner: true,
+    no_pending_challenge: true,
+    sleeper_account_mismatch: true,
+    challenge_expired: true,
+    challenge_not_found_in_team_name: true,
+    challenge_already_used: true,
+    pilot_league_not_found: true,
+    pilot_league_not_active: true,
+    not_commissioner: true,
+    provisioning_failed: true,
+  };
+  const kinds = Object.keys(allKinds) as OnboardingErrorKind[];
 
   it("returns non-empty, distinct, plain-language copy for every error kind", () => {
     const messages = kinds.map((kind) => describeOnboardingError(kind));
     for (const message of messages) {
-      expect(message.length).toBeGreaterThan(0);
+      expect(message.trim().length).toBeGreaterThan(0);
       // Never expose internal error/parse strings: no stack-trace-ish or raw-code markers.
       expect(message).not.toMatch(/error:|Error\]|D1_ERROR|TypeError|undefined|NaN/i);
     }

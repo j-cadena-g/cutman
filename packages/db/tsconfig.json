@@ -1,4 +1,7 @@
 {
   "extends": "@cutman/tsconfig/cloudflare.json",
-  "include": ["src"]
+  "include": ["src"],
+  "compilerOptions": {
+    "types": ["@cloudflare/workers-types", "node"]
+  }
 }

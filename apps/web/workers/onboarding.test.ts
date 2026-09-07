@@ -3,6 +3,7 @@ import { applyD1Migrations, env } from "cloudflare:test";
 import {
   activateLeague,
   consumeVerification,
+  createLeague,
   ensureSchema,
   findPendingVerification,
   getLeagueBySleeperId,
@@ -131,8 +132,11 @@ describe("createChallengeCode", () => {
   });
 
   it("is deterministic when given an injected random source", () => {
-    const random = () => 0;
-    expect(createChallengeCode(random)).toBe(createChallengeCode(random));
+    const sequence = [0, 1 / 31, 2 / 31, 3 / 31];
+    let index = 0;
+    const random = () => sequence[index++] ?? 0;
+    expect(createChallengeCode(random)).toBe("CUTMAN-ABCD");
+    expect(index).toBe(4);
   });
 });
 
@@ -331,7 +335,83 @@ describe("discoverLeagues", () => {
     expect(byId.get(OTHER_LEAGUE_ID)?.classification).toBe("coming_soon");
   });
 
-  it("derives isOwner independently per league from getLeagueUsers, not from discovery order", async () => {
+  it("still classifies the configured pilot when current-season getUserLeagues omits it", async () => {
+    const user = await seedUser("user_discover_omit", "discover-omit@example.test");
+    const pilotSleeperLeagueId = nextPilotLeagueId("discover_omit");
+    const sleeperClient = createFakeSleeperClient({
+      usersByLookup: { scout: { user_id: "sleeper_scout_omit", username: "scout", display_name: "Scout" } },
+      userLeagues: {
+        sleeper_scout_omit: [{ league_id: OTHER_LEAGUE_ID, name: "Someday League", season: "2026", sport: "nfl" }],
+      },
+      leaguesById: {
+        [pilotSleeperLeagueId]: {
+          league_id: pilotSleeperLeagueId,
+          name: "The Pilot",
+          season: "2025",
+          sport: "nfl",
+        },
+      },
+      leagueUsersById: {
+        [pilotSleeperLeagueId]: [
+          { user_id: "sleeper_scout_omit", username: "scout", display_name: "Scout", is_owner: true },
+        ],
+      },
+    });
+    await connectSleeperAccount(makeDeps({ sleeperClient, pilotSleeperLeagueId }), {
+      clerkUserId: user.id,
+      usernameInput: "scout",
+    });
+
+    const result = await discoverLeagues(makeDeps({ sleeperClient, pilotSleeperLeagueId }), { clerkUserId: user.id });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected ok");
+    const byId = new Map(result.leagues.map((league) => [league.sleeperLeagueId, league]));
+    expect(byId.get(pilotSleeperLeagueId)).toEqual({
+      sleeperLeagueId: pilotSleeperLeagueId,
+      name: "The Pilot",
+      season: "2025",
+      classification: "pilot",
+      isOwner: true,
+    });
+    expect(byId.get(OTHER_LEAGUE_ID)?.classification).toBe("coming_soon");
+  });
+
+  it("does not invent a pilot entry when the omitted league has no matching roster row", async () => {
+    const user = await seedUser("user_discover_omit_out", "discover-omit-out@example.test");
+    const pilotSleeperLeagueId = nextPilotLeagueId("discover_omit_out");
+    const sleeperClient = createFakeSleeperClient({
+      usersByLookup: { scout: { user_id: "sleeper_scout_omit_out", username: "scout", display_name: "Scout" } },
+      userLeagues: {
+        sleeper_scout_omit_out: [{ league_id: OTHER_LEAGUE_ID, name: "Someday League", season: "2026", sport: "nfl" }],
+      },
+      leaguesById: {
+        [pilotSleeperLeagueId]: {
+          league_id: pilotSleeperLeagueId,
+          name: "The Pilot",
+          season: "2025",
+          sport: "nfl",
+        },
+      },
+      leagueUsersById: {
+        [pilotSleeperLeagueId]: [
+          { user_id: "someone_else", username: "else", display_name: "Else", is_owner: true },
+        ],
+      },
+    });
+    await connectSleeperAccount(makeDeps({ sleeperClient, pilotSleeperLeagueId }), {
+      clerkUserId: user.id,
+      usernameInput: "scout",
+    });
+
+    const result = await discoverLeagues(makeDeps({ sleeperClient, pilotSleeperLeagueId }), { clerkUserId: user.id });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected ok");
+    expect(result.leagues.map((league) => league.sleeperLeagueId)).toEqual([OTHER_LEAGUE_ID]);
+  });
+
+  it("derives pilot isOwner from that league's roster, not insertion order; Coming-soon isOwner stays false", async () => {
     const user = await seedUser("user_discover_3", "discover3@example.test");
     const pilotSleeperLeagueId = nextPilotLeagueId("discover3");
     const sleeperClient = createFakeSleeperClient({
@@ -342,17 +422,16 @@ describe("discoverLeagues", () => {
           { league_id: OTHER_LEAGUE_ID, name: "Someday League", season: "2026", sport: "nfl" },
         ],
       },
-      // The connected user is listed FIRST (i.e. "inserted first") in the other league but is
-      // NOT the owner there, and is listed LAST in the pilot league but IS the owner there. If
-      // ownership were ever inferred from insertion order this would get it backwards.
+      // Listed last in the pilot roster but is the owner there. Coming-soon roster is never
+      // fetched — isOwner stays false even if that roster would have said otherwise.
       leagueUsersById: {
         [pilotSleeperLeagueId]: [
           { user_id: "sleeper_someone_else_3", username: "someone", display_name: "Someone", is_owner: false },
           { user_id: "sleeper_scout_3", username: "scout", display_name: "Scout", is_owner: true },
         ],
         [OTHER_LEAGUE_ID]: [
-          { user_id: "sleeper_scout_3", username: "scout", display_name: "Scout", is_owner: false },
-          { user_id: "sleeper_someone_else_3", username: "someone", display_name: "Someone", is_owner: true },
+          { user_id: "sleeper_scout_3", username: "scout", display_name: "Scout", is_owner: true },
+          { user_id: "sleeper_someone_else_3", username: "someone", display_name: "Someone", is_owner: false },
         ],
       },
     });
@@ -370,7 +449,7 @@ describe("discoverLeagues", () => {
     expect(byId.get(OTHER_LEAGUE_ID)?.isOwner).toBe(false);
   });
 
-  it("fetches each league's roster sequentially (bounded), never more than one getLeagueUsers call in flight at once", async () => {
+  it("fetches only the pilot league roster, never Coming-soon leagues", async () => {
     const user = await seedUser("user_discover_4", "discover4@example.test");
     const pilotSleeperLeagueId = nextPilotLeagueId("discover4");
     const otherLeagueIds = ["sleeper_bounded_a", "sleeper_bounded_b", "sleeper_bounded_c"];
@@ -425,7 +504,7 @@ describe("discoverLeagues", () => {
 
     expect(result.ok).toBe(true);
     expect(maxInFlight).toBe(1);
-    expect(calls).toEqual([pilotSleeperLeagueId, ...otherLeagueIds]);
+    expect(calls).toEqual([pilotSleeperLeagueId]);
   });
 });
 
@@ -1048,6 +1127,68 @@ describe("verifyCommissionerChallenge", () => {
     expect(second.league.id).not.toBe(pilotSleeperLeagueId);
   });
 
+  it("attaches the commissioner to a league inserted after the no-row read instead of burning the challenge", async () => {
+    const pilotSleeperLeagueId = nextPilotLeagueId("verify_create_race");
+    const requestNow = 1_801_900_000_000;
+    const { user, requested } = await setupOwner({
+      clerkUserId: "user_verify_create_race",
+      email: "verify-create-race@example.test",
+      pilotSleeperLeagueId,
+      sleeperUserId: "sleeper_create_race",
+      username: "commish_create_race",
+      teamName: "placeholder",
+      isOwner: true,
+      requestNow,
+    });
+    const competingId = "league_inserted_concurrently";
+    const matchingClient = createFakeSleeperClient({
+      leagueUsersById: {
+        [pilotSleeperLeagueId]: [
+          {
+            user_id: "sleeper_create_race",
+            username: "commish_create_race",
+            display_name: "commish_create_race",
+            is_owner: true,
+            metadata: { team_name: `Team ${requested.challenge}` },
+          },
+        ],
+      },
+      leaguesById: {
+        [pilotSleeperLeagueId]: {
+          league_id: pilotSleeperLeagueId,
+          name: "The Pilot",
+          season: "2026",
+          sport: "nfl",
+        },
+      },
+    });
+    const racingClient: SleeperClient = {
+      ...matchingClient,
+      async getLeague(leagueId) {
+        const league = await matchingClient.getLeague(leagueId);
+        await createLeague(env.DB, {
+          id: competingId,
+          sleeperLeagueId: pilotSleeperLeagueId,
+          name: "The Pilot",
+          season: "2026",
+          now: requestNow + 500,
+        });
+        return league;
+      },
+    };
+
+    const result = await verifyCommissionerChallenge(
+      makeDeps({ sleeperClient: racingClient, pilotSleeperLeagueId, now: () => requestNow + 1000 }),
+      { clerkUserId: user.id },
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected ok");
+    expect(result.league.id).toBe(competingId);
+    expect(result.membership.role).toBe("commissioner");
+    expect(await getLeagueBySleeperId(env.DB, pilotSleeperLeagueId)).toMatchObject({ id: competingId });
+  });
+
   it("returns challenge_already_used (not a raw error) when a concurrent request consumes the verification first", async () => {
     const pilotSleeperLeagueId = nextPilotLeagueId("verify_cas_used");
     const requestNow = 1_801_400_000_000;
@@ -1133,6 +1274,71 @@ describe("verifyCommissionerChallenge", () => {
     const persisted = await getVerification(env.DB, requested.verificationId);
     expect(persisted?.status).toBe("expired");
   });
+
+  it("rethrows when consumeVerification fails while the challenge is still pending", async () => {
+    const pilotSleeperLeagueId = nextPilotLeagueId("verify_consume_pending_throw");
+    const requestNow = 1_801_600_000_000;
+    const { user, requested } = await setupOwner({
+      clerkUserId: "user_verify_consume_pending_throw",
+      email: "verify-consume-pending-throw@example.test",
+      pilotSleeperLeagueId,
+      sleeperUserId: "sleeper_consume_pending_throw",
+      username: "commish_consume_pending_throw",
+      teamName: "placeholder",
+      isOwner: true,
+      requestNow,
+    });
+    const verifyNow = requestNow + 500;
+    const matchingClient = createFakeSleeperClient({
+      leagueUsersById: {
+        [pilotSleeperLeagueId]: [
+          {
+            user_id: "sleeper_consume_pending_throw",
+            username: "commish_consume_pending_throw",
+            display_name: "commish_consume_pending_throw",
+            is_owner: true,
+            metadata: { team_name: `Team ${requested.challenge}` },
+          },
+        ],
+      },
+      leaguesById: {
+        [pilotSleeperLeagueId]: {
+          league_id: pilotSleeperLeagueId,
+          name: "The Pilot",
+          season: "2026",
+          sport: "nfl",
+        },
+      },
+    });
+    const consumeFailDb = new Proxy(env.DB, {
+      get(target, prop, receiver) {
+        if (prop === "prepare") {
+          return (sql: string) => {
+            if (typeof sql === "string" && sql.includes("SET status = 'verified'")) {
+              throw new Error("simulated consume failure");
+            }
+            return target.prepare(sql);
+          };
+        }
+        const value = Reflect.get(target, prop, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+
+    await expect(
+      verifyCommissionerChallenge(
+        makeDeps({
+          db: consumeFailDb,
+          sleeperClient: matchingClient,
+          pilotSleeperLeagueId,
+          now: () => verifyNow,
+        }),
+        { clerkUserId: user.id },
+      ),
+    ).rejects.toThrow("simulated consume failure");
+    expect((await getVerification(env.DB, requested.verificationId))?.status).toBe("pending");
+    expect(await getLeagueBySleeperId(env.DB, pilotSleeperLeagueId)).toBeNull();
+  });
 });
 
 describe("joinPilotLeague", () => {
@@ -1150,6 +1356,11 @@ describe("joinPilotLeague", () => {
     const pilotSleeperLeagueId = nextPilotLeagueId("join2");
     const sleeperClient = createFakeSleeperClient({
       usersByLookup: { member: { user_id: "sleeper_member_2", username: "member", display_name: "Member" } },
+      leagueUsersById: {
+        [pilotSleeperLeagueId]: [
+          { user_id: "sleeper_member_2", username: "member", display_name: "Member", is_owner: false },
+        ],
+      },
     });
     await connectSleeperAccount(makeDeps({ sleeperClient, pilotSleeperLeagueId }), {
       clerkUserId: user.id,
@@ -1159,6 +1370,23 @@ describe("joinPilotLeague", () => {
     const result = await joinPilotLeague(makeDeps({ sleeperClient, pilotSleeperLeagueId }), { clerkUserId: user.id });
 
     expect(result).toEqual({ ok: false, error: { kind: "pilot_league_not_active" } });
+  });
+
+  it("errors as not a member before reporting that the league is not active", async () => {
+    const user = await seedUser("user_join_2b", "join2b@example.test");
+    const pilotSleeperLeagueId = nextPilotLeagueId("join2b");
+    const sleeperClient = createFakeSleeperClient({
+      usersByLookup: { outsider: { user_id: "sleeper_outsider_2b", username: "outsider", display_name: "Outsider" } },
+      leagueUsersById: { [pilotSleeperLeagueId]: [] },
+    });
+    await connectSleeperAccount(makeDeps({ sleeperClient, pilotSleeperLeagueId }), {
+      clerkUserId: user.id,
+      usernameInput: "outsider",
+    });
+
+    const result = await joinPilotLeague(makeDeps({ sleeperClient, pilotSleeperLeagueId }), { clerkUserId: user.id });
+
+    expect(result).toEqual({ ok: false, error: { kind: "not_a_pilot_league_member" } });
   });
 
   it("errors when the linked Sleeper user is not a member of the (now active) pilot league", async () => {
