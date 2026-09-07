@@ -232,12 +232,13 @@ function ChallengeLabel({
   attempts: number;
   error?: string;
 }) {
-  const [now, setNow] = useState(() => Date.now());
+  const [now, setNow] = useState<number | null>(null);
   useEffect(() => {
+    setNow(Date.now());
     const id = window.setInterval(() => setNow(Date.now()), 15_000);
     return () => window.clearInterval(id);
   }, []);
-  const minutesLeft = Math.max(0, Math.round((expiresAt - now) / 60000));
+  const minutesLeft = now === null ? null : Math.max(0, Math.round((expiresAt - now) / 60000));
   return (
     <Card className="border-2 border-dashed border-flag/50 bg-ink/40">
       <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-muted">Roster label · verification code</p>
@@ -254,9 +255,11 @@ function ChallengeLabel({
         <li>Restore your usual team name once you're verified.</li>
       </ol>
       <p className="mt-3 text-xs text-muted">
-        {minutesLeft > 0
-          ? `Expires in about ${minutesLeft} minute${minutesLeft === 1 ? "" : "s"}.`
-          : "This code just expired — request a new one below."}
+        {minutesLeft !== null
+          ? minutesLeft > 0
+            ? `Expires in about ${minutesLeft} minute${minutesLeft === 1 ? "" : "s"}.`
+            : "This code just expired — request a new one below."
+          : null}
         {attempts > 0 ? ` · ${attempts} attempt${attempts === 1 ? "" : "s"} so far.` : null}
       </p>
       {error ? (
@@ -291,12 +294,13 @@ function ProvisioningCard({
   startedAt: number | null;
   error?: string;
 }) {
-  const [now, setNow] = useState(() => Date.now());
+  const [now, setNow] = useState<number | null>(null);
   useEffect(() => {
+    setNow(Date.now());
     const id = window.setInterval(() => setNow(Date.now()), 15_000);
     return () => window.clearInterval(id);
   }, []);
-  const stuck = isStuckProvisioning(startedAt, now);
+  const stuck = now !== null && isStuckProvisioning(startedAt, now);
 
   return (
     <Card>

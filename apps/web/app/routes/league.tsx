@@ -81,7 +81,11 @@ export async function action(args: Route.ActionArgs) {
     } catch {
       return { error: "Cutman couldn't save that tone. Try again." };
     }
-    await setLeagueTone(env.DB, access.league.id, tone);
+    try {
+      await setLeagueTone(env.DB, access.league.id, tone);
+    } catch {
+      return { error: "Cutman couldn't save that tone. Try again." };
+    }
     return { ok: "tone" };
   }
 

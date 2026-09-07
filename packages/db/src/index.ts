@@ -174,12 +174,12 @@ export async function createLeague(
   ]);
   if (byId && byId.sleeper_league_id !== input.sleeperLeagueId) {
     throw new Error(
-      `League id "${input.id}" already exists with Sleeper league id "${byId.sleeper_league_id}", not "${input.sleeperLeagueId}"`,
+      `League id "${input.id}" already exists and is linked to a different Sleeper league`,
     );
   }
   if (bySleeperId && bySleeperId.id !== input.id) {
     throw new Error(
-      `Sleeper league id "${input.sleeperLeagueId}" is already linked to league id "${bySleeperId.id}", not "${input.id}"`,
+      `That Sleeper league is already linked to league id "${bySleeperId.id}", not "${input.id}"`,
     );
   }
   if (byId && bySleeperId) {

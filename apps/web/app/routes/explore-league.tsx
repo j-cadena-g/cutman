@@ -83,10 +83,10 @@ export default function ExploreLeague({ loaderData }: Route.ComponentProps) {
               <table className="w-full min-w-[28rem] text-left text-sm">
                 <thead className="text-xs uppercase tracking-[0.16em] text-muted">
                   <tr>
-                    <th className="pb-2 font-semibold">Team</th>
-                    <th className="pb-2 font-semibold">Manager</th>
-                    <th className="pb-2 font-semibold">Record</th>
-                    <th className="pb-2 font-semibold">PF</th>
+                    <th scope="col" className="pb-2 font-semibold">Team</th>
+                    <th scope="col" className="pb-2 font-semibold">Manager</th>
+                    <th scope="col" className="pb-2 font-semibold">Record</th>
+                    <th scope="col" className="pb-2 font-semibold">PF</th>
                   </tr>
                 </thead>
                 <tbody>

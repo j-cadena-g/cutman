@@ -4,7 +4,7 @@ import { Button } from "~/components/ui/button";
 import { Card, CardDescription, CardTitle } from "~/components/ui/card";
 import { Input } from "~/components/ui/input";
 import { Label } from "~/components/ui/label";
-import { describeExplorerError, normalizeExplorerUsername } from "~/lib/sleeper-explorer";
+import { describeExplorerError, isValidExplorerUsername, normalizeExplorerUsername } from "~/lib/sleeper-explorer";
 import { requireUser } from "~/lib/session.server";
 import type { Route } from "./+types/explore";
 
@@ -17,7 +17,7 @@ export async function action(args: Route.ActionArgs) {
   await requireUser(args);
   const form = await args.request.formData();
   const username = normalizeExplorerUsername(String(form.get("username") ?? ""));
-  if (!username) return { error: describeExplorerError("invalid_username") };
+  if (!isValidExplorerUsername(username)) return { error: describeExplorerError("invalid_username") };
   throw redirect(`/explore/u/${encodeURIComponent(username)}`);
 }
 

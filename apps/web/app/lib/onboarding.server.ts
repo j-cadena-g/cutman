@@ -140,7 +140,9 @@ export async function connectSleeperAccount(
     // A concurrent request may have inserted a `sleeper_accounts` row for this exact Sleeper
     // user id (unique) or this exact Clerk user id (primary key) between our pre-checks above
     // and this insert — the pre-checks above only ruled out rows that existed *before* this
-    // call started. Re-read instead of surfacing the raw D1 constraint error.
+    // call started. Re-read by Sleeper user id (another Clerk user won the unique) and by
+    // Clerk user id (this user linked a different Sleeper account) instead of surfacing the
+    // raw D1 constraint error.
     const raced = await getSleeperAccountBySleeperUserId(deps.db, sleeperUser.user_id);
     if (raced && raced.user_id !== input.clerkUserId) {
       return { ok: false, error: { kind: "sleeper_account_connected_to_another_user" } };
@@ -149,6 +151,16 @@ export async function connectSleeperAccount(
       // A concurrent duplicate request for this same Clerk user won the race first; treat this
       // as the (idempotent) linked outcome instead of surfacing the raw constraint error.
       return { ok: true, account: raced, wasNewLink: true };
+    }
+    const racedForUser = await getSleeperAccountByUserId(deps.db, input.clerkUserId);
+    if (racedForUser) {
+      return {
+        ok: false,
+        error: {
+          kind: "clerk_user_already_connected_to_different_sleeper_account",
+          existingSleeperUserId: racedForUser.sleeper_user_id,
+        },
+      };
     }
     throw error;
   }

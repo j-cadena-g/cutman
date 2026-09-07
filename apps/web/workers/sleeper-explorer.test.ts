@@ -22,9 +22,15 @@ import {
   createMemoryExplorerCache,
   lookupExplorerBoard,
   lookupExplorerUser,
+  type ExplorerCache,
   type ExplorerDeps,
 } from "../app/lib/sleeper-explorer.server.ts";
-import { assembleExplorerBoard, assembleScoreboard, assembleStandings } from "../app/lib/sleeper-explorer.ts";
+import {
+  assembleExplorerBoard,
+  assembleScoreboard,
+  assembleStandings,
+  isValidExplorerUsername,
+} from "../app/lib/sleeper-explorer.ts";
 
 function countingClient(base: SleeperClient = createFixtureClient()) {
   const calls = {
@@ -79,6 +85,19 @@ function countingClient(base: SleeperClient = createFixtureClient()) {
   return { client, calls };
 }
 
+function countingCache(store = new Map<string, string>()): { cache: ExplorerCache; calls: { putJson: number } } {
+  const base = createMemoryExplorerCache(store);
+  const calls = { putJson: 0 };
+  const cache: ExplorerCache = {
+    getJson: (key) => base.getJson(key),
+    async putJson(key, value, options) {
+      calls.putJson += 1;
+      return base.putJson(key, value, options);
+    },
+  };
+  return { cache, calls };
+}
+
 function makeDeps(overrides: Partial<ExplorerDeps> & { sleeper?: SleeperClient } = {}): ExplorerDeps {
   const sleeper = overrides.sleeper ?? createFixtureClient();
   return {
@@ -89,6 +108,21 @@ function makeDeps(overrides: Partial<ExplorerDeps> & { sleeper?: SleeperClient }
     quotaPerHour: overrides.quotaPerHour,
   };
 }
+
+describe("isValidExplorerUsername", () => {
+  it("accepts 1–32 lowercase letters, digits, underscores, and hyphens", () => {
+    expect(isValidExplorerUsername("jcadenag")).toBe(true);
+    expect(isValidExplorerUsername("a_b-c9")).toBe(true);
+    expect(isValidExplorerUsername("a".repeat(32))).toBe(true);
+  });
+
+  it("rejects empty, overlong, spaced, or punctuated handles", () => {
+    expect(isValidExplorerUsername("")).toBe(false);
+    expect(isValidExplorerUsername("a".repeat(33))).toBe(false);
+    expect(isValidExplorerUsername("Has Space")).toBe(false);
+    expect(isValidExplorerUsername("semi;colon")).toBe(false);
+  });
+});
 
 describe("assembleStandings / assembleScoreboard", () => {
   it("joins roster_id to owner display names, sorts by wins then PF, and marks abandoned seats", () => {
@@ -158,6 +192,26 @@ describe("lookupExplorerUser", () => {
     expect(result).toEqual({ kind: "invalid_username" });
     expect(calls.getUser).toBe(0);
     expect(calls.getNflState).toBe(0);
+  });
+
+  it("returns invalid_username for a 40-char handle without writing cache or calling Sleeper", async () => {
+    const { client, calls } = countingClient();
+    const wrapped = countingCache();
+    const result = await lookupExplorerUser(makeDeps({ sleeper: client, cache: wrapped.cache }), {
+      username: "a".repeat(40),
+      clerkUserId: "clerk_1",
+    });
+    expect(result).toEqual({ kind: "invalid_username" });
+    expect(wrapped.calls.putJson).toBe(0);
+    expect(calls.getUser).toBe(0);
+  });
+
+  it("returns invalid_username for a handle with spaces and a slash", async () => {
+    const result = await lookupExplorerUser(makeDeps(), {
+      username: "bad user/name",
+      clerkUserId: "clerk_1",
+    });
+    expect(result).toEqual({ kind: "invalid_username" });
   });
 
   it("returns the fixture profile and this season's leagues without calling getLeagueUsers", async () => {

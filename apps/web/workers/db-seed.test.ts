@@ -38,7 +38,8 @@ beforeAll(async () => {
 describe("schema", () => {
   it("does not insert placeholder league rows", async () => {
     await ensureSchema(env.DB);
-    expect(await getLeague(env.DB, EXAMPLE_SLEEPER_LEAGUE_ID)).toBeNull();
+    const row = await env.DB.prepare("SELECT COUNT(*) AS n FROM leagues").first<{ n: number }>();
+    expect(row?.n).toBe(0);
     expect(await getLeagueBySleeperId(env.DB, EXAMPLE_SLEEPER_LEAGUE_ID)).toBeNull();
   });
 
@@ -222,7 +223,7 @@ describe("leagues", () => {
         season: "2026",
         now: now + 1,
       }),
-    ).rejects.toThrow(/sleeper league id/i);
+    ).rejects.toThrow(/already exists and is linked to a different Sleeper league/);
   });
 
   it("rejects creating a league when the Sleeper league id already maps to a different internal id", async () => {

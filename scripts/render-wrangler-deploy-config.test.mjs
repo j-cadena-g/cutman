@@ -68,6 +68,21 @@ describe("render-wrangler-deploy-config", () => {
     }
   });
 
+  it("fails when PILOT_SLEEPER_LEAGUE_ID is absent", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "cutman-wrangler-render-"));
+    const outputPath = path.join(dir, ".wrangler.deploy.jsonc");
+    try {
+      const env = baseEnv();
+      delete env.PILOT_SLEEPER_LEAGUE_ID;
+      const missing = render(env, outputPath);
+      assert.notEqual(missing.status, 0);
+      assert.match(missing.stderr, /PILOT_SLEEPER_LEAGUE_ID/);
+      assert.doesNotMatch(missing.stderr, /V1_LEAGUE_ID/);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("rejects a non-snowflake PILOT_SLEEPER_LEAGUE_ID", async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "cutman-wrangler-render-"));
     const outputPath = path.join(dir, ".wrangler.deploy.jsonc");
@@ -97,6 +112,21 @@ describe("render-wrangler-deploy-config", () => {
     const outputPath = path.join(dir, ".wrangler.dev.jsonc");
     try {
       const result = render(baseEnv({ PILOT_SLEEPER_LEAGUE_ID: "" }), outputPath);
+      assert.equal(result.status, 0, result.stderr);
+      const rendered = await readFile(outputPath, "utf8");
+      assert.match(rendered, /"PILOT_SLEEPER_LEAGUE_ID"\s*:\s*"0000000000000000000"/);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the fake placeholder when PILOT_SLEEPER_LEAGUE_ID is absent on local-dev render", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "cutman-wrangler-render-"));
+    const outputPath = path.join(dir, ".wrangler.dev.jsonc");
+    try {
+      const env = baseEnv();
+      delete env.PILOT_SLEEPER_LEAGUE_ID;
+      const result = render(env, outputPath);
       assert.equal(result.status, 0, result.stderr);
       const rendered = await readFile(outputPath, "utf8");
       assert.match(rendered, /"PILOT_SLEEPER_LEAGUE_ID"\s*:\s*"0000000000000000000"/);

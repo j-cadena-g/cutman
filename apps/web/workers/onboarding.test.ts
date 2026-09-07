@@ -288,6 +288,45 @@ describe("connectSleeperAccount", () => {
     expect(rejected).toHaveLength(1);
     expect(rejected[0]).toMatchObject({ ok: false, error: { kind: "sleeper_account_connected_to_another_user" } });
   });
+
+  it("resolves a concurrent same-Clerk-user different-Sleeper-account race as clerk_user_already_connected_to_different_sleeper_account", async () => {
+    const user = await seedUser("user_connect_race_clerk", "connect-race-clerk@example.test");
+    const pilotSleeperLeagueId = nextPilotLeagueId("connect_race_clerk");
+    const sleeperClient = createFakeSleeperClient({
+      usersByLookup: {
+        racer_one: { user_id: "sleeper_race_one", username: "racer_one", display_name: "Racer One" },
+        racer_two: { user_id: "sleeper_race_two", username: "racer_two", display_name: "Racer Two" },
+      },
+    });
+
+    const [resultA, resultB] = await Promise.all([
+      connectSleeperAccount(makeDeps({ sleeperClient, pilotSleeperLeagueId }), {
+        clerkUserId: user.id,
+        usernameInput: "racer_one",
+      }),
+      connectSleeperAccount(makeDeps({ sleeperClient, pilotSleeperLeagueId }), {
+        clerkUserId: user.id,
+        usernameInput: "racer_two",
+      }),
+    ]);
+
+    // Neither call throws — that is the point of the fix. Regardless of which request's insert
+    // physically wins the race (or whether the pre-check catches it first), exactly one resolves
+    // ok and the other is rejected as already connected to a different Sleeper account.
+    const results = [resultA, resultB];
+    expect(results.filter((r) => r.ok)).toHaveLength(1);
+    const winner = results.find((r) => r.ok);
+    if (!winner || !winner.ok) throw new Error("expected one ok result");
+    const rejected = results.filter((r) => !r.ok);
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]).toMatchObject({
+      ok: false,
+      error: {
+        kind: "clerk_user_already_connected_to_different_sleeper_account",
+        existingSleeperUserId: winner.account.sleeper_user_id,
+      },
+    });
+  });
 });
 
 describe("discoverLeagues", () => {

@@ -11,6 +11,7 @@ import {
 } from "@cutman/sleeper";
 import {
   assembleExplorerBoard,
+  isValidExplorerUsername,
   normalizeExplorerUsername,
   toExplorerLeagueCard,
   toExplorerUserCard,
@@ -211,7 +212,7 @@ export async function lookupExplorerUser(
   input: { username: string; clerkUserId: string },
 ): Promise<ExplorerUserResult> {
   const username = normalizeExplorerUsername(input.username);
-  if (!username) return { kind: "invalid_username" };
+  if (!isValidExplorerUsername(username)) return { kind: "invalid_username" };
 
   const stateResult = await readNflState(deps);
   if ("kind" in stateResult) return stateResult;

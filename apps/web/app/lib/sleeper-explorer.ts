@@ -11,6 +11,13 @@ export function normalizeExplorerUsername(input: string): string {
   return input.trim().toLowerCase();
 }
 
+// Sleeper usernames are 1–32 chars of letters, digits, underscore, or hyphen. Anything else is
+// rejected before it reaches a KV key or a Sleeper URL.
+export const EXPLORER_USERNAME_PATTERN = /^[a-z0-9_-]{1,32}$/;
+export function isValidExplorerUsername(username: string): boolean {
+  return EXPLORER_USERNAME_PATTERN.test(username);
+}
+
 export function sleeperAvatarUrl(avatar: string | null | undefined): string | null {
   if (!avatar) return null;
   return `https://sleepercdn.com/avatars/thumbs/${avatar}`;
