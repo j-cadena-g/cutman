@@ -42,7 +42,15 @@ export async function loader(args: Route.LoaderArgs) {
   // and render a setting-up/empty-book state below instead of a root 500.
   const dashboard = await getDashboardOrNull(stub);
   return {
-    access,
+    league: {
+      id: access.league.id,
+      name: access.league.name,
+      season: access.league.season,
+      sleeperLeagueId: access.league.sleeper_league_id,
+      tone: access.league.tone,
+    },
+    isOwner: access.isOwner,
+    userEmail: access.user.email,
     dashboard,
     optIn: Boolean(access.membership.recap_email_opt_in),
   };
@@ -91,7 +99,11 @@ export async function action(args: Route.ActionArgs) {
 
   if (intent === "optin") {
     const on = String(form.get("optin") ?? "") === "1";
-    await setRecapOptIn(env.DB, access.league.id, access.user.id, on);
+    try {
+      await setRecapOptIn(env.DB, access.league.id, access.user.id, on);
+    } catch {
+      return { error: "Cutman couldn't save that preference. Try again." };
+    }
     return { ok: "optin" };
   }
 
@@ -113,11 +125,11 @@ function SignedInUserControls() {
 }
 
 export default function League({ loaderData, actionData }: Route.ComponentProps) {
-  const { access, dashboard, optIn } = loaderData;
-  const tone = toneOrPlayful(access.league.tone);
+  const { league, isOwner, userEmail, dashboard, optIn } = loaderData;
+  const tone = toneOrPlayful(league.tone);
   // Falls back to the D1 `leagues` row's own name/week-less state whenever the Durable Object
   // hasn't been bootstrapped yet (`dashboard === null` — see getDashboardOrNull in the loader).
-  const leagueName = dashboard?.name ?? access.league.name;
+  const leagueName = dashboard?.name ?? league.name;
 
   return (
     <main className="mx-auto max-w-5xl px-6 py-10">
@@ -128,11 +140,11 @@ export default function League({ loaderData, actionData }: Route.ComponentProps)
           <p className="mt-2 text-muted">
             Week {dashboard?.week ?? "—"} · living dashboard from the last snapshot
           </p>
-          <p className="mt-1 text-sm text-muted">{access.user.email}</p>
+          <p className="mt-1 text-sm text-muted">{userEmail}</p>
         </div>
         <div className="flex flex-wrap items-center gap-3">
           <Button asChild variant="secondary">
-            <a href={`https://sleeper.com/leagues/${access.league.sleeper_league_id}`} target="_blank" rel="noreferrer">
+            <a href={`https://sleeper.com/leagues/${league.sleeperLeagueId}`} target="_blank" rel="noreferrer">
               Rosters on Sleeper
             </a>
           </Button>
@@ -150,7 +162,7 @@ export default function League({ loaderData, actionData }: Route.ComponentProps)
       ) : null}
 
       <Card className="mt-8">
-        <Badge>{access.isOwner ? "Commissioner" : "Member"}</Badge>
+        <Badge>{isOwner ? "Commissioner" : "Member"}</Badge>
         <CardTitle className="mt-3">Commish strip</CardTitle>
         <CardDescription>
           {toneLabel(tone)} — {toneBlurb(tone)} Default tone is playful.
@@ -166,7 +178,7 @@ export default function League({ loaderData, actionData }: Route.ComponentProps)
                   name="tone"
                   value={option}
                   variant={tone === option ? "default" : "secondary"}
-                  disabled={!access.isOwner}
+                  disabled={!isOwner}
                 >
                   {toneLabel(option)}
                 </Button>

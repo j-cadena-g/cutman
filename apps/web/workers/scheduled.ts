@@ -28,8 +28,8 @@ export async function handleScheduled(env: Env, now = new Date()): Promise<{ pol
         polled += 1;
       }
       if (recap) {
-        await stub.attemptRecap();
-        recapped += 1;
+        const result = await stub.attemptRecap();
+        if (result.status === "published") recapped += 1;
       }
     } catch (error) {
       console.error(`scheduled tick failed for league ${league.id}`, error);

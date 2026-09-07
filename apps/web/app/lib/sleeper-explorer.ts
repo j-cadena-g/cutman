@@ -18,6 +18,13 @@ export function isValidExplorerUsername(username: string): boolean {
   return EXPLORER_USERNAME_PATTERN.test(username);
 }
 
+// Sleeper league ids are numeric snowflakes. Reject anything else before it reaches a KV key
+// or a Sleeper URL.
+export const EXPLORER_LEAGUE_ID_PATTERN = /^[0-9]{1,32}$/;
+export function isValidExplorerLeagueId(leagueId: string): boolean {
+  return EXPLORER_LEAGUE_ID_PATTERN.test(leagueId);
+}
+
 export function sleeperAvatarUrl(avatar: string | null | undefined): string | null {
   if (!avatar) return null;
   return `https://sleepercdn.com/avatars/thumbs/${avatar}`;

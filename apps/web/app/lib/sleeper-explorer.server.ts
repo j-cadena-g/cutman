@@ -11,6 +11,7 @@ import {
 } from "@cutman/sleeper";
 import {
   assembleExplorerBoard,
+  isValidExplorerLeagueId,
   isValidExplorerUsername,
   normalizeExplorerUsername,
   toExplorerLeagueCard,
@@ -278,7 +279,7 @@ export async function lookupExplorerBoard(
   input: { sleeperLeagueId: string; clerkUserId: string },
 ): Promise<ExplorerBoardResult> {
   const leagueId = input.sleeperLeagueId.trim();
-  if (!leagueId) return { kind: "not_found" };
+  if (!isValidExplorerLeagueId(leagueId)) return { kind: "not_found" };
 
   const stateResult = await readNflState(deps);
   if ("kind" in stateResult) return stateResult;

@@ -110,9 +110,37 @@ describe("handleScheduled", () => {
 
     const activeCount = (await listActiveLeagues(env.DB)).length;
     expect(result.polled).toBe(activeCount);
-    expect(result.recapped).toBe(activeCount);
+    expect(result.recapped).toBe(0);
     const dashboard = await env.LEAGUE_BRAIN.getByName(league.id).getDashboard();
     expect(dashboard.leagueId).toBe(league.id);
+  });
+
+  it("counts a published recap once and reports recapped 0 on a second Tuesday 9:00 tick", async () => {
+    const now = 1_805_400_000_000;
+    const league = await seedLeague("recap_once", now, "active");
+
+    const originalAttemptRecap = LeagueBrain.prototype.attemptRecap;
+    const published = new Set<string>();
+    LeagueBrain.prototype.attemptRecap = async function (this: LeagueBrain) {
+      const dashboard = await this.getDashboard();
+      if (dashboard.leagueId !== league.id) {
+        return { status: "skipped_not_final" };
+      }
+      if (published.has(league.id)) {
+        return { status: "skipped_already" };
+      }
+      published.add(league.id);
+      return { status: "published", recap: { subject: "Week 3 recap", body: "The chat survived." } };
+    };
+
+    try {
+      const first = await handleScheduled(env, RECAP_NOW);
+      expect(first.recapped).toBe(1);
+      const second = await handleScheduled(env, RECAP_NOW);
+      expect(second.recapped).toBe(0);
+    } finally {
+      LeagueBrain.prototype.attemptRecap = originalAttemptRecap;
+    }
   });
 
   it("isolates per-league failures so one throwing poll does not prevent others", async () => {

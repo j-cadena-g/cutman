@@ -29,6 +29,7 @@ import {
   assembleExplorerBoard,
   assembleScoreboard,
   assembleStandings,
+  isValidExplorerLeagueId,
   isValidExplorerUsername,
 } from "../app/lib/sleeper-explorer.ts";
 
@@ -121,6 +122,22 @@ describe("isValidExplorerUsername", () => {
     expect(isValidExplorerUsername("a".repeat(33))).toBe(false);
     expect(isValidExplorerUsername("Has Space")).toBe(false);
     expect(isValidExplorerUsername("semi;colon")).toBe(false);
+  });
+});
+
+describe("isValidExplorerLeagueId", () => {
+  it("accepts numeric snowflakes of 1–32 digits", () => {
+    expect(isValidExplorerLeagueId("1")).toBe(true);
+    expect(isValidExplorerLeagueId("1180000000000000000")).toBe(true);
+    expect(isValidExplorerLeagueId("0".repeat(32))).toBe(true);
+  });
+
+  it("rejects empty, alphabetic, slashed, spaced, or overlong ids", () => {
+    expect(isValidExplorerLeagueId("")).toBe(false);
+    expect(isValidExplorerLeagueId("abc")).toBe(false);
+    expect(isValidExplorerLeagueId("12/34")).toBe(false);
+    expect(isValidExplorerLeagueId("1 2")).toBe(false);
+    expect(isValidExplorerLeagueId("0".repeat(33))).toBe(false);
   });
 });
 
@@ -295,6 +312,26 @@ describe("lookupExplorerUser", () => {
 });
 
 describe("lookupExplorerBoard", () => {
+  it("returns not_found for a garbage league id without writing cache or calling Sleeper", async () => {
+    const { client, calls } = countingClient();
+    const wrapped = countingCache();
+    const result = await lookupExplorerBoard(makeDeps({ sleeper: client, cache: wrapped.cache }), {
+      sleeperLeagueId: "not-a-league/../x",
+      clerkUserId: "clerk_1",
+    });
+    expect(result).toEqual({ kind: "not_found" });
+    expect(wrapped.calls.putJson).toBe(0);
+    expect(calls.getLeague).toBe(0);
+    expect(calls.getNflState).toBe(0);
+    expect(calls.getLeagueUsers).toBe(0);
+    expect(calls.getRosters).toBe(0);
+    expect(calls.getMatchups).toBe(0);
+    expect(calls.getUser).toBe(0);
+    expect(calls.getUserLeagues).toBe(0);
+    expect(calls.getTransactions).toBe(0);
+    expect(calls.getPlayers).toBe(0);
+  });
+
   it("joins matchups to managers and player names for the fixture league", async () => {
     const { client, calls } = countingClient();
     const result = await lookupExplorerBoard(makeDeps({ sleeper: client }), {
