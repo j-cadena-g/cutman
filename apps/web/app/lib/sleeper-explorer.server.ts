@@ -113,6 +113,7 @@ function quotaKey(clerkUserId: string, now: number): string {
   return `explore:quota:${clerkUserId}:${Math.floor(now / HOUR_MS)}`;
 }
 
+// Advisory only: KV get-then-put is eventually consistent, so concurrent requests can exceed the hour budget. Strict enforcement needs an atomic serialized counter before public rollout.
 async function tryConsumeQuota(deps: ExplorerDeps, clerkUserId: string): Promise<boolean> {
   const key = quotaKey(clerkUserId, deps.now());
   const entry = await deps.cache.getJson<{ count: number }>(key);

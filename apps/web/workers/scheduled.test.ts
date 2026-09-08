@@ -102,7 +102,7 @@ describe("handleScheduled", () => {
     expect(await settingKeys(env.PILOT_SLEEPER_LEAGUE_ID)).toEqual([]);
   });
 
-  it("still recaps every active league on the Tuesday 9:00 America/New_York window", async () => {
+  it("polls every active league on Tuesday 9:00 America/New_York and publishes no recap when no week is final", async () => {
     const now = 1_805_200_000_000;
     const league = await seedLeague("recap_active", now, "active");
 

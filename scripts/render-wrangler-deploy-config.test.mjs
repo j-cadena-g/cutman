@@ -10,6 +10,7 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 const scriptPath = path.join(repoRoot, "scripts/render-wrangler-deploy-config.mjs");
 
 const FAKE_PILOT_ID = "1111111111111111111";
+const PLACEHOLDER_PILOT_ID = "0000000000000000000";
 
 function baseEnv(overrides = {}) {
   const env = { ...process.env };
@@ -24,6 +25,7 @@ function baseEnv(overrides = {}) {
     CLOUDFLARE_CUSTOM_DOMAIN: "example.test",
     CLERK_PUBLISHABLE_KEY: "pk_test_abcdefghijklmnop",
     APP_ORIGIN: "https://example.test",
+    USE_SLEEPER_FIXTURES: "false",
     PILOT_SLEEPER_LEAGUE_ID: FAKE_PILOT_ID,
     ...overrides,
   };
@@ -95,6 +97,22 @@ describe("render-wrangler-deploy-config", () => {
     }
   });
 
+  it("rejects the tracked placeholder PILOT_SLEEPER_LEAGUE_ID on production render", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "cutman-wrangler-render-"));
+    const outputPath = path.join(dir, ".wrangler.deploy.jsonc");
+    try {
+      const result = render(
+        baseEnv({ PILOT_SLEEPER_LEAGUE_ID: PLACEHOLDER_PILOT_ID }),
+        outputPath,
+      );
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /PILOT_SLEEPER_LEAGUE_ID/);
+      assert.match(result.stderr, /placeholder/);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("rejects a non-snowflake PILOT_SLEEPER_LEAGUE_ID on local-dev render", async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "cutman-wrangler-render-"));
     const outputPath = path.join(dir, ".wrangler.dev.jsonc");
@@ -107,29 +125,88 @@ describe("render-wrangler-deploy-config", () => {
     }
   });
 
-  it("keeps the fake placeholder when local-dev render omits PILOT_SLEEPER_LEAGUE_ID", async () => {
+  it("fails local-dev render when USE_SLEEPER_FIXTURES is false and PILOT_SLEEPER_LEAGUE_ID is omitted", async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "cutman-wrangler-render-"));
     const outputPath = path.join(dir, ".wrangler.dev.jsonc");
     try {
       const result = render(baseEnv({ PILOT_SLEEPER_LEAGUE_ID: "" }), outputPath);
-      assert.equal(result.status, 0, result.stderr);
-      const rendered = await readFile(outputPath, "utf8");
-      assert.match(rendered, /"PILOT_SLEEPER_LEAGUE_ID"\s*:\s*"0000000000000000000"/);
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /PILOT_SLEEPER_LEAGUE_ID/);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
   });
 
-  it("keeps the fake placeholder when PILOT_SLEEPER_LEAGUE_ID is absent on local-dev render", async () => {
+  it("fails local-dev render when USE_SLEEPER_FIXTURES is false and PILOT_SLEEPER_LEAGUE_ID is absent", async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "cutman-wrangler-render-"));
     const outputPath = path.join(dir, ".wrangler.dev.jsonc");
     try {
       const env = baseEnv();
       delete env.PILOT_SLEEPER_LEAGUE_ID;
       const result = render(env, outputPath);
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /PILOT_SLEEPER_LEAGUE_ID/);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("fails local-dev render when USE_SLEEPER_FIXTURES is false and PILOT_SLEEPER_LEAGUE_ID is the placeholder", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "cutman-wrangler-render-"));
+    const outputPath = path.join(dir, ".wrangler.dev.jsonc");
+    try {
+      const result = render(
+        baseEnv({ PILOT_SLEEPER_LEAGUE_ID: PLACEHOLDER_PILOT_ID }),
+        outputPath,
+      );
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /PILOT_SLEEPER_LEAGUE_ID/);
+      assert.match(result.stderr, /placeholder/);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("writes a live-shaped PILOT_SLEEPER_LEAGUE_ID on local-dev render when USE_SLEEPER_FIXTURES is false", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "cutman-wrangler-render-"));
+    const outputPath = path.join(dir, ".wrangler.dev.jsonc");
+    try {
+      const result = render(baseEnv(), outputPath);
       assert.equal(result.status, 0, result.stderr);
       const rendered = await readFile(outputPath, "utf8");
-      assert.match(rendered, /"PILOT_SLEEPER_LEAGUE_ID"\s*:\s*"0000000000000000000"/);
+      assert.match(rendered, new RegExp(`"PILOT_SLEEPER_LEAGUE_ID"\\s*:\\s*"${FAKE_PILOT_ID}"`));
+      assert.match(rendered, /"USE_SLEEPER_FIXTURES"\s*:\s*"false"/);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the fake placeholder when fixture-mode local-dev render omits PILOT_SLEEPER_LEAGUE_ID", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "cutman-wrangler-render-"));
+    const outputPath = path.join(dir, ".wrangler.dev.jsonc");
+    try {
+      const result = render(
+        baseEnv({ USE_SLEEPER_FIXTURES: "true", PILOT_SLEEPER_LEAGUE_ID: "" }),
+        outputPath,
+      );
+      assert.equal(result.status, 0, result.stderr);
+      const rendered = await readFile(outputPath, "utf8");
+      assert.match(rendered, new RegExp(`"PILOT_SLEEPER_LEAGUE_ID"\\s*:\\s*"${PLACEHOLDER_PILOT_ID}"`));
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the fake placeholder when PILOT_SLEEPER_LEAGUE_ID is absent on fixture-mode local-dev render", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "cutman-wrangler-render-"));
+    const outputPath = path.join(dir, ".wrangler.dev.jsonc");
+    try {
+      const env = baseEnv({ USE_SLEEPER_FIXTURES: "true" });
+      delete env.PILOT_SLEEPER_LEAGUE_ID;
+      const result = render(env, outputPath);
+      assert.equal(result.status, 0, result.stderr);
+      const rendered = await readFile(outputPath, "utf8");
+      assert.match(rendered, new RegExp(`"PILOT_SLEEPER_LEAGUE_ID"\\s*:\\s*"${PLACEHOLDER_PILOT_ID}"`));
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

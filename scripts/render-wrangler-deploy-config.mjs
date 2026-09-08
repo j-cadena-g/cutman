@@ -49,6 +49,8 @@ const requiredValues = {
   },
 };
 
+const PLACEHOLDER_PILOT_SLEEPER_LEAGUE_ID = "0000000000000000000";
+
 const replacements = [
   {
     label: "account_id",
@@ -126,6 +128,32 @@ function getRequiredValue(name) {
   return value;
 }
 
+function usesSleeperFixtures() {
+  return getOptionalValue("USE_SLEEPER_FIXTURES") === "true";
+}
+
+function resolvePilotSleeperLeagueId(isDevConfig) {
+  const allowPlaceholder = isDevConfig && usesSleeperFixtures();
+  const value = getOptionalValidatedValue("PILOT_SLEEPER_LEAGUE_ID");
+  if (allowPlaceholder) {
+    return value;
+  }
+
+  if (!value) {
+    throw new Error(
+      `Missing PILOT_SLEEPER_LEAGUE_ID (${requiredValues.PILOT_SLEEPER_LEAGUE_ID.description}).`,
+    );
+  }
+
+  if (value === PLACEHOLDER_PILOT_SLEEPER_LEAGUE_ID) {
+    throw new Error(
+      "Invalid PILOT_SLEEPER_LEAGUE_ID; the tracked placeholder is not allowed when USE_SLEEPER_FIXTURES is not true.",
+    );
+  }
+
+  return value;
+}
+
 function replaceConfigValue(source, { label, pattern }, value) {
   let replaced = false;
 
@@ -162,9 +190,7 @@ async function main() {
     APP_ENV:
       globalThis.process.env.APP_ENV?.trim() ||
       (isDevConfig ? "development" : "production"),
-    PILOT_SLEEPER_LEAGUE_ID: isDevConfig
-      ? getOptionalValidatedValue("PILOT_SLEEPER_LEAGUE_ID")
-      : getRequiredValue("PILOT_SLEEPER_LEAGUE_ID"),
+    PILOT_SLEEPER_LEAGUE_ID: resolvePilotSleeperLeagueId(isDevConfig),
   };
   let rendered = template;
   for (const replacement of replacements) {
