@@ -358,9 +358,9 @@ export async function lookupExplorerBoard(
       deps.sleeper.getMatchups(leagueId, week),
       loadExplorerPlayers(deps),
     ]);
-    if (playersResult.kind !== "ok") return playersResult;
     const payload: BoardPayload = { league, users, rosters, matchups };
     await writeCache(deps, boardKey(leagueId, week), payload, BOARD_TTL_MS);
+    if (playersResult.kind !== "ok") return playersResult;
     return {
       kind: "ok",
       stale: stateResult.stale,

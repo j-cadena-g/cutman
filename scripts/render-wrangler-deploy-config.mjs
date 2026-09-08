@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseManifestKeys } from "./lib/parse-manifest-keys.mjs";
@@ -11,9 +11,13 @@ const webDir = path.join(repoRoot, "apps/web");
 const templatePath = path.join(webDir, "wrangler.jsonc");
 const secretsExamplePath = path.join(webDir, ".wrangler.secrets.example");
 
-const outputPath = process.env.WRANGLER_RENDER_OUTPUT
-  ? path.resolve(repoRoot, process.env.WRANGLER_RENDER_OUTPUT)
-  : path.join(webDir, ".wrangler.deploy.jsonc");
+export const WRANGLER_DEPLOY_OUTPUT_PATH = path.join(webDir, ".wrangler.deploy.jsonc");
+export const WRANGLER_DEV_OUTPUT_PATH = path.join(webDir, ".wrangler.dev.jsonc");
+
+const ALLOWED_OUTPUT_PATHS = Object.freeze([
+  path.resolve(WRANGLER_DEPLOY_OUTPUT_PATH),
+  path.resolve(WRANGLER_DEV_OUTPUT_PATH),
+]);
 
 const requiredValues = {
   CLOUDFLARE_ACCOUNT_ID: {
@@ -100,12 +104,63 @@ const replacements = [
   },
 ];
 
-function getOptionalValue(name) {
-  return globalThis.process.env[name]?.trim() || "";
+function formatRepoPath(absolutePath) {
+  const relative = path.relative(repoRoot, absolutePath);
+  if (relative && !relative.startsWith("..") && !path.isAbsolute(relative)) {
+    return relative;
+  }
+  return absolutePath;
 }
 
-function getOptionalValidatedValue(name) {
-  const value = getOptionalValue(name);
+function allowedOutputDescription() {
+  return ALLOWED_OUTPUT_PATHS.map((outputPath) => formatRepoPath(outputPath)).join(
+    " and ",
+  );
+}
+
+async function assertDestinationIsNotSymlink(outputPath) {
+  try {
+    const stat = await lstat(outputPath);
+    if (stat.isSymbolicLink()) {
+      throw new Error(
+        `Refusing to write Wrangler config through symlink at ${formatRepoPath(outputPath)}.`,
+      );
+    }
+  } catch (error) {
+    if (error && error.code === "ENOENT") {
+      return;
+    }
+    throw error;
+  }
+}
+
+export async function resolveAndAssertOutputPath(
+  requested = process.env.WRANGLER_RENDER_OUTPUT,
+) {
+  const outputPath = requested
+    ? path.resolve(repoRoot, requested)
+    : path.resolve(WRANGLER_DEPLOY_OUTPUT_PATH);
+
+  if (!ALLOWED_OUTPUT_PATHS.includes(outputPath)) {
+    throw new Error(
+      `Refusing to write Wrangler config to ${formatRepoPath(outputPath)}. Allowed destinations: ${allowedOutputDescription()}.`,
+    );
+  }
+
+  await assertDestinationIsNotSymlink(outputPath);
+
+  return {
+    outputPath,
+    isDevConfig: outputPath === path.resolve(WRANGLER_DEV_OUTPUT_PATH),
+  };
+}
+
+function getOptionalValue(name, env) {
+  return env[name]?.trim() || "";
+}
+
+function getOptionalValidatedValue(name, env) {
+  const value = getOptionalValue(name, env);
   const rule = requiredValues[name];
   if (value && !rule.pattern.test(value)) {
     throw new Error(`Invalid ${name}; expected ${rule.description}.`);
@@ -113,8 +168,8 @@ function getOptionalValidatedValue(name) {
   return value;
 }
 
-function getRequiredValue(name) {
-  const value = globalThis.process.env[name]?.trim();
+function getRequiredValue(name, env) {
+  const value = env[name]?.trim();
   const rule = requiredValues[name];
 
   if (!value) {
@@ -128,13 +183,13 @@ function getRequiredValue(name) {
   return value;
 }
 
-function usesSleeperFixtures() {
-  return getOptionalValue("USE_SLEEPER_FIXTURES") === "true";
+function usesSleeperFixtures(env) {
+  return getOptionalValue("USE_SLEEPER_FIXTURES", env) === "true";
 }
 
-function resolvePilotSleeperLeagueId(isDevConfig) {
-  const allowPlaceholder = isDevConfig && usesSleeperFixtures();
-  const value = getOptionalValidatedValue("PILOT_SLEEPER_LEAGUE_ID");
+function resolvePilotSleeperLeagueId(isDevConfig, env) {
+  const allowPlaceholder = isDevConfig && usesSleeperFixtures(env);
+  const value = getOptionalValidatedValue("PILOT_SLEEPER_LEAGUE_ID", env);
   if (allowPlaceholder) {
     return value;
   }
@@ -169,28 +224,29 @@ function replaceConfigValue(source, { label, pattern }, value) {
   return nextSource;
 }
 
-async function main() {
-  const template = await readFile(templatePath, "utf8");
-  const isDevConfig = outputPath.endsWith(".wrangler.dev.jsonc");
+export function renderWranglerConfig(
+  template,
+  { isDevConfig, env = process.env, secretsExample = "" } = {},
+) {
   const deployValues = {
     CLOUDFLARE_ACCOUNT_ID: isDevConfig
       ? "00000000000000000000000000000000"
-      : getRequiredValue("CLOUDFLARE_ACCOUNT_ID"),
+      : getRequiredValue("CLOUDFLARE_ACCOUNT_ID", env),
     CLOUDFLARE_D1_DATABASE_ID: isDevConfig
       ? "00000000-0000-0000-0000-000000000000"
-      : getRequiredValue("CLOUDFLARE_D1_DATABASE_ID"),
+      : getRequiredValue("CLOUDFLARE_D1_DATABASE_ID", env),
     CLOUDFLARE_KV_NAMESPACE_ID: isDevConfig
       ? "00000000000000000000000000000000"
-      : getRequiredValue("CLOUDFLARE_KV_NAMESPACE_ID"),
+      : getRequiredValue("CLOUDFLARE_KV_NAMESPACE_ID", env),
     CLOUDFLARE_CUSTOM_DOMAIN: isDevConfig
       ? "localhost"
-      : getRequiredValue("CLOUDFLARE_CUSTOM_DOMAIN"),
-    CLERK_PUBLISHABLE_KEY: getRequiredValue("CLERK_PUBLISHABLE_KEY"),
-    APP_ORIGIN: getRequiredValue("APP_ORIGIN"),
+      : getRequiredValue("CLOUDFLARE_CUSTOM_DOMAIN", env),
+    CLERK_PUBLISHABLE_KEY: getRequiredValue("CLERK_PUBLISHABLE_KEY", env),
+    APP_ORIGIN: getRequiredValue("APP_ORIGIN", env),
     APP_ENV:
-      globalThis.process.env.APP_ENV?.trim() ||
+      env.APP_ENV?.trim() ||
       (isDevConfig ? "development" : "production"),
-    PILOT_SLEEPER_LEAGUE_ID: resolvePilotSleeperLeagueId(isDevConfig),
+    PILOT_SLEEPER_LEAGUE_ID: resolvePilotSleeperLeagueId(isDevConfig, env),
   };
   let rendered = template;
   for (const replacement of replacements) {
@@ -222,7 +278,6 @@ async function main() {
       "",
     );
 
-    const secretsExample = await readFile(secretsExamplePath, "utf8");
     const requiredSecrets = parseManifestKeys(secretsExample);
     if (requiredSecrets.length === 0) {
       throw new Error(`No secret keys found in ${path.basename(secretsExamplePath)}.`);
@@ -243,10 +298,28 @@ async function main() {
     rendered = rendered.replace(varsBlockStart, `\n\n${secretsBlock}\n$1`);
   }
 
+  return rendered;
+}
+
+async function main() {
+  const { outputPath, isDevConfig } = await resolveAndAssertOutputPath();
+  const template = await readFile(templatePath, "utf8");
+  const secretsExample = isDevConfig
+    ? await readFile(secretsExamplePath, "utf8")
+    : "";
+  const rendered = renderWranglerConfig(template, { isDevConfig, secretsExample });
+
   await mkdir(path.dirname(outputPath), { recursive: true });
   await writeFile(outputPath, rendered);
 
   globalThis.console.log(`Wrote ${path.relative(repoRoot, outputPath)}`);
 }
 
-await main();
+const isCliEntrypoint =
+  Boolean(process.argv[1]) &&
+  path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+const importedByTests = Boolean(process.env.NODE_TEST_CONTEXT) && !isCliEntrypoint;
+
+if (!importedByTests) {
+  await main();
+}

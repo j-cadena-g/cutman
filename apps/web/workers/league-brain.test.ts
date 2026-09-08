@@ -162,6 +162,7 @@ describe("LeagueBrain internal vs Sleeper identity", () => {
     const stored = await latestSnapshotPayload(stub);
     // Fixture users only come back when getLeagueUsers is called with V1_LEAGUE_ID. Calling with
     // the internal id yields []. Snapshot identity stays the Cutman league id.
+    expect(v1FixtureUsers.length).toBeGreaterThan(0);
     expect(stored.users).toHaveLength(v1FixtureUsers.length);
     expect(stored.leagueId).toBe(INTERNAL_ID);
   });

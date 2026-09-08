@@ -433,28 +433,58 @@ describe("lookupExplorerBoard", () => {
     expect(result).toEqual({ kind: "unavailable" });
   });
 
-  it("returns rate_limited when getPlayers 429s on origin fetch", async () => {
-    const result = await lookupExplorerBoard(
-      makeDeps({
-        getPlayers: async () => {
-          throw new SleeperRequestError("/players/nfl", 429);
-        },
-      }),
-      { sleeperLeagueId: V1_LEAGUE_ID, clerkUserId: "clerk_1" },
-    );
-    expect(result).toEqual({ kind: "rate_limited" });
+  it("caches board data when getPlayers 429s on origin fetch, then skips league refetches", async () => {
+    const { client, calls } = countingClient();
+    const cache = createMemoryExplorerCache();
+    const getPlayers = async () => {
+      throw new SleeperRequestError("/players/nfl", 429);
+    };
+    const first = await lookupExplorerBoard(makeDeps({ sleeper: client, cache, getPlayers }), {
+      sleeperLeagueId: V1_LEAGUE_ID,
+      clerkUserId: "clerk_1",
+    });
+    expect(first).toEqual({ kind: "rate_limited" });
+    expect(calls.getLeague).toBe(1);
+    expect(calls.getLeagueUsers).toBe(1);
+    expect(calls.getRosters).toBe(1);
+    expect(calls.getMatchups).toBe(1);
+
+    const second = await lookupExplorerBoard(makeDeps({ sleeper: client, cache, getPlayers }), {
+      sleeperLeagueId: V1_LEAGUE_ID,
+      clerkUserId: "clerk_1",
+    });
+    expect(second).toEqual({ kind: "rate_limited" });
+    expect(calls.getLeague).toBe(1);
+    expect(calls.getLeagueUsers).toBe(1);
+    expect(calls.getRosters).toBe(1);
+    expect(calls.getMatchups).toBe(1);
   });
 
-  it("returns unavailable when getPlayers rejects on origin fetch", async () => {
-    const result = await lookupExplorerBoard(
-      makeDeps({
-        getPlayers: async () => {
-          throw new Error("players unavailable");
-        },
-      }),
-      { sleeperLeagueId: V1_LEAGUE_ID, clerkUserId: "clerk_1" },
-    );
-    expect(result).toEqual({ kind: "unavailable" });
+  it("caches board data when getPlayers rejects on origin fetch, then skips league refetches", async () => {
+    const { client, calls } = countingClient();
+    const cache = createMemoryExplorerCache();
+    const getPlayers = async () => {
+      throw new Error("players unavailable");
+    };
+    const first = await lookupExplorerBoard(makeDeps({ sleeper: client, cache, getPlayers }), {
+      sleeperLeagueId: V1_LEAGUE_ID,
+      clerkUserId: "clerk_1",
+    });
+    expect(first).toEqual({ kind: "unavailable" });
+    expect(calls.getLeague).toBe(1);
+    expect(calls.getLeagueUsers).toBe(1);
+    expect(calls.getRosters).toBe(1);
+    expect(calls.getMatchups).toBe(1);
+
+    const second = await lookupExplorerBoard(makeDeps({ sleeper: client, cache, getPlayers }), {
+      sleeperLeagueId: V1_LEAGUE_ID,
+      clerkUserId: "clerk_1",
+    });
+    expect(second).toEqual({ kind: "unavailable" });
+    expect(calls.getLeague).toBe(1);
+    expect(calls.getLeagueUsers).toBe(1);
+    expect(calls.getRosters).toBe(1);
+    expect(calls.getMatchups).toBe(1);
   });
 });
 
