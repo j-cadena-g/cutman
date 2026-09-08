@@ -146,6 +146,20 @@ export type ExplorerBoardResult =
   | { kind: "quota_exceeded" }
   | { kind: "unavailable" };
 
+type ExplorerPlayerMapResult =
+  | { kind: "ok"; players: PlayerMap }
+  | { kind: "rate_limited" }
+  | { kind: "unavailable" };
+
+async function loadExplorerPlayers(deps: ExplorerDeps): Promise<ExplorerPlayerMapResult> {
+  try {
+    return { kind: "ok", players: await deps.getPlayers() };
+  } catch (error) {
+    if (isSleeperRateLimited(error)) return { kind: "rate_limited" };
+    return { kind: "unavailable" };
+  }
+}
+
 type BoardPayload = {
   league: SleeperLeague | null;
   users: SleeperLeagueUser[];
@@ -289,22 +303,34 @@ export async function lookupExplorerBoard(
 
   if (cached?.fresh) {
     if (!cached.payload.league) return { kind: "not_found" };
-    const players = await deps.getPlayers();
+    const playersResult = await loadExplorerPlayers(deps);
+    if (playersResult.kind !== "ok") return playersResult;
     return {
       kind: "ok",
       stale: stateResult.stale,
-      board: assembleExplorerBoard({ ...cached.payload, league: cached.payload.league, week, players }),
+      board: assembleExplorerBoard({
+        ...cached.payload,
+        league: cached.payload.league,
+        week,
+        players: playersResult.players,
+      }),
     };
   }
 
   const allowed = await tryConsumeQuota(deps, input.clerkUserId);
   if (!allowed) {
     if (cached?.payload.league) {
-      const players = await deps.getPlayers();
+      const playersResult = await loadExplorerPlayers(deps);
+      if (playersResult.kind !== "ok") return playersResult;
       return {
         kind: "ok",
         stale: true,
-        board: assembleExplorerBoard({ ...cached.payload, league: cached.payload.league, week, players }),
+        board: assembleExplorerBoard({
+          ...cached.payload,
+          league: cached.payload.league,
+          week,
+          players: playersResult.players,
+        }),
       };
     }
     return { kind: "quota_exceeded" };
@@ -326,26 +352,40 @@ export async function lookupExplorerBoard(
       );
       return { kind: "not_found" };
     }
-    const [users, rosters, matchups, players] = await Promise.all([
+    const [users, rosters, matchups, playersResult] = await Promise.all([
       deps.sleeper.getLeagueUsers(leagueId),
       deps.sleeper.getRosters(leagueId),
       deps.sleeper.getMatchups(leagueId, week),
-      deps.getPlayers(),
+      loadExplorerPlayers(deps),
     ]);
+    if (playersResult.kind !== "ok") return playersResult;
     const payload: BoardPayload = { league, users, rosters, matchups };
     await writeCache(deps, boardKey(leagueId, week), payload, BOARD_TTL_MS);
     return {
       kind: "ok",
       stale: stateResult.stale,
-      board: assembleExplorerBoard({ league, week, users, rosters, matchups, players }),
+      board: assembleExplorerBoard({
+        league,
+        week,
+        users,
+        rosters,
+        matchups,
+        players: playersResult.players,
+      }),
     };
   } catch (error) {
     if (cached?.payload.league) {
-      const players = await deps.getPlayers();
+      const playersResult = await loadExplorerPlayers(deps);
+      if (playersResult.kind !== "ok") return playersResult;
       return {
         kind: "ok",
         stale: true,
-        board: assembleExplorerBoard({ ...cached.payload, league: cached.payload.league, week, players }),
+        board: assembleExplorerBoard({
+          ...cached.payload,
+          league: cached.payload.league,
+          week,
+          players: playersResult.players,
+        }),
       };
     }
     if (isSleeperRateLimited(error)) return { kind: "rate_limited" };

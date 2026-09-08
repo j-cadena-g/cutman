@@ -392,6 +392,70 @@ describe("lookupExplorerBoard", () => {
     if (stale.kind !== "ok") return;
     expect(stale.stale).toBe(true);
   });
+
+  it("returns rate_limited when getPlayers 429s on a fresh cached board", async () => {
+    const cache = createMemoryExplorerCache();
+    const first = await lookupExplorerBoard(makeDeps({ cache }), {
+      sleeperLeagueId: V1_LEAGUE_ID,
+      clerkUserId: "clerk_1",
+    });
+    expect(first.kind).toBe("ok");
+
+    const result = await lookupExplorerBoard(
+      makeDeps({
+        cache,
+        getPlayers: async () => {
+          throw new SleeperRequestError("/players/nfl", 429);
+        },
+      }),
+      { sleeperLeagueId: V1_LEAGUE_ID, clerkUserId: "clerk_1" },
+    );
+    expect(result).toEqual({ kind: "rate_limited" });
+  });
+
+  it("returns unavailable when getPlayers rejects on a fresh cached board", async () => {
+    const cache = createMemoryExplorerCache();
+    const first = await lookupExplorerBoard(makeDeps({ cache }), {
+      sleeperLeagueId: V1_LEAGUE_ID,
+      clerkUserId: "clerk_1",
+    });
+    expect(first.kind).toBe("ok");
+
+    const result = await lookupExplorerBoard(
+      makeDeps({
+        cache,
+        getPlayers: async () => {
+          throw new Error("players unavailable");
+        },
+      }),
+      { sleeperLeagueId: V1_LEAGUE_ID, clerkUserId: "clerk_1" },
+    );
+    expect(result).toEqual({ kind: "unavailable" });
+  });
+
+  it("returns rate_limited when getPlayers 429s on origin fetch", async () => {
+    const result = await lookupExplorerBoard(
+      makeDeps({
+        getPlayers: async () => {
+          throw new SleeperRequestError("/players/nfl", 429);
+        },
+      }),
+      { sleeperLeagueId: V1_LEAGUE_ID, clerkUserId: "clerk_1" },
+    );
+    expect(result).toEqual({ kind: "rate_limited" });
+  });
+
+  it("returns unavailable when getPlayers rejects on origin fetch", async () => {
+    const result = await lookupExplorerBoard(
+      makeDeps({
+        getPlayers: async () => {
+          throw new Error("players unavailable");
+        },
+      }),
+      { sleeperLeagueId: V1_LEAGUE_ID, clerkUserId: "clerk_1" },
+    );
+    expect(result).toEqual({ kind: "unavailable" });
+  });
 });
 
 describe("story dashboard isolation", () => {

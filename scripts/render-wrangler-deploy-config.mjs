@@ -49,7 +49,7 @@ const requiredValues = {
   },
 };
 
-const PLACEHOLDER_PILOT_SLEEPER_LEAGUE_ID = "0000000000000000000";
+const ALL_ZERO_ID = /^0+$/;
 
 const replacements = [
   {
@@ -145,9 +145,9 @@ function resolvePilotSleeperLeagueId(isDevConfig) {
     );
   }
 
-  if (value === PLACEHOLDER_PILOT_SLEEPER_LEAGUE_ID) {
+  if (ALL_ZERO_ID.test(value)) {
     throw new Error(
-      "Invalid PILOT_SLEEPER_LEAGUE_ID; the tracked placeholder is not allowed when USE_SLEEPER_FIXTURES is not true.",
+      "Invalid PILOT_SLEEPER_LEAGUE_ID; all-zero values (including the tracked placeholder) are not allowed when USE_SLEEPER_FIXTURES is not true.",
     );
   }
 

@@ -11,6 +11,7 @@ const scriptPath = path.join(repoRoot, "scripts/render-wrangler-deploy-config.mj
 
 const FAKE_PILOT_ID = "1111111111111111111";
 const PLACEHOLDER_PILOT_ID = "0000000000000000000";
+const ALL_ZERO_PILOT_ID = "000000";
 
 function baseEnv(overrides = {}) {
   const env = { ...process.env };
@@ -113,6 +114,21 @@ describe("render-wrangler-deploy-config", () => {
     }
   });
 
+  it("rejects an all-zero PILOT_SLEEPER_LEAGUE_ID on production render", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "cutman-wrangler-render-"));
+    const outputPath = path.join(dir, ".wrangler.deploy.jsonc");
+    try {
+      const result = render(
+        baseEnv({ PILOT_SLEEPER_LEAGUE_ID: ALL_ZERO_PILOT_ID }),
+        outputPath,
+      );
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /PILOT_SLEEPER_LEAGUE_ID/);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("rejects a non-snowflake PILOT_SLEEPER_LEAGUE_ID on local-dev render", async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "cutman-wrangler-render-"));
     const outputPath = path.join(dir, ".wrangler.dev.jsonc");
@@ -162,6 +178,21 @@ describe("render-wrangler-deploy-config", () => {
       assert.notEqual(result.status, 0);
       assert.match(result.stderr, /PILOT_SLEEPER_LEAGUE_ID/);
       assert.match(result.stderr, /placeholder/);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("fails local-dev render when USE_SLEEPER_FIXTURES is false and PILOT_SLEEPER_LEAGUE_ID is all zeros", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "cutman-wrangler-render-"));
+    const outputPath = path.join(dir, ".wrangler.dev.jsonc");
+    try {
+      const result = render(
+        baseEnv({ PILOT_SLEEPER_LEAGUE_ID: ALL_ZERO_PILOT_ID }),
+        outputPath,
+      );
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /PILOT_SLEEPER_LEAGUE_ID/);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

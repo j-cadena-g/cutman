@@ -386,7 +386,7 @@ describe("discoverLeagues", () => {
         [pilotSleeperLeagueId]: {
           league_id: pilotSleeperLeagueId,
           name: "The Pilot",
-          season: "2025",
+          season: "2026",
           sport: "nfl",
         },
       },
@@ -409,11 +409,55 @@ describe("discoverLeagues", () => {
     expect(byId.get(pilotSleeperLeagueId)).toEqual({
       sleeperLeagueId: pilotSleeperLeagueId,
       name: "The Pilot",
-      season: "2025",
+      season: "2026",
       classification: "pilot",
       isOwner: true,
     });
     expect(byId.get(OTHER_LEAGUE_ID)?.classification).toBe("coming_soon");
+  });
+
+  it("does not invent a pilot entry when getLeague returns a different season than the current one", async () => {
+    const user = await seedUser("user_discover_omit_other_season", "discover-omit-other-season@example.test");
+    const pilotSleeperLeagueId = nextPilotLeagueId("discover_omit_other_season");
+    const sleeperClient = createFakeSleeperClient({
+      usersByLookup: {
+        scout: { user_id: "sleeper_scout_omit_other_season", username: "scout", display_name: "Scout" },
+      },
+      userLeagues: {
+        sleeper_scout_omit_other_season: [
+          { league_id: OTHER_LEAGUE_ID, name: "Someday League", season: "2026", sport: "nfl" },
+        ],
+      },
+      leaguesById: {
+        [pilotSleeperLeagueId]: {
+          league_id: pilotSleeperLeagueId,
+          name: "The Pilot",
+          season: "2025",
+          sport: "nfl",
+        },
+      },
+      leagueUsersById: {
+        [pilotSleeperLeagueId]: [
+          {
+            user_id: "sleeper_scout_omit_other_season",
+            username: "scout",
+            display_name: "Scout",
+            is_owner: true,
+          },
+        ],
+      },
+    });
+    await connectSleeperAccount(makeDeps({ sleeperClient, pilotSleeperLeagueId }), {
+      clerkUserId: user.id,
+      usernameInput: "scout",
+    });
+
+    const result = await discoverLeagues(makeDeps({ sleeperClient, pilotSleeperLeagueId }), { clerkUserId: user.id });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected ok");
+    expect(result.season).toBe("2026");
+    expect(result.leagues.map((league) => league.sleeperLeagueId)).toEqual([OTHER_LEAGUE_ID]);
   });
 
   it("does not invent a pilot entry when the omitted league has no matching roster row", async () => {

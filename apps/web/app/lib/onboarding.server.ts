@@ -228,7 +228,7 @@ export async function discoverLeagues(
       deps.sleeperClient.getLeagueUsers(deps.pilotSleeperLeagueId),
     ]);
     const entry = members.find((member) => member.user_id === account.sleeper_user_id);
-    if (pilotLeague && entry) {
+    if (pilotLeague && entry && pilotLeague.season === season) {
       leagues.unshift({
         sleeperLeagueId: pilotLeague.league_id,
         name: pilotLeague.name,
