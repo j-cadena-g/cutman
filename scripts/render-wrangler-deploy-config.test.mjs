@@ -13,9 +13,11 @@ import {
   PLACEHOLDER_PLAYERS_KV_ID,
   renderWranglerConfig,
   resolveAndAssertOutputPath,
+  resolveAndAssertOutputPathForAllowedPaths,
   WRANGLER_DEPLOY_OUTPUT_PATH,
   WRANGLER_DEV_OUTPUT_PATH,
   writeRenderedWranglerConfig,
+  writeRenderedWranglerConfigForAllowedPaths,
 } from "./render-wrangler-deploy-config.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -126,28 +128,30 @@ async function snapshotAllowedOutputs() {
   };
 }
 
-async function withRestoredGitignoredFile(filePath, fn) {
-  let previous;
-  let existed = true;
+async function withTempAllowedOutputs(fn) {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "cutman-wrangler-allowed-"));
+  const allowedOutputs = Object.freeze({
+    production: path.join(dir, ".wrangler.deploy.jsonc"),
+    dev: path.join(dir, ".wrangler.dev.jsonc"),
+  });
   try {
-    previous = await readFile(filePath);
-  } catch (error) {
-    if (error && error.code === "ENOENT") {
-      existed = false;
-    } else {
-      throw error;
-    }
-  }
-
-  try {
-    return await fn();
+    return await fn({ dir, allowedOutputs });
   } finally {
-    if (existed) {
-      await writeFile(filePath, previous);
-    } else {
-      await rm(filePath, { force: true });
-    }
+    await rm(dir, { recursive: true, force: true });
   }
+}
+
+function assertInvalidUseSleeperFixtures(envValue) {
+  assert.throws(
+    () => renderProduction(baseEnv({ USE_SLEEPER_FIXTURES: envValue })),
+    (error) => {
+      assert.equal(
+        error.message,
+        'Invalid USE_SLEEPER_FIXTURES; expected "true" or "false".',
+      );
+      return true;
+    },
+  );
 }
 
 describe("render-wrangler-deploy-config output path", () => {
@@ -215,29 +219,39 @@ describe("render-wrangler-deploy-config output path", () => {
     assert.doesNotMatch(result.stderr, /Missing CLOUDFLARE_ACCOUNT_ID/);
   });
 
-  it("rejects a symbolic link at the allowed production destination", async () => {
-    const dir = await mkdtemp(path.join(os.tmpdir(), "cutman-wrangler-deploy-link-"));
-    const target = path.join(dir, "target.jsonc");
-    await writeFile(target, "should-not-be-overwritten");
+  it("rejects a symbolic link at an allowed production destination without touching repo files", async () => {
+    await withTempAllowedOutputs(async ({ dir, allowedOutputs }) => {
+      const target = path.join(dir, "target.jsonc");
+      await writeFile(target, "should-not-be-overwritten");
+      await symlink(target, allowedOutputs.production);
+      const before = await snapshotAllowedOutputs();
 
-    try {
-      await withRestoredGitignoredFile(WRANGLER_DEPLOY_OUTPUT_PATH, async () => {
-        await rm(WRANGLER_DEPLOY_OUTPUT_PATH, { force: true });
-        await symlink(target, WRANGLER_DEPLOY_OUTPUT_PATH);
-        try {
-          await assert.rejects(
-            () => resolveAndAssertOutputPath(WRANGLER_DEPLOY_OUTPUT_PATH),
-            /symlink/,
-          );
-          assert.equal((await lstat(WRANGLER_DEPLOY_OUTPUT_PATH)).isSymbolicLink(), true);
-          assert.equal(await readFile(target, "utf8"), "should-not-be-overwritten");
-        } finally {
-          await rm(WRANGLER_DEPLOY_OUTPUT_PATH, { force: true });
-        }
-      });
-    } finally {
-      await rm(dir, { recursive: true, force: true });
-    }
+      await assert.rejects(
+        () =>
+          resolveAndAssertOutputPathForAllowedPaths(allowedOutputs.production, {
+            allowedOutputs,
+            symlinkRoot: dir,
+          }),
+        /symlink/,
+      );
+      await assert.rejects(
+        () =>
+          writeRenderedWranglerConfigForAllowedPaths({
+            outputPath: allowedOutputs.production,
+            env: baseEnv(),
+            allowedOutputs,
+            symlinkRoot: dir,
+          }),
+        /symlink/,
+      );
+      assert.equal((await lstat(allowedOutputs.production)).isSymbolicLink(), true);
+      assert.equal(await readFile(target, "utf8"), "should-not-be-overwritten");
+      await assert.rejects(
+        () => resolveAndAssertOutputPath(allowedOutputs.production),
+        /Refusing to write Wrangler config/,
+      );
+      assert.deepEqual(await snapshotAllowedOutputs(), before);
+    });
   });
 
   it("returns at the first missing path component without throwing", async () => {
@@ -269,6 +283,17 @@ describe("render-wrangler-deploy-config output path", () => {
       await assert.rejects(
         () => resolveAndAssertOutputPath(destination),
         /Refusing to write Wrangler config/,
+      );
+      await assert.rejects(
+        () =>
+          resolveAndAssertOutputPathForAllowedPaths(destination, {
+            allowedOutputs: {
+              production: destination,
+              dev: path.join(parentLink, ".wrangler.dev.jsonc"),
+            },
+            symlinkRoot: root,
+          }),
+        /symlink/,
       );
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -332,62 +357,144 @@ describe("render-wrangler-deploy-config output path", () => {
   });
 
   it("selects the production default when injected env omits output even if process.env points elsewhere", async () => {
-    const previousOutput = process.env.WRANGLER_RENDER_OUTPUT;
-    process.env.WRANGLER_RENDER_OUTPUT = WRANGLER_DEV_OUTPUT_PATH;
-    const env = baseEnv();
-    delete env.WRANGLER_RENDER_OUTPUT;
+    await withTempAllowedOutputs(async ({ dir, allowedOutputs }) => {
+      const previousOutput = process.env.WRANGLER_RENDER_OUTPUT;
+      process.env.WRANGLER_RENDER_OUTPUT = WRANGLER_DEV_OUTPUT_PATH;
+      const env = baseEnv();
+      delete env.WRANGLER_RENDER_OUTPUT;
+      const before = await snapshotAllowedOutputs();
 
-    try {
-      await withRestoredGitignoredFile(WRANGLER_DEV_OUTPUT_PATH, async () => {
-        await withRestoredGitignoredFile(WRANGLER_DEPLOY_OUTPUT_PATH, async () => {
-          await rm(WRANGLER_DEPLOY_OUTPUT_PATH, { force: true });
-          const devBefore = await snapshotFile(WRANGLER_DEV_OUTPUT_PATH);
-          await writeRenderedWranglerConfig({ env });
-          const written = await readFile(WRANGLER_DEPLOY_OUTPUT_PATH, "utf8");
-          assert.match(
-            written,
-            new RegExp(`"PILOT_SLEEPER_LEAGUE_ID"\\s*:\\s*"${FAKE_PILOT_ID}"`),
-          );
-          assert.match(written, useSleeperFixturesPattern("false"));
-          assert.doesNotMatch(written, /"secrets"\s*:\s*\{/);
-          assert.deepEqual(await snapshotFile(WRANGLER_DEV_OUTPUT_PATH), devBefore);
+      try {
+        await writeRenderedWranglerConfigForAllowedPaths({
+          env,
+          allowedOutputs,
+          symlinkRoot: dir,
         });
-      });
-    } finally {
-      if (previousOutput === undefined) {
-        delete process.env.WRANGLER_RENDER_OUTPUT;
-      } else {
-        process.env.WRANGLER_RENDER_OUTPUT = previousOutput;
+        const written = await readFile(allowedOutputs.production, "utf8");
+        assert.match(
+          written,
+          new RegExp(`"PILOT_SLEEPER_LEAGUE_ID"\\s*:\\s*"${FAKE_PILOT_ID}"`),
+        );
+        assert.match(written, useSleeperFixturesPattern("false"));
+        assert.doesNotMatch(written, /"secrets"\s*:\s*\{/);
+        await assert.rejects(() => readFile(allowedOutputs.dev));
+        assert.deepEqual(await snapshotAllowedOutputs(), before);
+      } finally {
+        if (previousOutput === undefined) {
+          delete process.env.WRANGLER_RENDER_OUTPUT;
+        } else {
+          process.env.WRANGLER_RENDER_OUTPUT = previousOutput;
+        }
       }
-    }
+    });
   });
 
-  it("writes the allowed local-dev file only when writeRenderedWranglerConfig is invoked", async () => {
-    const deployBefore = await snapshotFile(WRANGLER_DEPLOY_OUTPUT_PATH);
-
-    await withRestoredGitignoredFile(WRANGLER_DEV_OUTPUT_PATH, async () => {
-      await rm(WRANGLER_DEV_OUTPUT_PATH, { force: true });
-      await writeRenderedWranglerConfig({
-        outputPath: WRANGLER_DEV_OUTPUT_PATH,
+  it("classifies an injected temp path as local-dev without writing repository files", async () => {
+    await withTempAllowedOutputs(async ({ dir, allowedOutputs }) => {
+      const before = await snapshotAllowedOutputs();
+      await writeRenderedWranglerConfigForAllowedPaths({
+        outputPath: allowedOutputs.dev,
         env: baseEnv(),
+        allowedOutputs,
+        symlinkRoot: dir,
       });
 
-      const written = await readFile(WRANGLER_DEV_OUTPUT_PATH, "utf8");
+      const written = await readFile(allowedOutputs.dev, "utf8");
       assert.match(written, /"secrets"\s*:\s*\{/);
       assert.match(
         written,
         new RegExp(`"PILOT_SLEEPER_LEAGUE_ID"\\s*:\\s*"${FAKE_PILOT_ID}"`),
       );
       assert.match(written, useSleeperFixturesPattern("false"));
+      await assert.rejects(() => readFile(allowedOutputs.production));
+      await assert.rejects(
+        () =>
+          writeRenderedWranglerConfigForAllowedPaths({
+            outputPath: path.join(os.tmpdir(), ".wrangler.dev.jsonc"),
+            env: baseEnv(),
+            allowedOutputs,
+            symlinkRoot: dir,
+          }),
+        /Refusing to write Wrangler config/,
+      );
       await assert.rejects(
         () =>
           writeRenderedWranglerConfig({
-            outputPath: path.join(os.tmpdir(), ".wrangler.dev.jsonc"),
+            outputPath: allowedOutputs.dev,
             env: baseEnv(),
           }),
         /Refusing to write Wrangler config/,
       );
-      assert.deepEqual(await snapshotFile(WRANGLER_DEPLOY_OUTPUT_PATH), deployBefore);
+      assert.deepEqual(await snapshotAllowedOutputs(), before);
+    });
+  });
+
+  it("classifies by allowedOutputs kind rather than the real repository path", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "cutman-wrangler-kind-"));
+    const allowedOutputs = Object.freeze({
+      production: path.join(dir, "kind-production.jsonc"),
+      dev: path.join(dir, "kind-dev.jsonc"),
+    });
+    const before = await snapshotAllowedOutputs();
+    try {
+      const production = await resolveAndAssertOutputPathForAllowedPaths(
+        allowedOutputs.production,
+        { allowedOutputs, symlinkRoot: dir },
+      );
+      assert.equal(production.isDevConfig, false);
+      assert.notEqual(
+        production.outputPath,
+        path.resolve(WRANGLER_DEPLOY_OUTPUT_PATH),
+      );
+
+      const dev = await resolveAndAssertOutputPathForAllowedPaths(
+        allowedOutputs.dev,
+        { allowedOutputs, symlinkRoot: dir },
+      );
+      assert.equal(dev.isDevConfig, true);
+      assert.notEqual(dev.outputPath, path.resolve(WRANGLER_DEV_OUTPUT_PATH));
+
+      await writeRenderedWranglerConfigForAllowedPaths({
+        outputPath: allowedOutputs.dev,
+        env: baseEnv(),
+        allowedOutputs,
+        symlinkRoot: dir,
+      });
+      assert.match(await readFile(allowedOutputs.dev, "utf8"), /"secrets"\s*:\s*\{/);
+      assert.doesNotMatch(
+        await readFile(allowedOutputs.dev, "utf8"),
+        /"account_id"/,
+      );
+      await assert.rejects(() => readFile(allowedOutputs.production));
+      assert.deepEqual(await snapshotAllowedOutputs(), before);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("ignores injected allowlists on the public writer and resolver", async () => {
+    await withTempAllowedOutputs(async ({ dir, allowedOutputs }) => {
+      const before = await snapshotAllowedOutputs();
+      await assert.rejects(
+        () =>
+          writeRenderedWranglerConfig({
+            outputPath: allowedOutputs.production,
+            env: baseEnv(),
+            allowedOutputs,
+            symlinkRoot: dir,
+          }),
+        /Refusing to write Wrangler config/,
+      );
+      await assert.rejects(
+        () =>
+          resolveAndAssertOutputPath(allowedOutputs.production, {
+            allowedOutputs,
+            symlinkRoot: dir,
+          }),
+        /Refusing to write Wrangler config/,
+      );
+      await assert.rejects(() => readFile(allowedOutputs.production));
+      assert.deepEqual(await snapshotAllowedOutputs(), before);
     });
   });
 });
@@ -536,6 +643,43 @@ describe("render-wrangler-deploy-config", () => {
 
   it("exports PLACEHOLDER_PILOT_ID matching the tracked wrangler template", () => {
     assert.equal(trackedPilotId, PLACEHOLDER_PILOT_ID);
+  });
+
+  it("defaults USE_SLEEPER_FIXTURES to false when unset, empty, or whitespace", () => {
+    const omitted = baseEnv();
+    delete omitted.USE_SLEEPER_FIXTURES;
+    assert.match(renderProduction(omitted), useSleeperFixturesPattern("false"));
+    assert.match(
+      renderProduction(baseEnv({ USE_SLEEPER_FIXTURES: "" })),
+      useSleeperFixturesPattern("false"),
+    );
+    assert.match(
+      renderProduction(baseEnv({ USE_SLEEPER_FIXTURES: "   " })),
+      useSleeperFixturesPattern("false"),
+    );
+  });
+
+  it("trims surrounding whitespace on explicit true and false", () => {
+    assert.match(
+      renderProduction(baseEnv({ USE_SLEEPER_FIXTURES: " true " })),
+      useSleeperFixturesPattern("true"),
+    );
+    assert.match(
+      renderDev(baseEnv({ USE_SLEEPER_FIXTURES: "\tfalse\n" })),
+      useSleeperFixturesPattern("false"),
+    );
+  });
+
+  it("rejects coerced or object-like USE_SLEEPER_FIXTURES values without echoing them", () => {
+    assertInvalidUseSleeperFixtures("TRUE");
+    assertInvalidUseSleeperFixtures("True");
+    assertInvalidUseSleeperFixtures("1");
+    assertInvalidUseSleeperFixtures("yes");
+    assertInvalidUseSleeperFixtures("0");
+    assertInvalidUseSleeperFixtures("falsey");
+    assertInvalidUseSleeperFixtures(true);
+    assertInvalidUseSleeperFixtures(1);
+    assertInvalidUseSleeperFixtures({ toString: () => "true" });
   });
 
   it("renders both production KV ids onto the matching bindings", () => {

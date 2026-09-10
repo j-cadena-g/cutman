@@ -274,11 +274,17 @@ describe("LeagueBrain internal vs Sleeper identity", () => {
 });
 
 describe("LeagueBrain legacy Durable Object migration", () => {
+  // 0002 maps migrated D1 leagues.id to `legacy_${sleeper_league_id}`. Destination
+  // brains in these tests use that production-realistic mapping, not a UUID.
   const LEGACY_SLEEPER_ID = "900000000000000001";
-  const INTERNAL_ID = "league_internal_migrated_1";
+  const INTERNAL_ID = `legacy_${LEGACY_SLEEPER_ID}`;
   const MISMATCH_SLEEPER_NAME = "900000000000000011";
-  const MISMATCH_INTERNAL_ID = "league_internal_migrated_mismatch";
+  const MISMATCH_INTERNAL_ID = `legacy_${MISMATCH_SLEEPER_NAME}`;
   const OTHER_SLEEPER_ID = "900000000000000002";
+  const EMPTY_SLEEPER_ID = "900000000000000003";
+  const EMPTY_INTERNAL_ID = `legacy_${EMPTY_SLEEPER_ID}`;
+  const NEW_UUID_INTERNAL_ID = "550e8400-e29b-41d4-a716-446655440000";
+  const WRONG_CALLER_INTERNAL_ID = "legacy_900000000000000099";
   const SNAPSHOT_CREATED_AT = 1_700_000_000_001;
   const BEAT_CREATED_AT = 1_700_000_000_002;
   const BIBLE_CREATED_AT = 1_700_000_000_003;
@@ -330,28 +336,41 @@ describe("LeagueBrain legacy Durable Object migration", () => {
     poll: LeagueBrain["poll"];
     attemptRecap: LeagueBrain["attemptRecap"];
     ingestSnapshot: LeagueBrain["ingestSnapshot"];
-    exportLegacyStateFromSource(sleeperLeagueId: string): Promise<LegacyBrainState | null>;
+    exportLegacyStateFromSource(
+      sleeperLeagueId: string,
+      callerInternalLeagueId: string,
+    ): Promise<LegacyBrainState | null>;
     legacyExportCalls?: number;
   };
 
-  function legacyImportFailedLog(leagueId: string, attempt: number): unknown[] {
+  function legacyImportFailedLog(
+    leagueId: string,
+    attempt: number,
+    reason: "error" | "unknown" = "error",
+  ): unknown[] {
     return [
       JSON.stringify({
         event: "league_brain.legacy_import_failed",
         leagueId,
         attempt,
         max: LEGACY_IMPORT_MAX_ATTEMPTS,
+        reason,
       }),
     ];
   }
 
-  function legacyImportAbandonedLog(leagueId: string, attempt: number): unknown[] {
+  function legacyImportAbandonedLog(
+    leagueId: string,
+    attempt: number,
+    reason: "error" | "unknown" = "error",
+  ): unknown[] {
     return [
       JSON.stringify({
         event: "league_brain.legacy_import_abandoned",
         leagueId,
         attempt,
         max: LEGACY_IMPORT_MAX_ATTEMPTS,
+        reason,
       }),
     ];
   }
@@ -364,12 +383,15 @@ describe("LeagueBrain legacy Durable Object migration", () => {
     const payloads = (Array.isArray(logged) ? logged : []).flat();
     for (const payload of payloads) {
       if (typeof payload !== "string") continue;
-      expect(Object.keys(JSON.parse(payload) as Record<string, unknown>).sort()).toEqual([
+      const parsed = JSON.parse(payload) as Record<string, unknown>;
+      expect(Object.keys(parsed).sort()).toEqual([
         "attempt",
         "event",
         "leagueId",
         "max",
+        "reason",
       ]);
+      expect(parsed.reason === "error" || parsed.reason === "unknown").toBe(true);
     }
   }
 
@@ -588,7 +610,7 @@ describe("LeagueBrain legacy Durable Object migration", () => {
       }),
     ]);
 
-    const exported = await legacy.exportLegacyState(LEGACY_SLEEPER_ID);
+    const exported = await legacy.exportLegacyState(LEGACY_SLEEPER_ID, INTERNAL_ID);
     expect(exported).not.toBeNull();
     expect(exported).not.toHaveProperty("settings");
     expect(exported?.sleeperLeagueId).toBe(LEGACY_SLEEPER_ID);
@@ -636,13 +658,13 @@ describe("LeagueBrain legacy Durable Object migration", () => {
         entry: "Cutman League is in the book. Tone: playful.",
       }),
     ]);
-    expect(await env.LEAGUE_BRAIN.getByName(MISMATCH_SLEEPER_NAME).exportLegacyState(MISMATCH_SLEEPER_NAME)).toBeNull();
-    expect(await mismatched.exportLegacyState(MISMATCH_SLEEPER_NAME)).toBeNull();
+    expect(await env.LEAGUE_BRAIN.getByName(MISMATCH_SLEEPER_NAME).exportLegacyState(MISMATCH_SLEEPER_NAME, MISMATCH_INTERNAL_ID)).toBeNull();
+    expect(await mismatched.exportLegacyState(MISMATCH_SLEEPER_NAME, MISMATCH_INTERNAL_ID)).toBeNull();
 
-    const emptyTarget = env.LEAGUE_BRAIN.getByName("league_internal_migrated_empty");
+    const emptyTarget = env.LEAGUE_BRAIN.getByName(EMPTY_INTERNAL_ID);
     await emptyTarget.bootstrap({
-      leagueId: "league_internal_migrated_empty",
-      sleeperLeagueId: "900000000000000003",
+      leagueId: EMPTY_INTERNAL_ID,
+      sleeperLeagueId: EMPTY_SLEEPER_ID,
       name: "Fresh League",
       tone: "sportscenter",
     });
@@ -653,9 +675,102 @@ describe("LeagueBrain legacy Durable Object migration", () => {
     expect(empty.bible).toHaveLength(1);
   });
 
+  it("returns null from exportLegacyState for a wrong caller, new UUID, or source mismatch", async () => {
+    const sleeperId = "900000000000000061";
+    const mappedCaller = `legacy_${sleeperId}`;
+    const source = await seedLegacyBrain(sleeperId, {
+      leagueId: sleeperId,
+      sleeperLeagueId: sleeperId,
+    });
+
+    const exported = await source.exportLegacyState(sleeperId, mappedCaller);
+    expect(exported).not.toBeNull();
+    expect(exported?.sleeperLeagueId).toBe(sleeperId);
+
+    expect(await source.exportLegacyState(sleeperId, WRONG_CALLER_INTERNAL_ID)).toBeNull();
+    expect(await source.exportLegacyState(sleeperId, NEW_UUID_INTERNAL_ID)).toBeNull();
+
+    const mismatchSleeper = "900000000000000062";
+    const mismatchSource = await seedLegacyBrain(mismatchSleeper, {
+      leagueId: "league_other_internal",
+      sleeperLeagueId: OTHER_SLEEPER_ID,
+    });
+    expect(await mismatchSource.exportLegacyState(mismatchSleeper, `legacy_${mismatchSleeper}`)).toBeNull();
+  });
+
+  it("does not import into a UUID-named destination even when the Sleeper-named source has history", async () => {
+    const sleeperId = "900000000000000071";
+    await seedLegacyBrain(sleeperId, {
+      leagueId: sleeperId,
+      sleeperLeagueId: sleeperId,
+    });
+    const next = env.LEAGUE_BRAIN.getByName(NEW_UUID_INTERNAL_ID);
+    await next.bootstrap({
+      leagueId: NEW_UUID_INTERNAL_ID,
+      sleeperLeagueId: sleeperId,
+      name: "Cutman League",
+      tone: "playful",
+    });
+
+    const ignored = await readBrainSql(next);
+    expect(ignored.snapshots).toEqual([]);
+    expect(ignored.beats).toEqual([]);
+    expect(ignored.recaps).toEqual([]);
+    expect(ignored.bible).toEqual([
+      expect.objectContaining({
+        entry: "Cutman League is in the book. Tone: playful.",
+      }),
+    ]);
+  });
+
+  it("logs unknown reason when the rejected export is not an Error", async () => {
+    const sleeperId = "900000000000000081";
+    const internalId = `legacy_${sleeperId}`;
+    await seedLegacyBrain(sleeperId, {
+      leagueId: sleeperId,
+      sleeperLeagueId: sleeperId,
+    });
+    const next = env.LEAGUE_BRAIN.getByName(internalId);
+    const input = {
+      leagueId: internalId,
+      sleeperLeagueId: sleeperId,
+      name: "Cutman League",
+      tone: "playful" as const,
+    };
+
+    const logged = await runInDurableObject(next, async (instance) => {
+      const brain = instance as unknown as TestBrain;
+      brain.exportLegacyStateFromSource = async () => {
+        throw "rpc rejected durable-object-id-secret";
+      };
+      const events: unknown[][] = [];
+      const originalError = console.error;
+      console.error = ((...args: unknown[]) => {
+        events.push(args);
+      }) as typeof console.error;
+      try {
+        await brain.bootstrap(input);
+      } finally {
+        console.error = originalError;
+      }
+      return events;
+    });
+
+    expect(logged).toEqual([legacyImportFailedLog(internalId, 1, "unknown")]);
+    expectSafeLegacyImportLogs(logged, ["rpc rejected", "durable-object-id-secret"]);
+    const pending = await readBrainSql(next);
+    expect(pending.settings).toEqual(
+      expect.arrayContaining([
+        { key: "legacyImportPending", value: "1" },
+        { key: "legacyImportFailureCount", value: "1" },
+      ]),
+    );
+    expect(pending.settings.some((row) => row.key === "legacyMigratedFrom")).toBe(false);
+  });
+
   it("catches a rejected legacy export, refuses history while pending, then imports on retry", async () => {
     const retrySleeperId = "900000000000000021";
-    const retryInternalId = "league_internal_migrated_retry";
+    const retryInternalId = `legacy_${retrySleeperId}`;
     const leak = `rpc rejected ${retrySleeperId} durable-object-id-secret`;
     await seedLegacyBrain(retrySleeperId, {
       leagueId: retrySleeperId,
@@ -673,12 +788,12 @@ describe("LeagueBrain legacy Durable Object migration", () => {
       const brain = instance as unknown as TestBrain;
       const original = brain.exportLegacyStateFromSource.bind(brain);
       let attempts = 0;
-      brain.exportLegacyStateFromSource = async (sleeperLeagueId) => {
+      brain.exportLegacyStateFromSource = async (sleeperLeagueId, callerInternalLeagueId) => {
         attempts += 1;
         if (attempts === 1) {
           throw new Error(leak);
         }
-        return original(sleeperLeagueId);
+        return original(sleeperLeagueId, callerInternalLeagueId);
       };
       const events: unknown[][] = [];
       const originalError = console.error;
@@ -694,7 +809,8 @@ describe("LeagueBrain legacy Durable Object migration", () => {
     });
 
     expect(logged).toEqual([legacyImportFailedLog(retryInternalId, 1)]);
-    expectSafeLegacyImportLogs(logged, [retrySleeperId, "rpc rejected", "durable-object-id-secret"]);
+    // leagueId is `legacy_${sleeper}` (allowed). Forbid leak tokens, not the snowflake substring.
+    expectSafeLegacyImportLogs(logged, ["rpc rejected", "durable-object-id-secret"]);
 
     const pending = await readBrainSql(next);
     expect(pending.snapshots).toEqual([]);
@@ -832,7 +948,7 @@ describe("LeagueBrain legacy Durable Object migration", () => {
 
   it("abandons legacy import after consecutive failures and then bootstraps a fresh book", async () => {
     const abandonSleeperId = "900000000000000031";
-    const abandonInternalId = "league_internal_migrated_abandon";
+    const abandonInternalId = `legacy_${abandonSleeperId}`;
     const leak = `rpc rejected ${abandonSleeperId} durable-object-id-secret`;
     await seedLegacyBrain(abandonSleeperId, {
       leagueId: abandonSleeperId,
@@ -855,7 +971,7 @@ describe("LeagueBrain legacy Durable Object migration", () => {
       };
     });
 
-    const forbidden = [abandonSleeperId, "rpc rejected", "durable-object-id-secret"];
+    const forbidden = ["rpc rejected", "durable-object-id-secret"];
     const exportCalls = (): Promise<number> =>
       runInDurableObject(next, async (instance) => (instance as unknown as TestBrain).legacyExportCalls ?? 0);
 
@@ -966,7 +1082,7 @@ describe("LeagueBrain legacy Durable Object migration", () => {
 
   it("ingestSnapshot rejects while pending and writes nothing, then writes after a successful retry", async () => {
     const retrySleeperId = "900000000000000041";
-    const retryInternalId = "league_internal_ingest_pending_retry";
+    const retryInternalId = `legacy_${retrySleeperId}`;
     await seedLegacyBrain(retrySleeperId, {
       leagueId: retrySleeperId,
       sleeperLeagueId: retrySleeperId,
@@ -983,12 +1099,12 @@ describe("LeagueBrain legacy Durable Object migration", () => {
       const brain = instance as unknown as TestBrain;
       const original = brain.exportLegacyStateFromSource.bind(brain);
       let attempts = 0;
-      brain.exportLegacyStateFromSource = async (sleeperLeagueId) => {
+      brain.exportLegacyStateFromSource = async (sleeperLeagueId, callerInternalLeagueId) => {
         attempts += 1;
         if (attempts === 1) {
           throw new Error("export unavailable");
         }
-        return original(sleeperLeagueId);
+        return original(sleeperLeagueId, callerInternalLeagueId);
       };
     });
     await captureBootstrapLogs(next, input);
@@ -1017,7 +1133,7 @@ describe("LeagueBrain legacy Durable Object migration", () => {
 
   it("ingestSnapshot rejects while pending and writes nothing, then writes after abandonment", async () => {
     const abandonSleeperId = "900000000000000051";
-    const abandonInternalId = "league_internal_ingest_pending_abandon";
+    const abandonInternalId = `legacy_${abandonSleeperId}`;
     const next = env.LEAGUE_BRAIN.getByName(abandonInternalId);
     const input = {
       leagueId: abandonInternalId,

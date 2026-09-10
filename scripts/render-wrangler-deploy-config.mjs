@@ -20,10 +20,24 @@ export const PLACEHOLDER_PILOT_ID = "0000000000000000000";
 export const PLACEHOLDER_PLAYERS_KV_ID = "00000000000000000000000000000000";
 export const PLACEHOLDER_EXPLORER_KV_ID = "00000000000000000000000000000002";
 
+/**
+ * Frozen repository destinations used by CLI, `writeRenderedWranglerConfig`,
+ * and `run-vite-dev.mjs`. Not injectable from those public entry points.
+ *
+ * @typedef {{ readonly production: string, readonly dev: string }} WranglerAllowedOutputs
+ */
+const PRODUCTION_ALLOWED_OUTPUTS = Object.freeze({
+  production: path.resolve(WRANGLER_DEPLOY_OUTPUT_PATH),
+  dev: path.resolve(WRANGLER_DEV_OUTPUT_PATH),
+});
+
 const ALLOWED_OUTPUT_PATHS = Object.freeze([
-  path.resolve(WRANGLER_DEPLOY_OUTPUT_PATH),
-  path.resolve(WRANGLER_DEV_OUTPUT_PATH),
+  PRODUCTION_ALLOWED_OUTPUTS.production,
+  PRODUCTION_ALLOWED_OUTPUTS.dev,
 ]);
+
+const USE_SLEEPER_FIXTURES_ERROR =
+  'Invalid USE_SLEEPER_FIXTURES; expected "true" or "false".';
 
 const requiredValues = {
   CLOUDFLARE_ACCOUNT_ID: {
@@ -131,10 +145,24 @@ function formatRepoPath(absolutePath) {
   return absolutePath;
 }
 
-function allowedOutputDescription() {
-  return ALLOWED_OUTPUT_PATHS.map((outputPath) => formatRepoPath(outputPath)).join(
+function allowedOutputDescription(allowedOutputPaths = ALLOWED_OUTPUT_PATHS) {
+  return allowedOutputPaths.map((outputPath) => formatRepoPath(outputPath)).join(
     " and ",
   );
+}
+
+function freezeAllowedOutputs(allowedOutputs) {
+  const production = allowedOutputs?.production;
+  const dev = allowedOutputs?.dev;
+  if (typeof production !== "string" || typeof dev !== "string") {
+    throw new Error(
+      "allowedOutputs.production and allowedOutputs.dev are required.",
+    );
+  }
+  return Object.freeze({
+    production: path.resolve(production),
+    dev: path.resolve(dev),
+  });
 }
 
 /**
@@ -179,25 +207,58 @@ export async function assertPathChainHasNoSymlinks(rootPath, destinationPath) {
   }
 }
 
-export async function resolveAndAssertOutputPath(
-  requested = process.env.WRANGLER_RENDER_OUTPUT,
+/**
+ * Resolve a destination against an explicit allowlist keyed by output kind.
+ *
+ * Test-only. Production callers must use `resolveAndAssertOutputPath`,
+ * which always uses the frozen repository destinations. `isDevConfig` is
+ * `outputPath === allowedOutputs.dev`, so tests can classify temp files
+ * without matching the real `WRANGLER_DEV_OUTPUT_PATH`.
+ *
+ * @param {string | null | undefined} requested
+ * @param {{
+ *   allowedOutputs: WranglerAllowedOutputs,
+ *   symlinkRoot?: string,
+ * }} options
+ */
+export async function resolveAndAssertOutputPathForAllowedPaths(
+  requested,
+  { allowedOutputs, symlinkRoot = repoRoot },
 ) {
+  const resolvedAllowed = freezeAllowedOutputs(allowedOutputs);
+  const allowedOutputPaths = Object.freeze([
+    resolvedAllowed.production,
+    resolvedAllowed.dev,
+  ]);
   const outputPath = requested
     ? path.resolve(repoRoot, requested)
-    : path.resolve(WRANGLER_DEPLOY_OUTPUT_PATH);
+    : resolvedAllowed.production;
 
-  if (!ALLOWED_OUTPUT_PATHS.includes(outputPath)) {
+  if (!allowedOutputPaths.includes(outputPath)) {
     throw new Error(
-      `Refusing to write Wrangler config to ${formatRepoPath(outputPath)}. Allowed destinations: ${allowedOutputDescription()}.`,
+      `Refusing to write Wrangler config to ${formatRepoPath(outputPath)}. Allowed destinations: ${allowedOutputDescription(allowedOutputPaths)}.`,
     );
   }
 
-  await assertPathChainHasNoSymlinks(repoRoot, outputPath);
+  await assertPathChainHasNoSymlinks(symlinkRoot, outputPath);
 
   return {
     outputPath,
-    isDevConfig: outputPath === path.resolve(WRANGLER_DEV_OUTPUT_PATH),
+    isDevConfig: outputPath === resolvedAllowed.dev,
   };
+}
+
+/**
+ * Resolve a destination against the frozen repository allowlist.
+ * Extra arguments are ignored so callers cannot inject a custom allowlist.
+ */
+export async function resolveAndAssertOutputPath(
+  requested = process.env.WRANGLER_RENDER_OUTPUT,
+) {
+  return resolveAndAssertOutputPathForAllowedPaths(requested, {
+    allowedOutputs: PRODUCTION_ALLOWED_OUTPUTS,
+    symlinkRoot: repoRoot,
+  });
 }
 
 function getOptionalValue(name, env) {
@@ -229,7 +290,21 @@ function getRequiredValue(name, env) {
 }
 
 function resolveUseSleeperFixtures(env) {
-  return getOptionalValue("USE_SLEEPER_FIXTURES", env) || "false";
+  const raw = env.USE_SLEEPER_FIXTURES;
+  if (raw == null) {
+    return "false";
+  }
+  if (typeof raw !== "string") {
+    throw new Error(USE_SLEEPER_FIXTURES_ERROR);
+  }
+  const value = raw.trim();
+  if (!value) {
+    return "false";
+  }
+  if (value === "true" || value === "false") {
+    return value;
+  }
+  throw new Error(USE_SLEEPER_FIXTURES_ERROR);
 }
 
 function usesSleeperFixtures(env) {
@@ -360,12 +435,33 @@ export function renderWranglerConfig(
   return rendered;
 }
 
-export async function writeRenderedWranglerConfig({
+/**
+ * Write rendered Wrangler config against an explicit allowlist.
+ *
+ * Test-only. Production callers must use `writeRenderedWranglerConfig`,
+ * which always uses the frozen repository destinations. Do not call this
+ * from CLI/`main` or `run-vite-dev.mjs`.
+ *
+ * `allowedOutputs.dev` vs `allowedOutputs.production` is the classification
+ * seam: a temp path listed as `dev` gets the local-dev render even when it
+ * is not the real `WRANGLER_DEV_OUTPUT_PATH`.
+ *
+ * @param {{
+ *   outputPath?: string | null,
+ *   env?: NodeJS.ProcessEnv,
+ *   allowedOutputs: WranglerAllowedOutputs,
+ *   symlinkRoot?: string,
+ * }} options
+ */
+export async function writeRenderedWranglerConfigForAllowedPaths({
   outputPath: requestedOutputPath,
   env = process.env,
-} = {}) {
-  const { outputPath, isDevConfig } = await resolveAndAssertOutputPath(
+  allowedOutputs,
+  symlinkRoot = repoRoot,
+}) {
+  const { outputPath, isDevConfig } = await resolveAndAssertOutputPathForAllowedPaths(
     requestedOutputPath ?? env.WRANGLER_RENDER_OUTPUT ?? null,
+    { allowedOutputs, symlinkRoot },
   );
   const template = await readFile(templatePath, "utf8");
   const secretsExample = isDevConfig
@@ -381,6 +477,23 @@ export async function writeRenderedWranglerConfig({
   await writeFile(outputPath, rendered);
 
   globalThis.console.log(`Wrote ${path.relative(repoRoot, outputPath)}`);
+}
+
+/**
+ * Write rendered Wrangler config to a frozen repository destination.
+ * Only `outputPath` and `env` are read; extra fields such as
+ * `allowedOutputs` are ignored so CLI/`run-vite-dev` cannot inject paths.
+ */
+export async function writeRenderedWranglerConfig({
+  outputPath: requestedOutputPath,
+  env = process.env,
+} = {}) {
+  await writeRenderedWranglerConfigForAllowedPaths({
+    outputPath: requestedOutputPath,
+    env,
+    allowedOutputs: PRODUCTION_ALLOWED_OUTPUTS,
+    symlinkRoot: repoRoot,
+  });
 }
 
 async function main() {

@@ -35,6 +35,7 @@ export const LEGACY_IMPORT_PENDING_MESSAGE = "League history import is pending";
 export const UNBOOTSTRAPPED_MESSAGE = "Cutman is not bootstrapped";
 
 type LegacyImportLogEvent = "league_brain.legacy_import_failed" | "league_brain.legacy_import_abandoned";
+type LegacyImportFailureReason = "error" | "unknown";
 
 type Settings = {
   leagueId: string;
@@ -138,9 +139,10 @@ export class LeagueBrain extends DurableObject<Env> {
   async bootstrap(input: { leagueId: string; sleeperLeagueId: string; name: string; tone: Tone }): Promise<void> {
     try {
       await this.importLegacyStateIfNeeded(input);
-    } catch {
-      // Do not log the rejection: RPC / storage errors can embed Durable Object and Sleeper ids.
-      this.recordLegacyImportRejection(input.leagueId);
+    } catch (error) {
+      // Reason is only "error" | "unknown". Do not log name/message: RPC / storage
+      // errors can embed Durable Object and Sleeper ids.
+      this.recordLegacyImportRejection(input.leagueId, error instanceof Error ? "error" : "unknown");
     }
     this.putSetting("leagueId", input.leagueId);
     this.putSetting("sleeperLeagueId", input.sleeperLeagueId);
@@ -158,10 +160,16 @@ export class LeagueBrain extends DurableObject<Env> {
   }
 
   /**
-   * Read-only RPC used by the internal-id object. Returns history only when this
-   * source still has pre-onboarding identity (`leagueId` equals the Sleeper id).
+   * Read-only RPC used by the destination internal-id object during bootstrap.
+   * Durable Object RPC is reachable only through this Worker's internal binding,
+   * not as a public HTTP endpoint. The caller-id check is not cryptographic
+   * authentication: it only refuses export when the destination is not the 0002
+   * mapping (`legacy_${sleeperLeagueId}`) for this source. Combined with
+   * `isLegacySourceFor`, unrelated internal objects cannot pull another league's
+   * history.
    */
-  async exportLegacyState(sleeperLeagueId: string): Promise<LegacyBrainState | null> {
+  async exportLegacyState(sleeperLeagueId: string, callerInternalLeagueId: string): Promise<LegacyBrainState | null> {
+    if (callerInternalLeagueId !== `legacy_${sleeperLeagueId}`) return null;
     if (!this.isLegacySourceFor(sleeperLeagueId)) return null;
     return {
       sleeperLeagueId,
@@ -435,7 +443,7 @@ export class LeagueBrain extends DurableObject<Env> {
       return;
     }
 
-    const legacy = await this.exportLegacyStateFromSource(input.sleeperLeagueId);
+    const legacy = await this.exportLegacyStateFromSource(input.sleeperLeagueId, input.leagueId);
     // The export await yields the DO input gate. Re-read completion markers before
     // writing so a concurrent bootstrap cannot look "done" with a partial copy.
     if (this.getSetting(LEGACY_MIGRATED_FROM_KEY)) {
@@ -458,8 +466,11 @@ export class LeagueBrain extends DurableObject<Env> {
   }
 
   /** Test seam: replace on the instance to simulate a rejected export RPC. */
-  private async exportLegacyStateFromSource(sleeperLeagueId: string): Promise<LegacyBrainState | null> {
-    return this.env.LEAGUE_BRAIN.getByName(sleeperLeagueId).exportLegacyState(sleeperLeagueId);
+  private async exportLegacyStateFromSource(
+    sleeperLeagueId: string,
+    callerInternalLeagueId: string,
+  ): Promise<LegacyBrainState | null> {
+    return this.env.LEAGUE_BRAIN.getByName(sleeperLeagueId).exportLegacyState(sleeperLeagueId, callerInternalLeagueId);
   }
 
   private isLegacyImportPending(): boolean {
@@ -482,7 +493,7 @@ export class LeagueBrain extends DurableObject<Env> {
    * concurrent waiter at the export await cannot observe a half-updated pending/abandoned pair.
    * Skip if a sibling request already completed or abandoned the copy.
    */
-  private recordLegacyImportRejection(leagueId: string): void {
+  private recordLegacyImportRejection(leagueId: string, reason: LegacyImportFailureReason): void {
     let attempt = 0;
     this.ctx.storage.transactionSync(() => {
       if (this.getSetting(LEGACY_MIGRATED_FROM_KEY) || this.getSetting(LEGACY_IMPORT_ABANDONED_KEY)) {
@@ -498,18 +509,24 @@ export class LeagueBrain extends DurableObject<Env> {
       }
     });
     if (attempt === 0) return;
-    this.logLegacyImportEvent("league_brain.legacy_import_failed", leagueId, attempt);
+    this.logLegacyImportEvent("league_brain.legacy_import_failed", leagueId, attempt, reason);
     if (attempt >= LEGACY_IMPORT_MAX_ATTEMPTS) {
-      this.logLegacyImportEvent("league_brain.legacy_import_abandoned", leagueId, attempt);
+      this.logLegacyImportEvent("league_brain.legacy_import_abandoned", leagueId, attempt, reason);
     }
   }
 
-  private logLegacyImportEvent(event: LegacyImportLogEvent, leagueId: string, attempt: number): void {
+  private logLegacyImportEvent(
+    event: LegacyImportLogEvent,
+    leagueId: string,
+    attempt: number,
+    reason: LegacyImportFailureReason,
+  ): void {
     const payload = JSON.stringify({
       event,
       leagueId,
       attempt,
       max: LEGACY_IMPORT_MAX_ATTEMPTS,
+      reason,
     });
     switch (event) {
       case "league_brain.legacy_import_failed":

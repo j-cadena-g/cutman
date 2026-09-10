@@ -28,6 +28,8 @@ export const LEAGUES_TTL_MS = 15 * 60 * 1000;
 export const BOARD_TTL_MS = 5 * 60 * 1000;
 export const ORIGIN_QUOTA_PER_HOUR = 30;
 const HOUR_MS = 60 * 60 * 1000;
+/** Board miss: getLeague, getLeagueUsers, getRosters, getMatchups, and getPlayers. */
+const BOARD_MISS_ORIGIN_CHARGE = 5;
 
 type Cached<T> = {
   fetchedAt: number;
@@ -87,12 +89,20 @@ type CacheRead<T> = {
   fresh: boolean;
 };
 
+async function readJsonOrNull<T>(cache: ExplorerCache, key: string): Promise<T | null> {
+  try {
+    return (await cache.getJson<T>(key)) ?? null;
+  } catch {
+    return null;
+  }
+}
+
 async function readCache<T>(
   deps: ExplorerDeps,
   key: string,
   ttlMs: number,
 ): Promise<CacheRead<T> | null> {
-  const cached = await deps.cache.getJson<Cached<T>>(key);
+  const cached = await readJsonOrNull<Cached<T>>(deps.cache, key);
   if (!cached) return null;
   return {
     payload: cached.payload,
@@ -114,14 +124,27 @@ function quotaKey(clerkUserId: string, now: number): string {
 }
 
 // Advisory only: KV get-then-put is eventually consistent, so concurrent requests can exceed the hour budget. Strict enforcement needs an atomic serialized counter before public rollout.
-async function tryConsumeQuota(deps: ExplorerDeps, clerkUserId: string): Promise<boolean> {
+async function tryConsumeQuota(deps: ExplorerDeps, clerkUserId: string, charge: number): Promise<boolean> {
   const key = quotaKey(clerkUserId, deps.now());
-  const entry = await deps.cache.getJson<{ count: number }>(key);
+  const entry = await readJsonOrNull<{ count: number }>(deps.cache, key);
   const count = entry?.count ?? 0;
   const limit = deps.quotaPerHour ?? ORIGIN_QUOTA_PER_HOUR;
-  if (count >= limit) return false;
-  await deps.cache.putJson(key, { count: count + 1 }, { expirationTtl: 2 * 60 * 60 });
+  if (count + charge > limit) return false;
+  await deps.cache.putJson(key, { count: count + charge }, { expirationTtl: 2 * 60 * 60 });
   return true;
+}
+
+function plannedUserOriginCharge(
+  user: SleeperUser | null | undefined,
+  leagues: SleeperLeague[] | undefined,
+  leaguesCached: CacheRead<SleeperLeague[]> | null,
+): { charge: number; expectLeaguesOrigin: boolean } {
+  const needUserOrigin = user === undefined;
+  const expectLeaguesOrigin = leagues === undefined && !(needUserOrigin && Boolean(leaguesCached?.fresh));
+  return {
+    charge: (needUserOrigin ? 1 : 0) + (expectLeaguesOrigin ? 1 : 0),
+    expectLeaguesOrigin,
+  };
 }
 
 export type ExplorerUserResult =
@@ -264,7 +287,8 @@ export async function lookupExplorerUser(
     };
   }
 
-  const allowed = await tryConsumeQuota(deps, input.clerkUserId);
+  const { charge, expectLeaguesOrigin } = plannedUserOriginCharge(user, leagues, leaguesCached);
+  const allowed = await tryConsumeQuota(deps, input.clerkUserId, charge);
   if (!allowed) {
     return staleUserResult(username, userCached, leaguesCached, season, week) ?? { kind: "quota_exceeded" };
   }
@@ -288,6 +312,13 @@ export async function lookupExplorerUser(
     }
 
     if (leagues === undefined) {
+      if (!expectLeaguesOrigin) {
+        const extraAllowed = await tryConsumeQuota(deps, input.clerkUserId, 1);
+        if (!extraAllowed) {
+          if (cachedUserId && user.user_id !== cachedUserId) return { kind: "quota_exceeded" };
+          return staleUserResult(username, userCached, leaguesCached, season, week) ?? { kind: "quota_exceeded" };
+        }
+      }
       leagues = await deps.sleeper.getUserLeagues(user.user_id, season);
       await writeCache(deps, leaguesKey(user.user_id, season), leagues, LEAGUES_TTL_MS);
     }
@@ -349,7 +380,7 @@ export async function lookupExplorerBoard(
     };
   }
 
-  const allowed = await tryConsumeQuota(deps, input.clerkUserId);
+  const allowed = await tryConsumeQuota(deps, input.clerkUserId, BOARD_MISS_ORIGIN_CHARGE);
   if (!allowed) {
     if (cached?.payload.league) {
       const playersResult = await loadExplorerPlayers(deps);

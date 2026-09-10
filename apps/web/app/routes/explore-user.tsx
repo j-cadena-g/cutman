@@ -79,7 +79,7 @@ export default function ExploreUser({ loaderData }: Route.ComponentProps) {
                 <li key={league.sleeperLeagueId}>
                   <Link
                     to={`/explore/leagues/${encodeURIComponent(league.sleeperLeagueId)}`}
-                    className="block rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-flag/70"
+                    className="block rounded-xl focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-flag/70"
                   >
                     <Card className="transition-colors hover:bg-turf">
                       <Badge>{formatLeagueStatus(league.status)}</Badge>

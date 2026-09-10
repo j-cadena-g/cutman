@@ -2,6 +2,7 @@
 import { env } from "cloudflare:test";
 import {
   EXAMPLE_SLEEPER_USERNAME,
+  EXAMPLE_SLEEPER_USER_ID,
   SleeperRequestError,
   V1_LEAGUE_ID,
   V1_LEAGUE_NAME,
@@ -23,6 +24,7 @@ import { describe, expect, it } from "vitest";
 import { getDashboardOrNull } from "../app/lib/dashboard.ts";
 import {
   BOARD_TTL_MS,
+  ORIGIN_QUOTA_PER_HOUR,
   USER_TTL_MS,
   createMemoryExplorerCache,
   explorerDepsFromEnv,
@@ -40,6 +42,7 @@ import {
   isRealPlayerId,
   isValidExplorerLeagueId,
   isValidExplorerUsername,
+  sleeperAvatarUrl,
 } from "../app/lib/sleeper-explorer.ts";
 
 function countingClient(base: SleeperClient = createFixtureClient()) {
@@ -117,6 +120,34 @@ function makeDeps(overrides: Partial<ExplorerDeps> & { sleeper?: SleeperClient }
     now: overrides.now ?? (() => 1_700_000_000_000),
     quotaPerHour: overrides.quotaPerHour,
   };
+}
+
+const HOUR_MS = 60 * 60 * 1000;
+const FIXED_NOW = 1_700_000_000_000;
+
+function explorerQuotaKey(clerkUserId: string, now: number): string {
+  return `explore:quota:${clerkUserId}:${Math.floor(now / HOUR_MS)}`;
+}
+
+async function readQuotaCount(cache: ExplorerCache, clerkUserId: string, now: number): Promise<number> {
+  const entry = await cache.getJson<{ count: number }>(explorerQuotaKey(clerkUserId, now));
+  return entry?.count ?? 0;
+}
+
+function cacheRejectingGets(base: ExplorerCache, reject: (key: string) => boolean): ExplorerCache {
+  return {
+    async getJson(key) {
+      if (reject(key)) throw new Error("explorer cache get failed");
+      return base.getJson(key);
+    },
+    putJson(key, value, options) {
+      return base.putJson(key, value, options);
+    },
+  };
+}
+
+async function seedFreshNflState(cache: ExplorerCache, now: number): Promise<void> {
+  await cache.putJson("explore:nfl-state", { fetchedAt: now, payload: v1FixtureState });
 }
 
 const HANDLE_SWAP_USERNAME = "handle_swap";
@@ -201,6 +232,24 @@ describe("isValidExplorerLeagueId", () => {
     expect(isValidExplorerLeagueId("12/34")).toBe(false);
     expect(isValidExplorerLeagueId("1 2")).toBe(false);
     expect(isValidExplorerLeagueId("0".repeat(33))).toBe(false);
+  });
+});
+
+describe("sleeperAvatarUrl", () => {
+  it("returns null when the avatar identifier is missing", () => {
+    expect(sleeperAvatarUrl(null)).toBeNull();
+    expect(sleeperAvatarUrl(undefined)).toBeNull();
+    expect(sleeperAvatarUrl("")).toBeNull();
+  });
+
+  it("keeps an ordinary identifier in the thumbs URL unchanged", () => {
+    expect(sleeperAvatarUrl("abc123def")).toBe("https://sleepercdn.com/avatars/thumbs/abc123def");
+  });
+
+  it("percent-encodes slash, spaces, and query/hash characters before interpolation", () => {
+    expect(sleeperAvatarUrl("ab/cd")).toBe("https://sleepercdn.com/avatars/thumbs/ab%2Fcd");
+    expect(sleeperAvatarUrl("ab cd")).toBe("https://sleepercdn.com/avatars/thumbs/ab%20cd");
+    expect(sleeperAvatarUrl("id?x=1#frag")).toBe("https://sleepercdn.com/avatars/thumbs/id%3Fx%3D1%23frag");
   });
 });
 
@@ -524,7 +573,7 @@ describe("lookupExplorerUser", () => {
   });
 
   it("returns quota_exceeded after the per-user origin budget is spent", async () => {
-    const deps = makeDeps({ quotaPerHour: 1 });
+    const deps = makeDeps({ quotaPerHour: 2 });
     const first = await lookupExplorerUser(deps, { username: EXAMPLE_SLEEPER_USERNAME, clerkUserId: "clerk_1" });
     expect(first.kind).toBe("ok");
     const second = await lookupExplorerUser(deps, { username: "mina", clerkUserId: "clerk_1" });
@@ -541,7 +590,7 @@ describe("lookupExplorerUser", () => {
     });
     expect(miss).toEqual({ kind: "not_found", username: "nobody_here" });
 
-    const first = await lookupExplorerUser(makeDeps({ cache, now: () => now, quotaPerHour: 1 }), {
+    const first = await lookupExplorerUser(makeDeps({ cache, now: () => now, quotaPerHour: 2 }), {
       username: EXAMPLE_SLEEPER_USERNAME,
       clerkUserId: "clerk_1",
     });
@@ -549,11 +598,119 @@ describe("lookupExplorerUser", () => {
 
     const { client, calls } = countingClient();
     const stale = await lookupExplorerUser(
-      makeDeps({ sleeper: client, cache, now: () => now, quotaPerHour: 1 }),
+      makeDeps({ sleeper: client, cache, now: () => now, quotaPerHour: 2 }),
       { username: "nobody_here", clerkUserId: "clerk_1" },
     );
     expect(stale).toEqual({ kind: "quota_exceeded" });
     expect(calls.getUser).toBe(0);
+  });
+
+  it("treats invalid JSON in the user cache as a miss and continues to origin", async () => {
+    const store = new Map<string, string>();
+    const cache = createMemoryExplorerCache(store);
+    store.set(`explore:user:${EXAMPLE_SLEEPER_USERNAME}`, "{not-json");
+    const { client, calls } = countingClient();
+    const result = await lookupExplorerUser(makeDeps({ sleeper: client, cache }), {
+      username: EXAMPLE_SLEEPER_USERNAME,
+      clerkUserId: "clerk_1",
+    });
+    expect(result.kind).toBe("ok");
+    expect(calls.getUser).toBe(1);
+    expect(calls.getUserLeagues).toBe(1);
+  });
+
+  it("treats a rejected user cache get as a miss and continues to origin", async () => {
+    const cache = cacheRejectingGets(createMemoryExplorerCache(), (key) => key.startsWith("explore:user:"));
+    const { client, calls } = countingClient();
+    const result = await lookupExplorerUser(makeDeps({ sleeper: client, cache }), {
+      username: EXAMPLE_SLEEPER_USERNAME,
+      clerkUserId: "clerk_1",
+    });
+    expect(result.kind).toBe("ok");
+    expect(calls.getUser).toBe(1);
+  });
+
+  it("treats invalid JSON in the quota cache as a miss and allows the lookup", async () => {
+    const store = new Map<string, string>();
+    const cache = createMemoryExplorerCache(store);
+    store.set(explorerQuotaKey("clerk_1", FIXED_NOW), "{not-json");
+    const result = await lookupExplorerUser(makeDeps({ cache, now: () => FIXED_NOW }), {
+      username: EXAMPLE_SLEEPER_USERNAME,
+      clerkUserId: "clerk_1",
+    });
+    expect(result.kind).toBe("ok");
+    expect(await readQuotaCount(cache, "clerk_1", FIXED_NOW)).toBe(2);
+  });
+
+  it("treats a rejected quota cache get as a miss and allows the lookup", async () => {
+    const cache = cacheRejectingGets(createMemoryExplorerCache(), (key) => key.startsWith("explore:quota:"));
+    const result = await lookupExplorerUser(makeDeps({ cache }), {
+      username: EXAMPLE_SLEEPER_USERNAME,
+      clerkUserId: "clerk_1",
+    });
+    expect(result.kind).toBe("ok");
+  });
+
+  it("charges two origin calls for a cold user and leagues lookup", async () => {
+    const cache = createMemoryExplorerCache();
+    const result = await lookupExplorerUser(makeDeps({ cache, now: () => FIXED_NOW }), {
+      username: EXAMPLE_SLEEPER_USERNAME,
+      clerkUserId: "clerk_1",
+    });
+    expect(result.kind).toBe("ok");
+    expect(await readQuotaCount(cache, "clerk_1", FIXED_NOW)).toBe(2);
+  });
+
+  it("charges only the leagues fetch when the user cache is already fresh", async () => {
+    const cache = createMemoryExplorerCache();
+    await seedFreshNflState(cache, FIXED_NOW);
+    await cache.putJson(`explore:user:${EXAMPLE_SLEEPER_USERNAME}`, {
+      fetchedAt: FIXED_NOW,
+      payload: {
+        user_id: EXAMPLE_SLEEPER_USER_ID,
+        username: EXAMPLE_SLEEPER_USERNAME,
+        display_name: EXAMPLE_SLEEPER_USERNAME,
+      },
+    });
+    const { client, calls } = countingClient();
+    const result = await lookupExplorerUser(makeDeps({ sleeper: client, cache, now: () => FIXED_NOW }), {
+      username: EXAMPLE_SLEEPER_USERNAME,
+      clerkUserId: "clerk_1",
+    });
+    expect(result.kind).toBe("ok");
+    expect(calls.getUser).toBe(0);
+    expect(calls.getUserLeagues).toBe(1);
+    expect(await readQuotaCount(cache, "clerk_1", FIXED_NOW)).toBe(1);
+  });
+
+  it("rejects a user lookup before origin when remaining quota is below the planned charge", async () => {
+    const cache = createMemoryExplorerCache();
+    await seedFreshNflState(cache, FIXED_NOW);
+    const { client, calls } = countingClient();
+    const result = await lookupExplorerUser(
+      makeDeps({ sleeper: client, cache, now: () => FIXED_NOW, quotaPerHour: 1 }),
+      { username: EXAMPLE_SLEEPER_USERNAME, clerkUserId: "clerk_1" },
+    );
+    expect(result).toEqual({ kind: "quota_exceeded" });
+    expect(calls.getNflState).toBe(0);
+    expect(calls.getUser).toBe(0);
+    expect(calls.getUserLeagues).toBe(0);
+    expect(await readQuotaCount(cache, "clerk_1", FIXED_NOW)).toBe(0);
+  });
+
+  it("succeeds a user lookup when remaining quota exactly matches the planned charge", async () => {
+    const cache = createMemoryExplorerCache();
+    await seedFreshNflState(cache, FIXED_NOW);
+    await cache.putJson(explorerQuotaKey("clerk_1", FIXED_NOW), { count: ORIGIN_QUOTA_PER_HOUR - 2 });
+    const { client, calls } = countingClient();
+    const result = await lookupExplorerUser(makeDeps({ sleeper: client, cache, now: () => FIXED_NOW }), {
+      username: EXAMPLE_SLEEPER_USERNAME,
+      clerkUserId: "clerk_1",
+    });
+    expect(result.kind).toBe("ok");
+    expect(calls.getUser).toBe(1);
+    expect(calls.getUserLeagues).toBe(1);
+    expect(await readQuotaCount(cache, "clerk_1", FIXED_NOW)).toBe(ORIGIN_QUOTA_PER_HOUR);
   });
 
   it("returns rate_limited when a stale negative user cache meets a 429", async () => {
@@ -778,6 +935,145 @@ describe("lookupExplorerBoard", () => {
     expect(calls.getLeagueUsers).toBe(1);
     expect(calls.getRosters).toBe(1);
     expect(calls.getMatchups).toBe(1);
+  });
+
+  it("treats invalid JSON in the board cache as a miss and continues to origin", async () => {
+    const store = new Map<string, string>();
+    const cache = createMemoryExplorerCache(store);
+    await seedFreshNflState(cache, FIXED_NOW);
+    store.set(`explore:board:${V1_LEAGUE_ID}:1`, "{not-json");
+    const { client, calls } = countingClient();
+    const result = await lookupExplorerBoard(makeDeps({ sleeper: client, cache, now: () => FIXED_NOW }), {
+      sleeperLeagueId: V1_LEAGUE_ID,
+      clerkUserId: "clerk_1",
+    });
+    expect(result.kind).toBe("ok");
+    expect(calls.getLeague).toBe(1);
+    expect(calls.getLeagueUsers).toBe(1);
+    expect(calls.getRosters).toBe(1);
+    expect(calls.getMatchups).toBe(1);
+  });
+
+  it("treats a rejected board cache get as a miss and continues to origin", async () => {
+    const cache = cacheRejectingGets(createMemoryExplorerCache(), (key) => key.startsWith("explore:board:"));
+    const { client, calls } = countingClient();
+    const result = await lookupExplorerBoard(makeDeps({ sleeper: client, cache }), {
+      sleeperLeagueId: V1_LEAGUE_ID,
+      clerkUserId: "clerk_1",
+    });
+    expect(result.kind).toBe("ok");
+    expect(calls.getLeague).toBe(1);
+  });
+
+  it("treats invalid JSON in the quota cache as a miss on a board lookup", async () => {
+    const store = new Map<string, string>();
+    const cache = createMemoryExplorerCache(store);
+    await seedFreshNflState(cache, FIXED_NOW);
+    store.set(explorerQuotaKey("clerk_1", FIXED_NOW), "{not-json");
+    const result = await lookupExplorerBoard(makeDeps({ cache, now: () => FIXED_NOW }), {
+      sleeperLeagueId: V1_LEAGUE_ID,
+      clerkUserId: "clerk_1",
+    });
+    expect(result.kind).toBe("ok");
+    expect(await readQuotaCount(cache, "clerk_1", FIXED_NOW)).toBe(5);
+  });
+
+  it("treats a rejected quota cache get as a miss on a board lookup", async () => {
+    const cache = cacheRejectingGets(createMemoryExplorerCache(), (key) => key.startsWith("explore:quota:"));
+    const result = await lookupExplorerBoard(makeDeps({ cache }), {
+      sleeperLeagueId: V1_LEAGUE_ID,
+      clerkUserId: "clerk_1",
+    });
+    expect(result.kind).toBe("ok");
+  });
+
+  it("consumes 5 quota on a board cache miss", async () => {
+    const cache = createMemoryExplorerCache();
+    const { client, calls } = countingClient();
+    const result = await lookupExplorerBoard(makeDeps({ sleeper: client, cache, now: () => FIXED_NOW }), {
+      sleeperLeagueId: V1_LEAGUE_ID,
+      clerkUserId: "clerk_1",
+    });
+    expect(result.kind).toBe("ok");
+    expect(calls.getLeague).toBe(1);
+    expect(calls.getLeagueUsers).toBe(1);
+    expect(calls.getRosters).toBe(1);
+    expect(calls.getMatchups).toBe(1);
+    expect(calls.getPlayers).toBe(1);
+    expect(await readQuotaCount(cache, "clerk_1", FIXED_NOW)).toBe(5);
+  });
+
+  it("rejects a board miss before any origin call when remaining quota is below 5", async () => {
+    const cache = createMemoryExplorerCache();
+    await seedFreshNflState(cache, FIXED_NOW);
+    await cache.putJson(explorerQuotaKey("clerk_1", FIXED_NOW), { count: ORIGIN_QUOTA_PER_HOUR - 4 });
+    const { client, calls } = countingClient();
+    const result = await lookupExplorerBoard(makeDeps({ sleeper: client, cache, now: () => FIXED_NOW }), {
+      sleeperLeagueId: V1_LEAGUE_ID,
+      clerkUserId: "clerk_1",
+    });
+    expect(result).toEqual({ kind: "quota_exceeded" });
+    expect(calls.getNflState).toBe(0);
+    expect(calls.getLeague).toBe(0);
+    expect(calls.getLeagueUsers).toBe(0);
+    expect(calls.getRosters).toBe(0);
+    expect(calls.getMatchups).toBe(0);
+    expect(calls.getPlayers).toBe(0);
+    expect(await readQuotaCount(cache, "clerk_1", FIXED_NOW)).toBe(ORIGIN_QUOTA_PER_HOUR - 4);
+  });
+
+  it("succeeds a board miss when remaining quota is exactly 5", async () => {
+    const cache = createMemoryExplorerCache();
+    await seedFreshNflState(cache, FIXED_NOW);
+    await cache.putJson(explorerQuotaKey("clerk_1", FIXED_NOW), { count: ORIGIN_QUOTA_PER_HOUR - 5 });
+    const { client, calls } = countingClient();
+    const result = await lookupExplorerBoard(makeDeps({ sleeper: client, cache, now: () => FIXED_NOW }), {
+      sleeperLeagueId: V1_LEAGUE_ID,
+      clerkUserId: "clerk_1",
+    });
+    expect(result.kind).toBe("ok");
+    expect(calls.getLeague).toBe(1);
+    expect(await readQuotaCount(cache, "clerk_1", FIXED_NOW)).toBe(ORIGIN_QUOTA_PER_HOUR);
+  });
+
+  it("does not charge quota for a cached board", async () => {
+    const cache = createMemoryExplorerCache();
+    const { client, calls } = countingClient();
+    const first = await lookupExplorerBoard(makeDeps({ sleeper: client, cache, now: () => FIXED_NOW }), {
+      sleeperLeagueId: V1_LEAGUE_ID,
+      clerkUserId: "clerk_1",
+    });
+    expect(first.kind).toBe("ok");
+    expect(await readQuotaCount(cache, "clerk_1", FIXED_NOW)).toBe(5);
+
+    const second = await lookupExplorerBoard(makeDeps({ sleeper: client, cache, now: () => FIXED_NOW }), {
+      sleeperLeagueId: V1_LEAGUE_ID,
+      clerkUserId: "clerk_1",
+    });
+    expect(second.kind).toBe("ok");
+    expect(calls.getLeague).toBe(1);
+    expect(calls.getLeagueUsers).toBe(1);
+    expect(calls.getRosters).toBe(1);
+    expect(calls.getMatchups).toBe(1);
+    expect(await readQuotaCount(cache, "clerk_1", FIXED_NOW)).toBe(5);
+  });
+
+  it("serves a cached board when the hour quota is already spent", async () => {
+    const cache = createMemoryExplorerCache();
+    const first = await lookupExplorerBoard(makeDeps({ cache, now: () => FIXED_NOW }), {
+      sleeperLeagueId: V1_LEAGUE_ID,
+      clerkUserId: "clerk_1",
+    });
+    expect(first.kind).toBe("ok");
+    await cache.putJson(explorerQuotaKey("clerk_1", FIXED_NOW), { count: ORIGIN_QUOTA_PER_HOUR });
+    const { client, calls } = countingClient();
+    const second = await lookupExplorerBoard(makeDeps({ sleeper: client, cache, now: () => FIXED_NOW }), {
+      sleeperLeagueId: V1_LEAGUE_ID,
+      clerkUserId: "clerk_1",
+    });
+    expect(second.kind).toBe("ok");
+    expect(calls.getLeague).toBe(0);
+    expect(await readQuotaCount(cache, "clerk_1", FIXED_NOW)).toBe(ORIGIN_QUOTA_PER_HOUR);
   });
 
   it("serves a stale board when origin fails after TTL", async () => {

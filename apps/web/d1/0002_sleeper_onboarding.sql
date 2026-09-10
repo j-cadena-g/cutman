@@ -12,6 +12,8 @@
 --   sleeper_accounts: one row per user. Membership identity is the sleeper_user_id from
 --   that user's most recently enabled league (leagues.enabled_at DESC). Ties break on
 --   sleeper_league_id ASC, then sleeper_user_id ASC — not lexical MIN(sleeper_user_id).
+--   Duplicate sleeper_user_id conflicts: INSERT OR IGNORE keeps the first selected
+--   sleeper_accounts row and discards conflicting legacy links.
 --   Then allowlist rows whose LOWER(TRIM(clerk_email)) matches LOWER(TRIM(users.email));
 --   null clerk_email is not matched. username/display_name from allowlist.sleeper_username,
 --   else 'legacy_' || sleeper_user_id

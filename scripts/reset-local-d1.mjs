@@ -24,14 +24,20 @@ const localD1Dir = path.join(webDir, ".wrangler", "state", "v3", "d1");
 
 export const LOCAL_D1_SEGMENTS = Object.freeze([".wrangler", "state", "v3", "d1"]);
 
-// Defensive guard: only ever delete this exact, hardcoded local D1 state directory — never a
-// path built from arguments, env vars, or anything else that could point somewhere unexpected.
-export const EXPECTED_LOCAL_D1_SUFFIX = path.join("apps", "web", ...LOCAL_D1_SEGMENTS);
-
-export function assertExpectedLocalD1Path(targetDir) {
-  if (!targetDir.endsWith(EXPECTED_LOCAL_D1_SUFFIX)) {
+/**
+ * Pure path-equality guard. Tests pass an explicit expected temp path; production pins
+ * expectedDir to the hardcoded localD1Dir constant via assertExpectedLocalD1Path.
+ */
+export function assertCanonicalResolvedPath(targetDir, expectedDir) {
+  if (path.resolve(targetDir) !== path.resolve(expectedDir)) {
     throw new Error(`Refusing to delete unexpected path: ${targetDir}`);
   }
+}
+
+// Defensive guard: only ever delete this exact, hardcoded local D1 state directory — never a
+// path built from arguments, env vars, or anything else that could point somewhere unexpected.
+export function assertExpectedLocalD1Path(targetDir) {
+  assertCanonicalResolvedPath(targetDir, localD1Dir);
 }
 
 /**
@@ -63,11 +69,25 @@ export async function assertLocalD1PathHasNoSymlinks(targetWebDir) {
   }
 }
 
-export async function resetLocalD1(targetDir) {
-  assertExpectedLocalD1Path(targetDir);
+async function removeLocalD1Dir(targetDir) {
   const targetWebDir = path.resolve(targetDir, "..", "..", "..", "..");
   await assertLocalD1PathHasNoSymlinks(targetWebDir);
   await rm(targetDir, { recursive: true, force: true });
+}
+
+/**
+ * Test-only deletion: removes targetDir only when it canonically matches expectedDir.
+ * expectedDir is required and has no production default, so this cannot fall through to
+ * the real local D1 directory.
+ */
+export async function resetLocalD1MatchingExpected(targetDir, expectedDir) {
+  assertCanonicalResolvedPath(targetDir, expectedDir);
+  await removeLocalD1Dir(targetDir);
+}
+
+export async function resetLocalD1(targetDir) {
+  assertExpectedLocalD1Path(targetDir);
+  await removeLocalD1Dir(targetDir);
 }
 
 async function main() {

@@ -27,7 +27,7 @@ export function isValidExplorerLeagueId(leagueId: string): boolean {
 
 export function sleeperAvatarUrl(avatar: string | null | undefined): string | null {
   if (!avatar) return null;
-  return `https://sleepercdn.com/avatars/thumbs/${avatar}`;
+  return `https://sleepercdn.com/avatars/thumbs/${encodeURIComponent(avatar)}`;
 }
 
 export function playerDisplayName(playerId: string, players: PlayerMap): string {

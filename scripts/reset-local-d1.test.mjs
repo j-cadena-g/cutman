@@ -6,16 +6,18 @@ import path from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import {
-  EXPECTED_LOCAL_D1_SUFFIX,
   LOCAL_D1_SEGMENTS,
+  assertCanonicalResolvedPath,
   assertExpectedLocalD1Path,
   assertLocalD1PathHasNoSymlinks,
   isSameRealPath,
   resetLocalD1,
+  resetLocalD1MatchingExpected,
 } from "./reset-local-d1.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const scriptPath = path.join(repoRoot, "scripts/reset-local-d1.mjs");
+const localD1Suffix = path.join("apps", "web", ...LOCAL_D1_SEGMENTS);
 
 async function withTempRoot(fn) {
   const root = await mkdtemp(path.join(os.tmpdir(), "cutman-reset-d1-"));
@@ -52,7 +54,7 @@ describe("reset-local-d1 path guards", () => {
         "kv.sqlite",
       );
 
-      await resetLocalD1(localD1Dir);
+      await resetLocalD1MatchingExpected(localD1Dir, localD1Dir);
 
       await assert.rejects(() => access(d1File), { code: "ENOENT" });
       await assert.rejects(() => access(localD1Dir), { code: "ENOENT" });
@@ -65,14 +67,14 @@ describe("reset-local-d1 path guards", () => {
       await mkdir(path.join(webDir, ".wrangler", "state"), { recursive: true });
 
       await assertLocalD1PathHasNoSymlinks(webDir);
-      await resetLocalD1(localD1Dir);
+      await resetLocalD1MatchingExpected(localD1Dir, localD1Dir);
     });
   });
 
   it("treats a fully missing apps/web tail as safe", async () => {
     await withTempRoot(async ({ webDir, localD1Dir }) => {
       await assertLocalD1PathHasNoSymlinks(webDir);
-      await resetLocalD1(localD1Dir);
+      await resetLocalD1MatchingExpected(localD1Dir, localD1Dir);
     });
   });
 
@@ -93,7 +95,7 @@ describe("reset-local-d1 path guards", () => {
         await symlink(target, linkPath);
 
         await assert.rejects(
-          () => resetLocalD1(localD1Dir),
+          () => resetLocalD1MatchingExpected(localD1Dir, localD1Dir),
           (error) => {
             assert.match(error.message, /symbolic link/);
             assert.ok(error.message.includes(linkPath));
@@ -123,13 +125,46 @@ describe("reset-local-d1 path guards", () => {
     });
   });
 
-  it("rejects a path that does not end with the hardcoded local D1 suffix", () => {
+  it("rejects a lookalike path that only shares the local D1 suffix", async () => {
+    await withTempRoot(async ({ localD1Dir }) => {
+      const keepPath = await writeSentinel(localD1Dir, "db.sqlite");
+      assert.ok(localD1Dir.endsWith(localD1Suffix));
+
+      assert.throws(
+        () => assertExpectedLocalD1Path(localD1Dir),
+        new Error(`Refusing to delete unexpected path: ${localD1Dir}`),
+      );
+      await assert.rejects(
+        () => resetLocalD1(localD1Dir),
+        new Error(`Refusing to delete unexpected path: ${localD1Dir}`),
+      );
+      await access(keepPath);
+    });
+  });
+
+  it("rejects a path that is not the hardcoded local D1 directory", () => {
     const unexpected = path.join(os.tmpdir(), "not-the-d1-dir");
     assert.throws(
       () => assertExpectedLocalD1Path(unexpected),
       new Error(`Refusing to delete unexpected path: ${unexpected}`),
     );
-    assert.ok(EXPECTED_LOCAL_D1_SUFFIX.endsWith(path.join("apps", "web", ...LOCAL_D1_SEGMENTS)));
+  });
+
+  it("refuses helper deletion when the expected temp path does not match", async () => {
+    await withTempRoot(async ({ localD1Dir }) => {
+      const keepPath = await writeSentinel(localD1Dir, "db.sqlite");
+      const otherExpected = path.join(os.tmpdir(), "other-expected-d1");
+
+      assert.throws(
+        () => assertCanonicalResolvedPath(localD1Dir, otherExpected),
+        new Error(`Refusing to delete unexpected path: ${localD1Dir}`),
+      );
+      await assert.rejects(
+        () => resetLocalD1MatchingExpected(localD1Dir, otherExpected),
+        new Error(`Refusing to delete unexpected path: ${localD1Dir}`),
+      );
+      await access(keepPath);
+    });
   });
 });
 
