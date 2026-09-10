@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { getDashboardOrNull } from "../app/lib/dashboard.ts";
+import { getDashboardOrNull, isUnbootstrappedDashboardError } from "../app/lib/dashboard.ts";
 import type { Dashboard } from "../workers/league-brain.ts";
 
 async function withSilentConsoleError<T>(run: () => Promise<T>): Promise<unknown[][]> {
@@ -31,6 +31,16 @@ function makeDashboard(overrides: Partial<Dashboard> = {}): Dashboard {
   };
 }
 
+describe("isUnbootstrappedDashboardError", () => {
+  it("accepts only the exact LeagueBrain.readSettings Error", () => {
+    expect(isUnbootstrappedDashboardError(new Error("Cutman is not bootstrapped"))).toBe(true);
+    expect(isUnbootstrappedDashboardError(new Error("some other Durable Object failure"))).toBe(false);
+    expect(isUnbootstrappedDashboardError(new Error("Cutman is not bootstrapped yet"))).toBe(false);
+    expect(isUnbootstrappedDashboardError("Cutman is not bootstrapped")).toBe(false);
+    expect(isUnbootstrappedDashboardError({ message: "Cutman is not bootstrapped" })).toBe(false);
+  });
+});
+
 describe("getDashboardOrNull", () => {
   it("returns the dashboard as-is when the Brain resolves it", async () => {
     const dashboard = makeDashboard();
@@ -38,7 +48,7 @@ describe("getDashboardOrNull", () => {
     expect(result).toBe(dashboard);
   });
 
-  it("returns null instead of throwing when the Brain hasn't been bootstrapped yet", async () => {
+  it("returns null for the exact unbootstrapped Error and does not log it", async () => {
     const errors = await withSilentConsoleError(async () => {
       const result = await getDashboardOrNull({
         getDashboard: async () => {
@@ -47,18 +57,28 @@ describe("getDashboardOrNull", () => {
       });
       expect(result).toBeNull();
     });
-    expect(errors).toHaveLength(1);
+    expect(errors).toHaveLength(0);
   });
 
-  it("returns null instead of throwing for any other getDashboard failure", async () => {
-    const errors = await withSilentConsoleError(async () => {
-      const result = await getDashboardOrNull({
+  it("rethrows a different Error so the route can handle the outage", async () => {
+    const failure = new Error("some other Durable Object failure");
+    await expect(
+      getDashboardOrNull({
         getDashboard: async () => {
-          throw new Error("some other Durable Object failure");
+          throw failure;
         },
-      });
-      expect(result).toBeNull();
-    });
-    expect(errors).toHaveLength(1);
+      }),
+    ).rejects.toBe(failure);
+  });
+
+  it("rethrows a non-Error thrown value even when it looks like the unbootstrapped message", async () => {
+    const failure = "Cutman is not bootstrapped";
+    await expect(
+      getDashboardOrNull({
+        getDashboard: async () => {
+          throw failure;
+        },
+      }),
+    ).rejects.toBe(failure);
   });
 });

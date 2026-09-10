@@ -322,7 +322,7 @@ export function describeExplorerError(
 ): string {
   switch (kind) {
     case "invalid_username":
-      return "Enter a Sleeper username.";
+      return "Enter a Sleeper username of 1–32 letters, digits, underscores, or hyphens.";
     case "not_found":
       return "Sleeper has no public profile for that username or league.";
     case "rate_limited":

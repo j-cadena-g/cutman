@@ -84,6 +84,8 @@ export async function action(args: Route.ActionArgs) {
     if (!isTone(toneRaw)) return { error: "Pick a real tone." };
     const tone = parseTone(toneRaw);
     const stub = env.LEAGUE_BRAIN.get(env.LEAGUE_BRAIN.idFromName(access.league.id));
+    // Dashboard reads LeagueBrain state, so the Durable Object is updated first; D1 persistence
+    // follows. Either failure returns the typed error — do not reverse this order.
     try {
       await stub.setTone(tone);
     } catch {
@@ -127,6 +129,7 @@ function SignedInUserControls() {
 export default function League({ loaderData, actionData }: Route.ComponentProps) {
   const { league, isOwner, userEmail, dashboard, optIn } = loaderData;
   const tone = toneOrPlayful(league.tone);
+  const actionError = actionData && "error" in actionData ? actionData.error : undefined;
   // Falls back to the D1 `leagues` row's own name/week-less state whenever the Durable Object
   // hasn't been bootstrapped yet (`dashboard === null` — see getDashboardOrNull in the loader).
   const leagueName = dashboard?.name ?? league.name;
@@ -155,9 +158,9 @@ export default function League({ loaderData, actionData }: Route.ComponentProps)
         </div>
       </header>
 
-      {actionData?.error ? (
+      {actionError ? (
         <p role="alert" className="mt-4 text-sm text-danger">
-          {actionData.error}
+          {actionError}
         </p>
       ) : null}
 

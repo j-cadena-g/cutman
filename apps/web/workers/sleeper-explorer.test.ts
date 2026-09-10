@@ -29,6 +29,7 @@ import {
   assembleExplorerBoard,
   assembleScoreboard,
   assembleStandings,
+  describeExplorerError,
   isValidExplorerLeagueId,
   isValidExplorerUsername,
 } from "../app/lib/sleeper-explorer.ts";
@@ -122,6 +123,14 @@ describe("isValidExplorerUsername", () => {
     expect(isValidExplorerUsername("a".repeat(33))).toBe(false);
     expect(isValidExplorerUsername("Has Space")).toBe(false);
     expect(isValidExplorerUsername("semi;colon")).toBe(false);
+  });
+});
+
+describe("describeExplorerError", () => {
+  it("states the accepted username format for invalid_username", () => {
+    expect(describeExplorerError("invalid_username")).toBe(
+      "Enter a Sleeper username of 1–32 letters, digits, underscores, or hyphens.",
+    );
   });
 });
 
