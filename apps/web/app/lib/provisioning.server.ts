@@ -102,16 +102,19 @@ export async function provisionAndActivateLeague(
     return { ok: true, league };
   }
 
+  const attemptStartedAt = deps.now();
   let current = league;
-  if (current.status === "error") {
-    try {
-      current = await provisionLeague(deps.db, current.id);
-    } catch {
-      const raced = await recoverLeagueRow(deps.db, current.id);
-      if (!raced || raced.status === "error") return { ok: false, error: { kind: "provisioning_failed" } };
-      if (raced.status === "active") return { ok: true, league: raced };
-      current = raced;
-    }
+  try {
+    current = await provisionLeague(deps.db, current.id, attemptStartedAt);
+  } catch {
+    const raced = await recoverLeagueRow(deps.db, current.id);
+    if (!raced || raced.status === "error") return { ok: false, error: { kind: "provisioning_failed" } };
+    if (raced.status === "active") return { ok: true, league: raced };
+    current = raced;
+  }
+
+  if (current.status === "active") {
+    return { ok: true, league: current };
   }
 
   try {

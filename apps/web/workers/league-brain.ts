@@ -31,6 +31,9 @@ export const LEGACY_IMPORT_MAX_ATTEMPTS = 3;
 /** Thrown from readSettings while a legacy copy is unfinished so poll/recap/dashboard cannot seed a new history. */
 export const LEGACY_IMPORT_PENDING_MESSAGE = "League history import is pending";
 
+/** Thrown from readSettings when leagueId or sleeperLeagueId settings are missing. */
+export const UNBOOTSTRAPPED_MESSAGE = "Cutman is not bootstrapped";
+
 type LegacyImportLogEvent = "league_brain.legacy_import_failed" | "league_brain.legacy_import_abandoned";
 
 type Settings = {
@@ -233,6 +236,7 @@ export class LeagueBrain extends DurableObject<Env> {
   }
 
   async ingestSnapshot(snapshot: LeagueSnapshot, players: PlayerMap = {}): Promise<{ wroteBeat: boolean; hash: string; facts: number }> {
+    this.assertLegacyImportReady();
     const hash = await hashSnapshot(snapshot);
     const last = this.latestSnapshot();
     const facts = await factsIfChanged(last?.hash ?? null, hash, last?.snapshot ?? null, snapshot, players);
@@ -385,12 +389,12 @@ export class LeagueBrain extends DurableObject<Env> {
   }
 
   private readSettings(): Settings {
-    if (this.isLegacyImportPending()) throw new Error(LEGACY_IMPORT_PENDING_MESSAGE);
+    this.assertLegacyImportReady();
     const leagueId = this.getSetting("leagueId");
     const sleeperLeagueId = this.getSetting("sleeperLeagueId");
     const name = this.getSetting("name") ?? "Example League";
     const tone = toneOrPlayful(this.getSetting("tone"));
-    if (!leagueId || !sleeperLeagueId) throw new Error("Cutman is not bootstrapped");
+    if (!leagueId || !sleeperLeagueId) throw new Error(UNBOOTSTRAPPED_MESSAGE);
     return { leagueId, sleeperLeagueId, name, tone };
   }
 
@@ -460,6 +464,10 @@ export class LeagueBrain extends DurableObject<Env> {
 
   private isLegacyImportPending(): boolean {
     return this.getSetting(LEGACY_IMPORT_PENDING_KEY) !== null;
+  }
+
+  private assertLegacyImportReady(): void {
+    if (this.isLegacyImportPending()) throw new Error(LEGACY_IMPORT_PENDING_MESSAGE);
   }
 
   private legacyImportFailureCount(): number {

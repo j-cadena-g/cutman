@@ -112,6 +112,11 @@ const replacements = [
     envName: "CLERK_PUBLISHABLE_KEY",
   },
   {
+    label: "USE_SLEEPER_FIXTURES",
+    pattern: /("USE_SLEEPER_FIXTURES"\s*:\s*")([^"]*)(")/,
+    envName: "USE_SLEEPER_FIXTURES",
+  },
+  {
     label: "PILOT_SLEEPER_LEAGUE_ID",
     pattern: /("PILOT_SLEEPER_LEAGUE_ID"\s*:\s*")([^"]*)(")/,
     envName: "PILOT_SLEEPER_LEAGUE_ID",
@@ -223,8 +228,12 @@ function getRequiredValue(name, env) {
   return value;
 }
 
+function resolveUseSleeperFixtures(env) {
+  return getOptionalValue("USE_SLEEPER_FIXTURES", env) || "false";
+}
+
 function usesSleeperFixtures(env) {
-  return getOptionalValue("USE_SLEEPER_FIXTURES", env) === "true";
+  return resolveUseSleeperFixtures(env) === "true";
 }
 
 function resolvePilotSleeperLeagueId(isDevConfig, env) {
@@ -289,6 +298,7 @@ export function renderWranglerConfig(
     APP_ENV:
       env.APP_ENV?.trim() ||
       (isDevConfig ? "development" : "production"),
+    USE_SLEEPER_FIXTURES: resolveUseSleeperFixtures(env),
     PILOT_SLEEPER_LEAGUE_ID: resolvePilotSleeperLeagueId(isDevConfig, env),
   };
   if (

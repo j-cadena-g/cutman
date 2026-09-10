@@ -20,6 +20,7 @@ import {
   describeOnboardingError,
   formatChallengeCountdown,
   isStuckProvisioning,
+  provisioningStartedAtFromLeague,
   type PilotLeagueStep,
 } from "~/lib/onboarding-view";
 import { provisionAndActivateLeague, provisioningDepsFromEnv, retryProvisionAndActivateLeague } from "~/lib/provisioning.server";
@@ -120,7 +121,7 @@ export async function loader(args: Route.LoaderArgs) {
     comingSoonLeagues,
     step,
     isCommissioner: membership?.role === "commissioner",
-    provisioningStartedAt: league?.status === "provisioning" ? league.created_at : null,
+    provisioningStartedAt: provisioningStartedAtFromLeague(league),
     // Serialized into SSR HTML and reused as the first client `now`, so countdown/retry markup
     // matches on hydrate. Not a league identifier.
     nowMs: Date.now(),

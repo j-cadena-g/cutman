@@ -28,7 +28,8 @@ CREATE TABLE IF NOT EXISTS leagues (
   tone TEXT NOT NULL DEFAULT 'playful',
   created_at INTEGER NOT NULL,
   activated_at INTEGER,
-  provisioning_error TEXT
+  provisioning_error TEXT,
+  provisioning_started_at INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS league_members (

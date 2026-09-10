@@ -145,6 +145,7 @@ describe("verify then provision", () => {
     expect(verified.ok).toBe(true);
     if (!verified.ok) throw new Error("expected ok");
     expect(verified.league.status).toBe("provisioning");
+    expect(verified.league.provisioning_started_at).toBe(1_806_000_000_000);
     expect(verified.membership.role).toBe("commissioner");
     expect(await getDashboardOrNull(env.LEAGUE_BRAIN.getByName(verified.league.id))).toBeNull();
 
@@ -157,6 +158,8 @@ describe("verify then provision", () => {
     if (!provisioned.ok) throw new Error("expected ok");
     expect(provisioned.league.status).toBe("active");
     expect(provisioned.league.activated_at).toBe(1_806_000_000_050);
+    expect(provisioned.league.created_at).toBe(1_806_000_000_000);
+    expect(provisioned.league.provisioning_started_at).toBe(1_806_000_000_050);
     expect(provisioned.league.provisioning_error).toBeNull();
 
     const dashboard = await env.LEAGUE_BRAIN.getByName(verified.league.id).getDashboard();

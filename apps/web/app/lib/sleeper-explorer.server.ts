@@ -242,10 +242,16 @@ export async function lookupExplorerUser(
   let user: SleeperUser | null | undefined = userCached?.fresh ? userCached.payload : undefined;
   let leagues: SleeperLeague[] | undefined;
   const cachedUserId = user?.user_id ?? userCached?.payload?.user_id;
-  const leaguesCached = cachedUserId
+  let leaguesCachedUserId = cachedUserId;
+  let leaguesCached = cachedUserId
     ? await readCache<SleeperLeague[]>(deps, leaguesKey(cachedUserId, season), LEAGUES_TTL_MS)
     : null;
-  if (leaguesCached?.fresh) leagues = leaguesCached.payload;
+  // Fresh leagues belong to the user-id key they were stored under. Only reuse them
+  // when that key already matches the *current* user (fresh username cache). A stale
+  // username may now resolve to a different Sleeper id.
+  if (user && leaguesCached?.fresh && user.user_id === leaguesCachedUserId) {
+    leagues = leaguesCached.payload;
+  }
 
   if (user && leagues) {
     return {
@@ -269,6 +275,18 @@ export async function lookupExplorerUser(
       await writeCache(deps, userKey(username), user, USER_TTL_MS);
     }
     if (!user) return { kind: "not_found", username };
+
+    if (leaguesCachedUserId !== user.user_id) {
+      // Username remapped. Leave the previous id's leagues cache intact — it is still
+      // valid for that user — and load/fetch leagues for the new id only.
+      leagues = undefined;
+      leaguesCachedUserId = user.user_id;
+      leaguesCached = await readCache<SleeperLeague[]>(deps, leaguesKey(user.user_id, season), LEAGUES_TTL_MS);
+      if (leaguesCached?.fresh) leagues = leaguesCached.payload;
+    } else if (leagues === undefined && leaguesCached?.fresh) {
+      leagues = leaguesCached.payload;
+    }
+
     if (leagues === undefined) {
       leagues = await deps.sleeper.getUserLeagues(user.user_id, season);
       await writeCache(deps, leaguesKey(user.user_id, season), leagues, LEAGUES_TTL_MS);
@@ -282,6 +300,20 @@ export async function lookupExplorerUser(
       leagues: leagues.map(toExplorerLeagueCard),
     };
   } catch (error) {
+    if (user && cachedUserId && user.user_id !== cachedUserId) {
+      if (leaguesCached && leaguesCachedUserId === user.user_id) {
+        return {
+          kind: "ok",
+          stale: true,
+          season,
+          week,
+          user: toExplorerUserCard(user),
+          leagues: leaguesCached.payload.map(toExplorerLeagueCard),
+        };
+      }
+      if (isSleeperRateLimited(error)) return { kind: "rate_limited" };
+      return { kind: "unavailable" };
+    }
     const stale = staleUserResult(username, userCached, leaguesCached, season, week);
     if (stale) return stale;
     if (isSleeperRateLimited(error)) return { kind: "rate_limited" };

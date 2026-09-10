@@ -132,6 +132,8 @@ describe("leagues", () => {
       now,
     });
     expect(league.status).toBe("provisioning");
+    expect(league.created_at).toBe(now);
+    expect(league.provisioning_started_at).toBe(now);
     expect(league.activated_at).toBeNull();
     expect(league.provisioning_error).toBeNull();
     expect(await getLeagueBySleeperId(env.DB, "sleeper_league_1")).toEqual(league);
@@ -152,9 +154,12 @@ describe("leagues", () => {
     expect(failed?.status).toBe("error");
     expect(failed?.provisioning_error).toBe("Sleeper API timed out");
 
-    const retried = await provisionLeague(env.DB, league.id);
+    const retryAt = now + 500;
+    const retried = await provisionLeague(env.DB, league.id, retryAt);
     expect(retried.status).toBe("provisioning");
     expect(retried.provisioning_error).toBeNull();
+    expect(retried.created_at).toBe(now);
+    expect(retried.provisioning_started_at).toBe(retryAt);
 
     const activatedAt = now + 1000;
     const activated = await activateLeague(env.DB, league.id, activatedAt);
@@ -183,6 +188,8 @@ describe("leagues", () => {
     expect(second.id).toBe(first.id);
     expect(second.name).toBe(first.name);
     expect(second.created_at).toBe(first.created_at);
+    expect(second.provisioning_started_at).toBe(first.provisioning_started_at);
+    expect(second.provisioning_started_at).toBe(now);
   });
 
   it("rejects a status outside provisioning, active, or error", async () => {
@@ -250,11 +257,12 @@ describe("leagues", () => {
       now,
     });
     await activateLeague(env.DB, league.id, now + 1);
-    await expect(provisionLeague(env.DB, league.id)).rejects.toThrow(
+    await expect(provisionLeague(env.DB, league.id, now + 2)).rejects.toThrow(
       /from status "active"; provisioning only retries from "provisioning" or "error"/,
     );
     const stillActive = await getLeague(env.DB, league.id);
     expect(stillActive?.status).toBe("active");
+    expect(stillActive?.provisioning_started_at).toBe(now);
   });
 
   it("treats a second provisionLeague on an already-provisioning row as success", async () => {
@@ -267,9 +275,13 @@ describe("leagues", () => {
       season: "2026",
       now,
     });
-    const again = await provisionLeague(env.DB, league.id);
+    const retryAt = now + 250;
+    const again = await provisionLeague(env.DB, league.id, retryAt);
     expect(again.status).toBe("provisioning");
     expect(again.id).toBe(league.id);
+    expect(again.created_at).toBe(now);
+    expect(again.provisioning_started_at).toBe(retryAt);
+    expect(again.provisioning_error).toBeNull();
   });
 
   it("activates only from provisioning", async () => {

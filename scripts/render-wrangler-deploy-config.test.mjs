@@ -55,6 +55,10 @@ function kvBindingIdPattern(binding, id) {
   return new RegExp(`"binding"\\s*:\\s*"${binding}"\\s*,\\s*"id"\\s*:\\s*"${id}"`);
 }
 
+function useSleeperFixturesPattern(value) {
+  return new RegExp(`"USE_SLEEPER_FIXTURES"\\s*:\\s*"${value}"`);
+}
+
 function baseEnv(overrides = {}) {
   const env = { ...process.env };
   for (const key of Object.keys(env)) {
@@ -344,6 +348,7 @@ describe("render-wrangler-deploy-config output path", () => {
             written,
             new RegExp(`"PILOT_SLEEPER_LEAGUE_ID"\\s*:\\s*"${FAKE_PILOT_ID}"`),
           );
+          assert.match(written, useSleeperFixturesPattern("false"));
           assert.doesNotMatch(written, /"secrets"\s*:\s*\{/);
           assert.deepEqual(await snapshotFile(WRANGLER_DEV_OUTPUT_PATH), devBefore);
         });
@@ -373,6 +378,7 @@ describe("render-wrangler-deploy-config output path", () => {
         written,
         new RegExp(`"PILOT_SLEEPER_LEAGUE_ID"\\s*:\\s*"${FAKE_PILOT_ID}"`),
       );
+      assert.match(written, useSleeperFixturesPattern("false"));
       await assert.rejects(
         () =>
           writeRenderedWranglerConfig({
@@ -400,6 +406,7 @@ describe("render-wrangler-deploy-config", () => {
     leftover.V1_SLEEPER_USERNAME = "legacy_v1_user";
     const rendered = renderProduction(leftover);
     assert.match(rendered, new RegExp(`"PILOT_SLEEPER_LEAGUE_ID"\\s*:\\s*"${FAKE_PILOT_ID}"`));
+    assert.match(rendered, useSleeperFixturesPattern("false"));
     assert.doesNotMatch(rendered, /"V1_LEAGUE_ID"/);
     assert.doesNotMatch(rendered, /"V1_LEAGUE_NAME"/);
     assert.doesNotMatch(rendered, /"V1_SLEEPER_USER_ID"/);
@@ -429,6 +436,29 @@ describe("render-wrangler-deploy-config", () => {
   it("rejects the tracked placeholder PILOT_SLEEPER_LEAGUE_ID on production render", () => {
     assert.throws(
       () => renderProduction(baseEnv({ PILOT_SLEEPER_LEAGUE_ID: PLACEHOLDER_PILOT_ID })),
+      /PILOT_SLEEPER_LEAGUE_ID.*placeholder/s,
+    );
+  });
+
+  it("rejects production fixture-mode when PILOT_SLEEPER_LEAGUE_ID is omitted", () => {
+    assert.throws(
+      () =>
+        renderProduction(
+          baseEnv({ USE_SLEEPER_FIXTURES: "true", PILOT_SLEEPER_LEAGUE_ID: "" }),
+        ),
+      /PILOT_SLEEPER_LEAGUE_ID/,
+    );
+  });
+
+  it("rejects production fixture-mode when PILOT_SLEEPER_LEAGUE_ID is the placeholder", () => {
+    assert.throws(
+      () =>
+        renderProduction(
+          baseEnv({
+            USE_SLEEPER_FIXTURES: "true",
+            PILOT_SLEEPER_LEAGUE_ID: PLACEHOLDER_PILOT_ID,
+          }),
+        ),
       /PILOT_SLEEPER_LEAGUE_ID.*placeholder/s,
     );
   });
@@ -477,10 +507,7 @@ describe("render-wrangler-deploy-config", () => {
   it("writes a live-shaped PILOT_SLEEPER_LEAGUE_ID on local-dev render when USE_SLEEPER_FIXTURES is false", () => {
     const rendered = renderDev(baseEnv());
     assert.match(rendered, new RegExp(`"PILOT_SLEEPER_LEAGUE_ID"\\s*:\\s*"${FAKE_PILOT_ID}"`));
-    assert.match(
-      rendered,
-      new RegExp(`"USE_SLEEPER_FIXTURES"\\s*:\\s*"${trackedUseSleeperFixtures}"`),
-    );
+    assert.match(rendered, useSleeperFixturesPattern("false"));
   });
 
   it("keeps the fake placeholder when fixture-mode local-dev render omits PILOT_SLEEPER_LEAGUE_ID", () => {
@@ -488,15 +515,12 @@ describe("render-wrangler-deploy-config", () => {
       baseEnv({ USE_SLEEPER_FIXTURES: "true", PILOT_SLEEPER_LEAGUE_ID: "" }),
     );
     assert.equal(trackedPilotId, PLACEHOLDER_PILOT_ID);
+    assert.equal(trackedUseSleeperFixtures, "false");
     assert.match(
       rendered,
       new RegExp(`"PILOT_SLEEPER_LEAGUE_ID"\\s*:\\s*"${PLACEHOLDER_PILOT_ID}"`),
     );
-    assert.match(
-      rendered,
-      new RegExp(`"USE_SLEEPER_FIXTURES"\\s*:\\s*"${trackedUseSleeperFixtures}"`),
-    );
-    assert.notEqual(trackedUseSleeperFixtures, "true");
+    assert.match(rendered, useSleeperFixturesPattern("true"));
   });
 
   it("keeps the fake placeholder when PILOT_SLEEPER_LEAGUE_ID is absent on fixture-mode local-dev render", () => {
@@ -507,10 +531,7 @@ describe("render-wrangler-deploy-config", () => {
       rendered,
       new RegExp(`"PILOT_SLEEPER_LEAGUE_ID"\\s*:\\s*"${PLACEHOLDER_PILOT_ID}"`),
     );
-    assert.match(
-      rendered,
-      new RegExp(`"USE_SLEEPER_FIXTURES"\\s*:\\s*"${trackedUseSleeperFixtures}"`),
-    );
+    assert.match(rendered, useSleeperFixturesPattern("true"));
   });
 
   it("exports PLACEHOLDER_PILOT_ID matching the tracked wrangler template", () => {

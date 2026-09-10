@@ -32,6 +32,7 @@ export type LeagueRow = {
   created_at: number;
   activated_at: number | null;
   provisioning_error: string | null;
+  provisioning_started_at: number | null;
 };
 
 export type LeagueMemberRole = "commissioner" | "member";
@@ -230,10 +231,18 @@ export async function createLeague(
   try {
     await db
       .prepare(
-        `INSERT INTO leagues (id, sleeper_league_id, name, season, status, tone, created_at)
-         VALUES (?, ?, ?, ?, 'provisioning', ?, ?)`,
+        `INSERT INTO leagues (id, sleeper_league_id, name, season, status, tone, created_at, provisioning_started_at)
+         VALUES (?, ?, ?, ?, 'provisioning', ?, ?, ?)`,
       )
-      .bind(input.id, input.sleeperLeagueId, input.name, input.season, input.tone ?? "playful", input.now)
+      .bind(
+        input.id,
+        input.sleeperLeagueId,
+        input.name,
+        input.season,
+        input.tone ?? "playful",
+        input.now,
+        input.now,
+      )
       .run();
   } catch (error) {
     // A concurrent caller may have inserted the same (id, sleeperLeagueId) pair between our
@@ -272,15 +281,16 @@ async function transitionLeagueStatus(
   return row;
 }
 
-// Retries provisioning from `provisioning` (idempotent no-op when already clean) or `error`.
+// Marks a league as provisioning and records `provisioning_started_at`. Legal from
+// `provisioning` (refreshes the attempt timestamp, including a stuck retry) or `error`.
 // Never demotes an `active` league.
-export async function provisionLeague(db: D1Database, leagueId: string): Promise<LeagueRow> {
+export async function provisionLeague(db: D1Database, leagueId: string, now: number): Promise<LeagueRow> {
   const result = await db
     .prepare(
-      `UPDATE leagues SET status = 'provisioning', provisioning_error = NULL
+      `UPDATE leagues SET status = 'provisioning', provisioning_error = NULL, provisioning_started_at = ?
        WHERE id = ? AND status IN ('provisioning', 'error')`,
     )
-    .bind(leagueId)
+    .bind(now, leagueId)
     .run();
   const existing = await getLeague(db, leagueId);
   if (!existing) throw new Error("League not found");

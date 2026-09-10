@@ -93,6 +93,14 @@ export const STUCK_PROVISIONING_MS = 2 * 60 * 1000;
 
 const MINUTE_MS = 60_000;
 
+// Stuck-retry UI clock. Only a currently-provisioning league has an attempt start; a retry
+// must surface `provisioning_started_at` (the latest attempt), not the original `created_at`.
+// Null `provisioning_started_at` (legacy / pre-column rows) falls back to `created_at`.
+export function provisioningStartedAtFromLeague(league: LeagueRow | null): number | null {
+  if (!league || league.status !== "provisioning") return null;
+  return league.provisioning_started_at ?? league.created_at;
+}
+
 // Client countdown copy for a pending commissioner challenge. `now === null` means no clock is
 // available yet, so we render nothing rather than a flash of "expired". The onboarding route
 // always passes a number: the serialized loader timestamp on SSR/first paint, then the client

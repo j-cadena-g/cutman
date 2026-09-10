@@ -10,11 +10,14 @@ import {
   v1FixtureLeague,
   v1FixtureMatchups,
   v1FixtureRosters,
+  v1FixtureState,
   v1FixtureUsers,
   type SleeperClient,
+  type SleeperLeague,
   type SleeperLeagueUser,
   type SleeperMatchup,
   type SleeperRoster,
+  type SleeperUser,
 } from "@cutman/sleeper";
 import { describe, expect, it } from "vitest";
 import { getDashboardOrNull } from "../app/lib/dashboard.ts";
@@ -114,6 +117,44 @@ function makeDeps(overrides: Partial<ExplorerDeps> & { sleeper?: SleeperClient }
     now: overrides.now ?? (() => 1_700_000_000_000),
     quotaPerHour: overrides.quotaPerHour,
   };
+}
+
+const HANDLE_SWAP_USERNAME = "handle_swap";
+const HANDLE_SWAP_USER_A: SleeperUser = {
+  user_id: "user-a",
+  username: HANDLE_SWAP_USERNAME,
+  display_name: "User A",
+};
+const HANDLE_SWAP_USER_B: SleeperUser = {
+  user_id: "user-b",
+  username: HANDLE_SWAP_USERNAME,
+  display_name: "User B",
+};
+const HANDLE_SWAP_LEAGUES_A: SleeperLeague[] = [
+  { league_id: "100", name: "League A", season: v1FixtureState.league_season, sport: "nfl" },
+];
+const HANDLE_SWAP_LEAGUES_B: SleeperLeague[] = [
+  { league_id: "200", name: "League B", season: v1FixtureState.league_season, sport: "nfl" },
+];
+
+function leaguesCacheKey(userId: string, season = v1FixtureState.league_season): string {
+  return `explore:leagues:${userId}:${season}`;
+}
+
+async function seedStaleUserFreshLeagues(
+  cache: ExplorerCache,
+  now: number,
+  user: SleeperUser,
+  leagues: SleeperLeague[],
+): Promise<void> {
+  await cache.putJson(`explore:user:${user.username}`, {
+    fetchedAt: now - USER_TTL_MS - 1,
+    payload: user,
+  });
+  await cache.putJson(leaguesCacheKey(user.user_id), {
+    fetchedAt: now,
+    payload: leagues,
+  });
 }
 
 describe("isValidExplorerUsername", () => {
@@ -565,6 +606,120 @@ describe("lookupExplorerUser", () => {
     });
     expect(result).toEqual({ kind: "unavailable" });
     expect(calls.getUser).toBe(1);
+  });
+
+  it("refetches leagues for user B when a stale username cache for A remaps, and leaves A's id-keyed leagues intact", async () => {
+    const now = 1_700_000_000_000;
+    const cache = createMemoryExplorerCache();
+    await seedStaleUserFreshLeagues(cache, now, HANDLE_SWAP_USER_A, HANDLE_SWAP_LEAGUES_A);
+
+    const requestedLeagueUserIds: string[] = [];
+    const base = createFixtureClient();
+    const remapped: SleeperClient = {
+      ...base,
+      async getUser(usernameOrId) {
+        if (usernameOrId === HANDLE_SWAP_USERNAME) return HANDLE_SWAP_USER_B;
+        return base.getUser(usernameOrId);
+      },
+      async getUserLeagues(userId, season) {
+        requestedLeagueUserIds.push(userId);
+        if (userId === HANDLE_SWAP_USER_B.user_id) return HANDLE_SWAP_LEAGUES_B;
+        if (userId === HANDLE_SWAP_USER_A.user_id) return HANDLE_SWAP_LEAGUES_A;
+        return base.getUserLeagues(userId, season);
+      },
+    };
+    const { client, calls } = countingClient(remapped);
+    const result = await lookupExplorerUser(makeDeps({ sleeper: client, cache, now: () => now }), {
+      username: HANDLE_SWAP_USERNAME,
+      clerkUserId: "clerk_1",
+    });
+
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") return;
+    expect(result.user.userId).toBe(HANDLE_SWAP_USER_B.user_id);
+    expect(result.leagues.map((league) => league.sleeperLeagueId)).toEqual(["200"]);
+    expect(result.leagues.map((league) => league.sleeperLeagueId)).not.toContain("100");
+    expect(calls.getUser).toBe(1);
+    expect(calls.getUserLeagues).toBe(1);
+    expect(requestedLeagueUserIds).toEqual([HANDLE_SWAP_USER_B.user_id]);
+
+    expect(await cache.getJson(leaguesCacheKey(HANDLE_SWAP_USER_A.user_id))).toMatchObject({
+      payload: HANDLE_SWAP_LEAGUES_A,
+    });
+    expect(await cache.getJson(leaguesCacheKey(HANDLE_SWAP_USER_B.user_id))).toMatchObject({
+      payload: HANDLE_SWAP_LEAGUES_B,
+    });
+    expect(await cache.getJson(`explore:user:${HANDLE_SWAP_USERNAME}`)).toMatchObject({
+      payload: HANDLE_SWAP_USER_B,
+    });
+  });
+
+  it("reuses fresh leagues when a stale username still resolves to the same user id", async () => {
+    const now = 1_700_000_000_000;
+    const cache = createMemoryExplorerCache();
+    await seedStaleUserFreshLeagues(cache, now, HANDLE_SWAP_USER_A, HANDLE_SWAP_LEAGUES_A);
+
+    const base = createFixtureClient();
+    const sameUser: SleeperClient = {
+      ...base,
+      async getUser(usernameOrId) {
+        if (usernameOrId === HANDLE_SWAP_USERNAME) return HANDLE_SWAP_USER_A;
+        return base.getUser(usernameOrId);
+      },
+      async getUserLeagues(userId, season) {
+        if (userId === HANDLE_SWAP_USER_A.user_id) return HANDLE_SWAP_LEAGUES_A;
+        return base.getUserLeagues(userId, season);
+      },
+    };
+    const { client, calls } = countingClient(sameUser);
+    const result = await lookupExplorerUser(makeDeps({ sleeper: client, cache, now: () => now }), {
+      username: HANDLE_SWAP_USERNAME,
+      clerkUserId: "clerk_1",
+    });
+
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") return;
+    expect(result.user.userId).toBe(HANDLE_SWAP_USER_A.user_id);
+    expect(result.leagues.map((league) => league.sleeperLeagueId)).toEqual(["100"]);
+    expect(calls.getUser).toBe(1);
+    expect(calls.getUserLeagues).toBe(0);
+  });
+
+  it("does not fall back to user A's leagues when fetching user B's leagues fails", async () => {
+    const now = 1_700_000_000_000;
+    const cache = createMemoryExplorerCache();
+    await seedStaleUserFreshLeagues(cache, now, HANDLE_SWAP_USER_A, HANDLE_SWAP_LEAGUES_A);
+
+    const requestedLeagueUserIds: string[] = [];
+    const base = createFixtureClient();
+    const remapped: SleeperClient = {
+      ...base,
+      async getUser(usernameOrId) {
+        if (usernameOrId === HANDLE_SWAP_USERNAME) return HANDLE_SWAP_USER_B;
+        return base.getUser(usernameOrId);
+      },
+      async getUserLeagues(userId, season) {
+        requestedLeagueUserIds.push(userId);
+        if (userId === HANDLE_SWAP_USER_B.user_id) {
+          throw new SleeperRequestError("/user/user-b/leagues", 429);
+        }
+        return base.getUserLeagues(userId, season);
+      },
+    };
+    const { client, calls } = countingClient(remapped);
+    const result = await lookupExplorerUser(makeDeps({ sleeper: client, cache, now: () => now }), {
+      username: HANDLE_SWAP_USERNAME,
+      clerkUserId: "clerk_1",
+    });
+
+    expect(result).toEqual({ kind: "rate_limited" });
+    expect(calls.getUser).toBe(1);
+    expect(calls.getUserLeagues).toBe(1);
+    expect(requestedLeagueUserIds).toEqual([HANDLE_SWAP_USER_B.user_id]);
+    expect(await cache.getJson(leaguesCacheKey(HANDLE_SWAP_USER_A.user_id))).toMatchObject({
+      payload: HANDLE_SWAP_LEAGUES_A,
+    });
+    expect(await cache.getJson(leaguesCacheKey(HANDLE_SWAP_USER_B.user_id))).toBeNull();
   });
 });
 

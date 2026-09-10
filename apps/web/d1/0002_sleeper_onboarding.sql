@@ -6,7 +6,8 @@
 --
 -- Mapping:
 --   leagues.id = 'legacy_' || sleeper_league_id (stable, distinct from Sleeper snowflakes)
---   enabled leagues -> status 'active', created_at/activated_at from enabled_at
+--   enabled leagues -> status 'active', created_at/activated_at from enabled_at,
+--   provisioning_started_at NULL (legacy rows were already active; they never re-provision)
 --   is_owner = 1 -> commissioner, else member. recap_email_opt_in copied
 --   sleeper_accounts: one row per user. Membership identity is the sleeper_user_id from
 --   that user's most recently enabled league (leagues.enabled_at DESC). Ties break on
@@ -62,11 +63,12 @@ CREATE TABLE IF NOT EXISTS _cutman_0002_leagues (
   tone TEXT NOT NULL,
   created_at INTEGER NOT NULL,
   activated_at INTEGER,
-  provisioning_error TEXT
+  provisioning_error TEXT,
+  provisioning_started_at INTEGER
 );
 
 INSERT INTO _cutman_0002_leagues (
-  id, sleeper_league_id, name, season, status, tone, created_at, activated_at, provisioning_error
+  id, sleeper_league_id, name, season, status, tone, created_at, activated_at, provisioning_error, provisioning_started_at
 )
 SELECT
   'legacy_' || sleeper_league_id,
@@ -77,6 +79,7 @@ SELECT
   tone,
   enabled_at,
   enabled_at,
+  NULL,
   NULL
 FROM leagues;
 
@@ -147,14 +150,15 @@ CREATE TABLE IF NOT EXISTS leagues (
   tone TEXT NOT NULL DEFAULT 'playful',
   created_at INTEGER NOT NULL,
   activated_at INTEGER,
-  provisioning_error TEXT
+  provisioning_error TEXT,
+  provisioning_started_at INTEGER
 );
 
 INSERT INTO leagues (
-  id, sleeper_league_id, name, season, status, tone, created_at, activated_at, provisioning_error
+  id, sleeper_league_id, name, season, status, tone, created_at, activated_at, provisioning_error, provisioning_started_at
 )
 SELECT
-  id, sleeper_league_id, name, season, status, tone, created_at, activated_at, provisioning_error
+  id, sleeper_league_id, name, season, status, tone, created_at, activated_at, provisioning_error, provisioning_started_at
 FROM _cutman_0002_leagues;
 DROP TABLE _cutman_0002_leagues;
 

@@ -13,6 +13,7 @@ function makeLeague(overrides: Partial<LeagueRow> = {}): LeagueRow {
     created_at: 0,
     activated_at: 0,
     provisioning_error: null,
+    provisioning_started_at: null,
     ...overrides,
   };
 }

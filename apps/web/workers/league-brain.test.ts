@@ -25,6 +25,7 @@ import {
   LeagueBrain,
   LEGACY_IMPORT_MAX_ATTEMPTS,
   LEGACY_IMPORT_PENDING_MESSAGE,
+  UNBOOTSTRAPPED_MESSAGE,
   type LegacyBrainState,
 } from "./league-brain.ts";
 
@@ -251,20 +252,24 @@ describe("LeagueBrain internal vs Sleeper identity", () => {
 
   it("does not treat a generated internal league id as a Sleeper id", async () => {
     const stub = env.LEAGUE_BRAIN.getByName("internal-id-no-backfill");
-    await expect(
-      runInDurableObject(stub, async (instance) => {
-        const brain = instance as unknown as {
-          migrate(): void;
-          putSetting(key: string, value: string): void;
-          getDashboard: LeagueBrain["getDashboard"];
-        };
-        brain.putSetting("leagueId", "league_internal_1");
-        brain.putSetting("name", "Internal");
-        brain.putSetting("tone", "playful");
-        brain.migrate();
-        return brain.getDashboard();
-      }),
-    ).rejects.toThrow(/not bootstrapped/i);
+    const message = await runInDurableObject(stub, async (instance) => {
+      const brain = instance as unknown as {
+        migrate(): void;
+        putSetting(key: string, value: string): void;
+        getDashboard: LeagueBrain["getDashboard"];
+      };
+      brain.putSetting("leagueId", "league_internal_1");
+      brain.putSetting("name", "Internal");
+      brain.putSetting("tone", "playful");
+      brain.migrate();
+      try {
+        await brain.getDashboard();
+        return null;
+      } catch (error) {
+        return error instanceof Error ? error.message : String(error);
+      }
+    });
+    expect(message).toBe(UNBOOTSTRAPPED_MESSAGE);
   });
 });
 
@@ -324,6 +329,7 @@ describe("LeagueBrain legacy Durable Object migration", () => {
     getDashboard: LeagueBrain["getDashboard"];
     poll: LeagueBrain["poll"];
     attemptRecap: LeagueBrain["attemptRecap"];
+    ingestSnapshot: LeagueBrain["ingestSnapshot"];
     exportLegacyStateFromSource(sleeperLeagueId: string): Promise<LegacyBrainState | null>;
     legacyExportCalls?: number;
   };
@@ -391,6 +397,27 @@ describe("LeagueBrain legacy Durable Object migration", () => {
       }
       return { errors, warns };
     });
+  }
+
+  async function tryIngestSnapshot(
+    stub: DurableObjectStub<LeagueBrain>,
+    snap: LeagueSnapshot = snapshot(),
+  ): Promise<{ wroteBeat: boolean; hash: string; facts: number } | { error: string }> {
+    // Catch inside the DO isolate so a pending rejection is not an unhandled RPC error.
+    return runInDurableObject(stub, async (instance) => {
+      try {
+        return await (instance as unknown as TestBrain).ingestSnapshot(snap, fixturePlayers);
+      } catch (error) {
+        return { error: error instanceof Error ? error.message : String(error) };
+      }
+    });
+  }
+
+  function expectEmptyHistory(sql: BrainSql): void {
+    expect(sql.snapshots).toEqual([]);
+    expect(sql.beats).toEqual([]);
+    expect(sql.recaps).toEqual([]);
+    expect(sql.bible).toEqual([]);
   }
 
   async function readBrainSql(stub: DurableObjectStub<LeagueBrain>): Promise<BrainSql> {
@@ -689,7 +716,7 @@ describe("LeagueBrain legacy Durable Object migration", () => {
 
     const refusals = await runInDurableObject(next, async (instance) => {
       const brain = instance as unknown as TestBrain;
-      const messages: { dashboard?: string; poll?: string; recap?: string } = {};
+      const messages: { dashboard?: string; poll?: string; recap?: string; ingest?: string } = {};
       try {
         await brain.getDashboard();
       } catch (error) {
@@ -705,12 +732,18 @@ describe("LeagueBrain legacy Durable Object migration", () => {
       } catch (error) {
         messages.recap = error instanceof Error ? error.message : String(error);
       }
+      try {
+        await brain.ingestSnapshot(snapshot(), fixturePlayers);
+      } catch (error) {
+        messages.ingest = error instanceof Error ? error.message : String(error);
+      }
       return messages;
     });
     expect(refusals).toEqual({
       dashboard: LEGACY_IMPORT_PENDING_MESSAGE,
       poll: LEGACY_IMPORT_PENDING_MESSAGE,
       recap: LEGACY_IMPORT_PENDING_MESSAGE,
+      ingest: LEGACY_IMPORT_PENDING_MESSAGE,
     });
     const stillPending = await readBrainSql(next);
     expect(stillPending.snapshots).toEqual([]);
@@ -929,5 +962,104 @@ describe("LeagueBrain legacy Durable Object migration", () => {
     expect(afterFourth.settings.some((row) => row.key === "legacyImportAbandoned")).toBe(true);
     expect(afterFourth.settings.some((row) => row.key === "legacyMigratedFrom")).toBe(false);
     expect(afterFourth.settings.some((row) => row.key === "legacyImportPending")).toBe(false);
+  });
+
+  it("ingestSnapshot rejects while pending and writes nothing, then writes after a successful retry", async () => {
+    const retrySleeperId = "900000000000000041";
+    const retryInternalId = "league_internal_ingest_pending_retry";
+    await seedLegacyBrain(retrySleeperId, {
+      leagueId: retrySleeperId,
+      sleeperLeagueId: retrySleeperId,
+    });
+    const next = env.LEAGUE_BRAIN.getByName(retryInternalId);
+    const input = {
+      leagueId: retryInternalId,
+      sleeperLeagueId: retrySleeperId,
+      name: "Cutman League",
+      tone: "playful" as const,
+    };
+
+    await runInDurableObject(next, async (instance) => {
+      const brain = instance as unknown as TestBrain;
+      const original = brain.exportLegacyStateFromSource.bind(brain);
+      let attempts = 0;
+      brain.exportLegacyStateFromSource = async (sleeperLeagueId) => {
+        attempts += 1;
+        if (attempts === 1) {
+          throw new Error("export unavailable");
+        }
+        return original(sleeperLeagueId);
+      };
+    });
+    await captureBootstrapLogs(next, input);
+
+    expectEmptyHistory(await readBrainSql(next));
+    const pendingIngest = await tryIngestSnapshot(next);
+    expect(pendingIngest).toEqual({ error: LEGACY_IMPORT_PENDING_MESSAGE });
+    expectEmptyHistory(await readBrainSql(next));
+
+    await expect(next.bootstrap(input)).resolves.toBeUndefined();
+    expect((await readBrainSql(next)).settings.some((row) => row.key === "legacyImportPending")).toBe(false);
+
+    const afterRetry = await tryIngestSnapshot(next);
+    expect(afterRetry).not.toHaveProperty("error");
+    expect(afterRetry).toEqual(
+      expect.objectContaining({
+        hash: expect.any(String),
+        facts: expect.any(Number),
+        wroteBeat: expect.any(Boolean),
+      }),
+    );
+    const written = await readBrainSql(next);
+    expect(written.snapshots.length).toBeGreaterThan(0);
+    expect(written.snapshots.some((row) => row.payload === JSON.stringify(snapshot()))).toBe(true);
+  });
+
+  it("ingestSnapshot rejects while pending and writes nothing, then writes after abandonment", async () => {
+    const abandonSleeperId = "900000000000000051";
+    const abandonInternalId = "league_internal_ingest_pending_abandon";
+    const next = env.LEAGUE_BRAIN.getByName(abandonInternalId);
+    const input = {
+      leagueId: abandonInternalId,
+      sleeperLeagueId: abandonSleeperId,
+      name: "Cutman League",
+      tone: "playful" as const,
+    };
+
+    await runInDurableObject(next, async (instance) => {
+      const brain = instance as unknown as TestBrain;
+      brain.exportLegacyStateFromSource = async () => {
+        throw new Error("export unavailable");
+      };
+    });
+
+    for (let attempt = 1; attempt < LEGACY_IMPORT_MAX_ATTEMPTS; attempt += 1) {
+      await captureBootstrapLogs(next, input);
+      expectEmptyHistory(await readBrainSql(next));
+      const pendingIngest = await tryIngestSnapshot(next);
+      expect(pendingIngest).toEqual({ error: LEGACY_IMPORT_PENDING_MESSAGE });
+      expectEmptyHistory(await readBrainSql(next));
+    }
+
+    await captureBootstrapLogs(next, input);
+    const abandoned = await readBrainSql(next);
+    expect(abandoned.settings.some((row) => row.key === "legacyImportPending")).toBe(false);
+    expect(abandoned.settings.some((row) => row.key === "legacyImportAbandoned")).toBe(true);
+    expect(abandoned.snapshots).toEqual([]);
+    expect(abandoned.beats).toEqual([]);
+    expect(abandoned.recaps).toEqual([]);
+
+    const afterAbandon = await tryIngestSnapshot(next);
+    expect(afterAbandon).not.toHaveProperty("error");
+    expect(afterAbandon).toEqual(
+      expect.objectContaining({
+        hash: expect.any(String),
+        facts: expect.any(Number),
+        wroteBeat: expect.any(Boolean),
+      }),
+    );
+    const written = await readBrainSql(next);
+    expect(written.snapshots).toHaveLength(1);
+    expect(written.snapshots[0]?.payload).toBe(JSON.stringify(snapshot()));
   });
 });

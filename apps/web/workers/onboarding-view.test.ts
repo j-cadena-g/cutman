@@ -5,6 +5,7 @@ import {
   describeOnboardingError,
   formatChallengeCountdown,
   isStuckProvisioning,
+  provisioningStartedAtFromLeague,
   STUCK_PROVISIONING_MS,
   type OnboardingErrorKind,
 } from "../app/lib/onboarding-view.ts";
@@ -20,6 +21,7 @@ function makeLeague(overrides: Partial<LeagueRow> = {}): LeagueRow {
     created_at: 0,
     activated_at: null,
     provisioning_error: null,
+    provisioning_started_at: null,
     ...overrides,
   };
 }
@@ -271,6 +273,33 @@ describe("isStuckProvisioning", () => {
     const startedAt = 1_700_000_000_000;
     expect(isStuckProvisioning(startedAt, startedAt + STUCK_PROVISIONING_MS - 1)).toBe(false);
     expect(isStuckProvisioning(startedAt, startedAt + STUCK_PROVISIONING_MS)).toBe(true);
+  });
+});
+
+describe("provisioningStartedAtFromLeague", () => {
+  it("is null unless the league is currently provisioning", () => {
+    expect(provisioningStartedAtFromLeague(null)).toBeNull();
+    expect(provisioningStartedAtFromLeague(makeLeague({ status: "active", provisioning_started_at: 9 }))).toBeNull();
+    expect(provisioningStartedAtFromLeague(makeLeague({ status: "error", provisioning_started_at: 9 }))).toBeNull();
+  });
+
+  it("uses the latest attempt timestamp, not the original created_at, after a retry", () => {
+    const createdAt = 1_000;
+    const retryAt = 5_000;
+    expect(
+      provisioningStartedAtFromLeague(
+        makeLeague({ status: "provisioning", created_at: createdAt, provisioning_started_at: retryAt }),
+      ),
+    ).toBe(retryAt);
+  });
+
+  it("falls back to created_at when provisioning_started_at is null", () => {
+    const createdAt = 2_500;
+    expect(
+      provisioningStartedAtFromLeague(
+        makeLeague({ status: "provisioning", created_at: createdAt, provisioning_started_at: null }),
+      ),
+    ).toBe(createdAt);
   });
 });
 

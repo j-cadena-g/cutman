@@ -168,7 +168,10 @@ describe("0002 sleeper onboarding migration", () => {
       { id: "user_unlinked", email: "unlinked@example.test", created_at: 4_000 },
     ]);
 
-    const leagueColumns = await env.DB.prepare("PRAGMA table_info(leagues)").all<{ name: string }>();
+    const leagueColumns = await env.DB.prepare("PRAGMA table_info(leagues)").all<{
+      name: string;
+      notnull: number;
+    }>();
     expect(leagueColumns.results.map((column) => column.name)).toEqual([
       "id",
       "sleeper_league_id",
@@ -179,7 +182,9 @@ describe("0002 sleeper onboarding migration", () => {
       "created_at",
       "activated_at",
       "provisioning_error",
+      "provisioning_started_at",
     ]);
+    expect(leagueColumns.results.find((column) => column.name === "provisioning_started_at")?.notnull).toBe(0);
     const memberColumns = await env.DB.prepare("PRAGMA table_info(league_members)").all<{
       name: string;
     }>();
@@ -192,7 +197,7 @@ describe("0002 sleeper onboarding migration", () => {
     ]);
 
     const leagues = await env.DB.prepare(
-      `SELECT id, sleeper_league_id, name, season, status, tone, created_at, activated_at, provisioning_error
+      `SELECT id, sleeper_league_id, name, season, status, tone, created_at, activated_at, provisioning_error, provisioning_started_at
        FROM leagues
        ORDER BY id`,
     ).all<{
@@ -205,6 +210,7 @@ describe("0002 sleeper onboarding migration", () => {
       created_at: number;
       activated_at: number | null;
       provisioning_error: string | null;
+      provisioning_started_at: number | null;
     }>();
     expect(leagues.results).toEqual([
       {
@@ -217,6 +223,7 @@ describe("0002 sleeper onboarding migration", () => {
         created_at: 5_000,
         activated_at: 5_000,
         provisioning_error: null,
+        provisioning_started_at: null,
       },
       {
         id: "legacy_sleeper_league_bbb",
@@ -228,6 +235,7 @@ describe("0002 sleeper onboarding migration", () => {
         created_at: 6_000,
         activated_at: 6_000,
         provisioning_error: null,
+        provisioning_started_at: null,
       },
     ]);
     expect(leagues.results.every((league) => league.id !== league.sleeper_league_id)).toBe(true);

@@ -83,6 +83,9 @@ describe("SCHEMA_SQL", () => {
 
   it("contains no -- SQL comments because ensureSchema splits on semicolons without stripping them", () => {
     expect(SCHEMA_SQL).not.toMatch(/--/);
+    expect(SCHEMA_SQL).not.toMatch(/\bALTER\b/i);
+    expect(SCHEMA_SQL).toMatch(/provisioning_started_at INTEGER\s*(?:,|\))/);
+    expect(SCHEMA_SQL).not.toMatch(/provisioning_started_at INTEGER NOT NULL/);
   });
 
   it("matches schema.sql after stripping comments", () => {
@@ -130,13 +133,38 @@ describe("SCHEMA_SQL", () => {
     expect(onboarding).not.toMatch(/INSERT INTO leagues\s+SELECT\s+\*/i);
     expect(onboarding).not.toMatch(/INSERT INTO league_members\s+SELECT\s+\*/i);
 
+    const scratchLeaguesCreate = migrationStatements.find((statement) =>
+      /^CREATE TABLE IF NOT EXISTS _cutman_0002_leagues\b/i.test(statement),
+    );
+    expect(scratchLeaguesCreate).toMatch(/provisioning_started_at INTEGER/);
+    expect(scratchLeaguesCreate).not.toMatch(/provisioning_started_at INTEGER NOT NULL/);
+
+    expect(migrationStatements).toContainEqual(
+      [
+        "INSERT INTO _cutman_0002_leagues (",
+        "  id, sleeper_league_id, name, season, status, tone, created_at, activated_at, provisioning_error, provisioning_started_at",
+        ")",
+        "SELECT",
+        "  'legacy_' || sleeper_league_id,",
+        "  sleeper_league_id,",
+        "  name,",
+        "  season,",
+        "  'active',",
+        "  tone,",
+        "  enabled_at,",
+        "  enabled_at,",
+        "  NULL,",
+        "  NULL",
+        "FROM leagues",
+      ].join("\n"),
+    );
     expect(migrationStatements).toContainEqual(
       [
         "INSERT INTO leagues (",
-        "  id, sleeper_league_id, name, season, status, tone, created_at, activated_at, provisioning_error",
+        "  id, sleeper_league_id, name, season, status, tone, created_at, activated_at, provisioning_error, provisioning_started_at",
         ")",
         "SELECT",
-        "  id, sleeper_league_id, name, season, status, tone, created_at, activated_at, provisioning_error",
+        "  id, sleeper_league_id, name, season, status, tone, created_at, activated_at, provisioning_error, provisioning_started_at",
         "FROM _cutman_0002_leagues",
       ].join("\n"),
     );

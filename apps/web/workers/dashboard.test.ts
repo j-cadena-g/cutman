@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { getDashboardOrNull, isUnbootstrappedDashboardError } from "../app/lib/dashboard.ts";
-import type { Dashboard } from "../workers/league-brain.ts";
+import { UNBOOTSTRAPPED_MESSAGE, type Dashboard } from "../workers/league-brain.ts";
 
 async function withSilentConsoleError<T>(run: () => Promise<T>): Promise<unknown[][]> {
   const errors: unknown[][] = [];
@@ -33,11 +33,11 @@ function makeDashboard(overrides: Partial<Dashboard> = {}): Dashboard {
 
 describe("isUnbootstrappedDashboardError", () => {
   it("accepts only the exact LeagueBrain.readSettings Error", () => {
-    expect(isUnbootstrappedDashboardError(new Error("Cutman is not bootstrapped"))).toBe(true);
+    expect(isUnbootstrappedDashboardError(new Error(UNBOOTSTRAPPED_MESSAGE))).toBe(true);
     expect(isUnbootstrappedDashboardError(new Error("some other Durable Object failure"))).toBe(false);
     expect(isUnbootstrappedDashboardError(new Error("Cutman is not bootstrapped yet"))).toBe(false);
-    expect(isUnbootstrappedDashboardError("Cutman is not bootstrapped")).toBe(false);
-    expect(isUnbootstrappedDashboardError({ message: "Cutman is not bootstrapped" })).toBe(false);
+    expect(isUnbootstrappedDashboardError(UNBOOTSTRAPPED_MESSAGE)).toBe(false);
+    expect(isUnbootstrappedDashboardError({ message: UNBOOTSTRAPPED_MESSAGE })).toBe(false);
   });
 });
 
@@ -52,7 +52,7 @@ describe("getDashboardOrNull", () => {
     const errors = await withSilentConsoleError(async () => {
       const result = await getDashboardOrNull({
         getDashboard: async () => {
-          throw new Error("Cutman is not bootstrapped");
+          throw new Error(UNBOOTSTRAPPED_MESSAGE);
         },
       });
       expect(result).toBeNull();
@@ -72,7 +72,7 @@ describe("getDashboardOrNull", () => {
   });
 
   it("rethrows a non-Error thrown value even when it looks like the unbootstrapped message", async () => {
-    const failure = "Cutman is not bootstrapped";
+    const failure = UNBOOTSTRAPPED_MESSAGE;
     await expect(
       getDashboardOrNull({
         getDashboard: async () => {

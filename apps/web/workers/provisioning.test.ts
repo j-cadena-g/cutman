@@ -114,6 +114,8 @@ describe("provisionAndActivateLeague", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("expected ok");
     expect(result.league.status).toBe("active");
+    expect(result.league.created_at).toBe(now);
+    expect(result.league.provisioning_started_at).toBe(now + 50);
     expect(result.league.activated_at).toBe(now + 50);
     expect(result.league.provisioning_error).toBeNull();
     expect(await getLeague(env.DB, league.id)).toMatchObject({ status: "active", id: league.id });
@@ -159,13 +161,19 @@ describe("provisionAndActivateLeague", () => {
     const now = 1_804_020_000_000;
     const league = await seedProvisioningLeague("already_active", now);
     const activated = await activateLeague(env.DB, league.id, now + 1);
+    const nowFn = vi.fn(() => now + 2);
 
-    const result = await provisionAndActivateLeague(depsWithBrain(silentBrain(), now + 2), activated);
+    const result = await provisionAndActivateLeague(
+      { db: env.DB, brain: silentBrain(), now: nowFn },
+      activated,
+    );
 
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("expected ok");
+    expect(nowFn).not.toHaveBeenCalled();
     expect(result.league.status).toBe("active");
     expect(result.league.activated_at).toBe(now + 1);
+    expect(result.league.provisioning_started_at).toBe(now);
   });
 
   it("retries from error by moving back to provisioning, then activating after a successful bootstrap and poll", async () => {
@@ -183,6 +191,8 @@ describe("provisionAndActivateLeague", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("expected ok");
     expect(result.league.status).toBe("active");
+    expect(result.league.created_at).toBe(now);
+    expect(result.league.provisioning_started_at).toBe(now + 9);
     expect(result.league.provisioning_error).toBeNull();
   });
 
@@ -254,10 +264,10 @@ describe("provisionAndActivateLeague", () => {
     await failLeague(env.DB, league.id, "previous poll failed");
     const errored = (await getLeague(env.DB, league.id))!;
     expect(errored.status).toBe("error");
-    await provisionLeague(env.DB, league.id);
-    await activateLeague(env.DB, league.id, now + 1);
+    await provisionLeague(env.DB, league.id, now + 1);
+    await activateLeague(env.DB, league.id, now + 2);
 
-    const result = await provisionAndActivateLeague(depsWithBrain(silentBrain(), now + 2), errored);
+    const result = await provisionAndActivateLeague(depsWithBrain(silentBrain(), now + 3), errored);
 
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("expected ok");
@@ -281,6 +291,73 @@ describe("provisionAndActivateLeague", () => {
     const stored = await getLeague(env.DB, league.id);
     expect(stored?.status).toBe("error");
     expect(stored?.provisioning_error).toBe("peer failed first");
+  });
+
+  it("stamps provisioning_started_at from a single attempt-start now() before bootstrap", async () => {
+    const createdAt = 1_804_200_000_000;
+    const attemptAt = createdAt + 5_000;
+    const activatedAt = createdAt + 6_000;
+    const league = await seedProvisioningLeague("now_once", createdAt);
+    expect(league.provisioning_started_at).toBe(createdAt);
+
+    const nowFn = vi.fn().mockReturnValueOnce(attemptAt).mockReturnValueOnce(activatedAt);
+    const result = await provisionAndActivateLeague(
+      { db: env.DB, brain: silentBrain(), now: nowFn },
+      league,
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected ok");
+    expect(nowFn).toHaveBeenCalledTimes(2);
+    expect(result.league.created_at).toBe(createdAt);
+    expect(result.league.provisioning_started_at).toBe(attemptAt);
+    expect(result.league.activated_at).toBe(activatedAt);
+    expect(await getLeague(env.DB, league.id)).toMatchObject({
+      created_at: createdAt,
+      provisioning_started_at: attemptAt,
+      activated_at: activatedAt,
+    });
+  });
+
+  it("refreshes provisioning_started_at from the retry now when recovering from error", async () => {
+    const createdAt = 1_804_210_000_000;
+    const retryAt = createdAt + 10_000;
+    const league = await seedProvisioningLeague("error_refresh", createdAt);
+    await failLeague(env.DB, league.id, "previous poll failed");
+    const errored = (await getLeague(env.DB, league.id))!;
+    expect(errored.provisioning_started_at).toBe(createdAt);
+
+    const nowFn = vi.fn().mockReturnValueOnce(retryAt).mockReturnValueOnce(retryAt + 1);
+    const result = await provisionAndActivateLeague(
+      { db: env.DB, brain: silentBrain(), now: nowFn },
+      errored,
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected ok");
+    expect(nowFn).toHaveBeenCalledTimes(2);
+    expect(result.league.created_at).toBe(createdAt);
+    expect(result.league.provisioning_started_at).toBe(retryAt);
+    expect(result.league.activated_at).toBe(retryAt + 1);
+  });
+
+  it("records attempt start with now() once when poll fails", async () => {
+    const createdAt = 1_804_220_000_000;
+    const attemptAt = createdAt + 3;
+    const league = await seedProvisioningLeague("fail_now_once", createdAt);
+    const nowFn = vi.fn(() => attemptAt);
+
+    const result = await provisionAndActivateLeague(
+      { db: env.DB, brain: throwingBrain(new Error("Sleeper 502")), now: nowFn },
+      league,
+    );
+
+    expect(result).toEqual({ ok: false, error: { kind: "provisioning_failed" } });
+    expect(nowFn).toHaveBeenCalledTimes(1);
+    const stored = await getLeague(env.DB, league.id);
+    expect(stored?.status).toBe("error");
+    expect(stored?.created_at).toBe(createdAt);
+    expect(stored?.provisioning_started_at).toBe(attemptAt);
   });
 });
 

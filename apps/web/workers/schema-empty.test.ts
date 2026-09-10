@@ -84,7 +84,10 @@ describe("schema", () => {
     ).first<{ sql: string }>();
     expect(pendingIndex?.sql).toMatch(/WHERE\s+status\s*=\s*'pending'/i);
 
-    const leagueColumns = await env.DB.prepare("PRAGMA table_info(leagues)").all<{ name: string }>();
+    const leagueColumns = await env.DB.prepare("PRAGMA table_info(leagues)").all<{
+      name: string;
+      notnull: number;
+    }>();
     expect(leagueColumns.results.map((column) => column.name)).toEqual([
       "id",
       "sleeper_league_id",
@@ -95,6 +98,8 @@ describe("schema", () => {
       "created_at",
       "activated_at",
       "provisioning_error",
+      "provisioning_started_at",
     ]);
+    expect(leagueColumns.results.find((column) => column.name === "provisioning_started_at")?.notnull).toBe(0);
   });
 });
