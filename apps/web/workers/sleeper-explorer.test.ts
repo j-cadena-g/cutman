@@ -209,14 +209,6 @@ describe("describeExplorerError", () => {
       "Enter a Sleeper username of 1–32 letters, digits, underscores, or hyphens.",
     );
   });
-
-  it("returns a generic fallback for a runtime-unexpected kind", () => {
-    // Compile-time exhaustiveness is the `never` default in describeExplorerError.
-    // @ts-expect-error only this test may pass a kind the union rejects, to hit that branch.
-    expect(describeExplorerError("not_a_real_kind")).toBe(
-      "Cutman couldn't complete that Sleeper lookup. Try again in a moment.",
-    );
-  });
 });
 
 describe("isValidExplorerLeagueId", () => {

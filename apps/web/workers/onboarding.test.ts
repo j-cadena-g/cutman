@@ -56,8 +56,10 @@ type FakeSleeperConfig = {
 // fixture client (which serves the same single league/users list for any matching league id),
 // this lets each test independently control ownership/membership per league id, which the
 // "derived per-league, not insertion order" requirement specifically needs to exercise.
-function createFakeSleeperClient(config: FakeSleeperConfig): SleeperClient & { calls: { getUser: number } } {
-  const calls = { getUser: 0 };
+function createFakeSleeperClient(config: FakeSleeperConfig): SleeperClient & {
+  calls: { getUser: number; getLeague: number; getLeagueUsers: number };
+} {
+  const calls = { getUser: 0, getLeague: 0, getLeagueUsers: 0 };
   return {
     calls,
     async getNflState() {
@@ -71,9 +73,11 @@ function createFakeSleeperClient(config: FakeSleeperConfig): SleeperClient & { c
       return config.userLeagues?.[userId] ?? [];
     },
     async getLeague(leagueId) {
+      calls.getLeague += 1;
       return config.leaguesById?.[leagueId] ?? null;
     },
     async getLeagueUsers(leagueId) {
+      calls.getLeagueUsers += 1;
       return config.leagueUsersById?.[leagueId] ?? [];
     },
     async getRosters() {
@@ -606,6 +610,196 @@ describe("discoverLeagues", () => {
     expect(result.ok).toBe(true);
     expect(maxInFlight).toBe(1);
     expect(calls).toEqual([pilotSleeperLeagueId]);
+  });
+
+  it("calls getLeagueUsers exactly once when the pilot is already in current-season leagues", async () => {
+    const user = await seedUser("user_discover_one_call", "discover-one-call@example.test");
+    const pilotSleeperLeagueId = nextPilotLeagueId("discover_one_call");
+    const sleeperClient = createFakeSleeperClient({
+      usersByLookup: { scout: { user_id: "sleeper_scout_one_call", username: "scout", display_name: "Scout" } },
+      userLeagues: {
+        sleeper_scout_one_call: [
+          { league_id: pilotSleeperLeagueId, name: "The Pilot", season: "2026", sport: "nfl" },
+          { league_id: OTHER_LEAGUE_ID, name: "Someday League", season: "2026", sport: "nfl" },
+        ],
+      },
+      leagueUsersById: {
+        [pilotSleeperLeagueId]: [
+          { user_id: "sleeper_scout_one_call", username: "scout", display_name: "Scout", is_owner: true },
+        ],
+        [OTHER_LEAGUE_ID]: [
+          { user_id: "sleeper_scout_one_call", username: "scout", display_name: "Scout", is_owner: true },
+        ],
+      },
+    });
+    await connectSleeperAccount(makeDeps({ sleeperClient, pilotSleeperLeagueId }), {
+      clerkUserId: user.id,
+      usernameInput: "scout",
+    });
+    sleeperClient.calls.getLeagueUsers = 0;
+    sleeperClient.calls.getLeague = 0;
+
+    const result = await discoverLeagues(makeDeps({ sleeperClient, pilotSleeperLeagueId }), { clerkUserId: user.id });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected ok");
+    expect(sleeperClient.calls.getLeagueUsers).toBe(1);
+    expect(sleeperClient.calls.getLeague).toBe(0);
+    expect(result.leagues.map((league) => league.sleeperLeagueId)).toEqual([pilotSleeperLeagueId, OTHER_LEAGUE_ID]);
+    expect(result.leagues[0]?.isOwner).toBe(true);
+    expect(result.leagues[1]?.isOwner).toBe(false);
+  });
+
+  it("reuses the same getLeagueUsers promise when current-season leagues omit the pilot", async () => {
+    const user = await seedUser("user_discover_reuse_omit", "discover-reuse-omit@example.test");
+    const pilotSleeperLeagueId = nextPilotLeagueId("discover_reuse_omit");
+    const sleeperClient = createFakeSleeperClient({
+      usersByLookup: { scout: { user_id: "sleeper_scout_reuse_omit", username: "scout", display_name: "Scout" } },
+      userLeagues: {
+        sleeper_scout_reuse_omit: [{ league_id: OTHER_LEAGUE_ID, name: "Someday League", season: "2026", sport: "nfl" }],
+      },
+      leaguesById: {
+        [pilotSleeperLeagueId]: {
+          league_id: pilotSleeperLeagueId,
+          name: "The Pilot",
+          season: "2026",
+          sport: "nfl",
+        },
+      },
+      leagueUsersById: {
+        [pilotSleeperLeagueId]: [
+          { user_id: "sleeper_scout_reuse_omit", username: "scout", display_name: "Scout", is_owner: true },
+        ],
+      },
+    });
+    await connectSleeperAccount(makeDeps({ sleeperClient, pilotSleeperLeagueId }), {
+      clerkUserId: user.id,
+      usernameInput: "scout",
+    });
+    sleeperClient.calls.getLeagueUsers = 0;
+    sleeperClient.calls.getLeague = 0;
+
+    const result = await discoverLeagues(makeDeps({ sleeperClient, pilotSleeperLeagueId }), { clerkUserId: user.id });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected ok");
+    expect(sleeperClient.calls.getLeagueUsers).toBe(1);
+    expect(sleeperClient.calls.getLeague).toBe(1);
+    expect(result.leagues.map((league) => league.sleeperLeagueId)).toEqual([pilotSleeperLeagueId, OTHER_LEAGUE_ID]);
+  });
+
+  it("classifies other leagues while the pilot roster lookup is still in flight", async () => {
+    const user = await seedUser("user_discover_overlap", "discover-overlap@example.test");
+    const pilotSleeperLeagueId = nextPilotLeagueId("discover_overlap");
+    let rosterResolved = false;
+    let readComingSoonWhileRosterInFlight = false;
+    const rosterCalls: string[] = [];
+    const sleeperClient: SleeperClient = {
+      async getNflState() {
+        return { week: 1, season_type: "regular", season: "2026", league_season: "2026" };
+      },
+      async getUser() {
+        return { user_id: "sleeper_scout_overlap", username: "scout", display_name: "Scout" };
+      },
+      async getUserLeagues() {
+        return [
+          { league_id: pilotSleeperLeagueId, name: "The Pilot", season: "2026", sport: "nfl" },
+          {
+            league_id: OTHER_LEAGUE_ID,
+            season: "2026",
+            sport: "nfl",
+            get name() {
+              if (!rosterResolved) readComingSoonWhileRosterInFlight = true;
+              return "Someday League";
+            },
+          },
+        ];
+      },
+      async getLeague() {
+        throw new Error("getLeague should not run when the pilot is already in current-season leagues");
+      },
+      async getLeagueUsers(leagueId) {
+        rosterCalls.push(leagueId);
+        await Promise.resolve();
+        rosterResolved = true;
+        return [{ user_id: "sleeper_scout_overlap", username: "scout", display_name: "Scout", is_owner: true }];
+      },
+      async getRosters() {
+        return [];
+      },
+      async getMatchups() {
+        return [];
+      },
+      async getTransactions() {
+        return [];
+      },
+      async getPlayers() {
+        return {};
+      },
+    };
+    await connectSleeperAccount(makeDeps({ sleeperClient, pilotSleeperLeagueId }), {
+      clerkUserId: user.id,
+      usernameInput: "scout",
+    });
+
+    const result = await discoverLeagues(makeDeps({ sleeperClient, pilotSleeperLeagueId }), { clerkUserId: user.id });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected ok");
+    expect(readComingSoonWhileRosterInFlight).toBe(true);
+    expect(rosterCalls).toEqual([pilotSleeperLeagueId]);
+    expect(result.leagues.map((league) => [league.sleeperLeagueId, league.classification, league.isOwner])).toEqual([
+      [pilotSleeperLeagueId, "pilot", true],
+      [OTHER_LEAGUE_ID, "coming_soon", false],
+    ]);
+  });
+
+  it("propagates a pilot roster lookup failure instead of returning a partial league list", async () => {
+    const user = await seedUser("user_discover_roster_fail", "discover-roster-fail@example.test");
+    const pilotSleeperLeagueId = nextPilotLeagueId("discover_roster_fail");
+    let getLeagueCalls = 0;
+    const sleeperClient: SleeperClient = {
+      async getNflState() {
+        return { week: 1, season_type: "regular", season: "2026", league_season: "2026" };
+      },
+      async getUser() {
+        return { user_id: "sleeper_scout_roster_fail", username: "scout", display_name: "Scout" };
+      },
+      async getUserLeagues() {
+        return [
+          { league_id: pilotSleeperLeagueId, name: "The Pilot", season: "2026", sport: "nfl" },
+          { league_id: OTHER_LEAGUE_ID, name: "Someday League", season: "2026", sport: "nfl" },
+        ];
+      },
+      async getLeague() {
+        getLeagueCalls += 1;
+        return null;
+      },
+      async getLeagueUsers() {
+        throw new Error("roster unavailable");
+      },
+      async getRosters() {
+        return [];
+      },
+      async getMatchups() {
+        return [];
+      },
+      async getTransactions() {
+        return [];
+      },
+      async getPlayers() {
+        return {};
+      },
+    };
+    await connectSleeperAccount(makeDeps({ sleeperClient, pilotSleeperLeagueId }), {
+      clerkUserId: user.id,
+      usernameInput: "scout",
+    });
+
+    await expect(
+      discoverLeagues(makeDeps({ sleeperClient, pilotSleeperLeagueId }), { clerkUserId: user.id }),
+    ).rejects.toThrow("roster unavailable");
+    expect(getLeagueCalls).toBe(0);
   });
 });
 

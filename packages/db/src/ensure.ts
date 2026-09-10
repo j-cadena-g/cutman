@@ -68,6 +68,22 @@ CREATE TABLE IF NOT EXISTS app_state (
   value TEXT NOT NULL,
   updated_at INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS recap_attempt_backlog (
+  league_id TEXT NOT NULL,
+  week_key TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'done')),
+  attempts INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (league_id, week_key),
+  FOREIGN KEY (league_id) REFERENCES leagues(id)
+);
+
+CREATE INDEX IF NOT EXISTS recap_attempt_backlog_pending_week_idx
+  ON recap_attempt_backlog (week_key, league_id)
+  WHERE status = 'pending';
 `;
 
 const applying = new WeakMap<D1Database, Promise<void>>();

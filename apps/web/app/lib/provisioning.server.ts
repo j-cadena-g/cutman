@@ -22,8 +22,8 @@ export type ProvisioningDeps = {
   db: D1Database;
   brain: LeagueBrainHandle;
   now: () => number;
-  // Monotonic clock for the shared bootstrap+poll deadline. Defaults to Date.now; tests
-  // inject this (or fake timers that advance Date.now) so remaining budget stays deterministic.
+  // Clock for the shared bootstrap+poll deadline. Defaults to Date.now, which is a wall clock
+  // and can step; tests inject this (or fake timers) so the remaining budget stays deterministic.
   clock?: () => number;
 };
 

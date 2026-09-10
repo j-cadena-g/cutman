@@ -100,7 +100,8 @@ Current Worker bindings in the public `apps/web/wrangler.jsonc` template:
 
 The worker applies D1 migrations `0001_init.sql` (the original deployed schema) then
 `0002_sleeper_onboarding.sql` (internal league ids, sleeper accounts, verifications, and
-commissioner/member roles). Leagues are created during commissioner onboarding, not
+commissioner/member roles), then `0003_recap_attempt_backlog.sql` (per-league/per-week
+Tuesday recap attempt backlog). Leagues are created during commissioner onboarding, not
 auto-seeded. Production renders require `PILOT_SLEEPER_LEAGUE_ID` so the fake placeholder
 from `wrangler.jsonc` cannot ship. For a CLI-managed local D1:
 
@@ -110,16 +111,17 @@ pnpm run db:migrate:local
 
 If your local D1 predates the current schema — including a local database that applied this
 branch's rewritten `0001` before `0002` existed — reset it. Reset is **local-only**: it
-deletes `apps/web/.wrangler/state/v3/d1` and nothing else, then reapplies `0001_init.sql` and
-`0002_sleeper_onboarding.sql`. It never touches remote D1.
+deletes `apps/web/.wrangler/state/v3/d1` and nothing else, then reapplies `0001_init.sql`,
+`0002_sleeper_onboarding.sql`, and `0003_recap_attempt_backlog.sql`. It never touches remote D1.
 
 ```bash
 pnpm run db:reset:local
 ```
 
 Remote D1 that already applied the original (legacy) `0001_init.sql` picks up
-`0002_sleeper_onboarding.sql` on the next `pnpm run deploy` / `db:migrate:remote`. No remote
-wipe is required for that legacy schema. `ensureSchema` remains additive only
+`0002_sleeper_onboarding.sql` and `0003_recap_attempt_backlog.sql` on the next
+`pnpm run deploy` / `db:migrate:remote`. No remote wipe is required for that
+legacy schema. `ensureSchema` remains additive only
 (`CREATE TABLE/INDEX IF NOT EXISTS`) and does not migrate leftover shapes at runtime.
 `pnpm run db:reset:local` never touches remote. Do not invent a destructive remote reset
 script.

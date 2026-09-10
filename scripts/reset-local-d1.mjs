@@ -25,6 +25,17 @@ const localD1Dir = path.join(webDir, ".wrangler", "state", "v3", "d1");
 export const LOCAL_D1_SEGMENTS = Object.freeze([".wrangler", "state", "v3", "d1"]);
 
 /**
+ * Walk from `.wrangler/state/v3/d1` back to `apps/web` using the suffix length, not a
+ * hardcoded `..` count, so the symlink walk stays aligned if LOCAL_D1_SEGMENTS changes.
+ */
+export function resolveLocalD1WebDir(targetDir) {
+  return path.resolve(
+    targetDir,
+    ...Array.from({ length: LOCAL_D1_SEGMENTS.length }, () => ".."),
+  );
+}
+
+/**
  * Pure path-equality guard. Tests pass an explicit expected temp path; production pins
  * expectedDir to the hardcoded localD1Dir constant via assertExpectedLocalD1Path.
  */
@@ -70,7 +81,7 @@ export async function assertLocalD1PathHasNoSymlinks(targetWebDir) {
 }
 
 async function removeLocalD1Dir(targetDir) {
-  const targetWebDir = path.resolve(targetDir, "..", "..", "..", "..");
+  const targetWebDir = resolveLocalD1WebDir(targetDir);
   await assertLocalD1PathHasNoSymlinks(targetWebDir);
   await rm(targetDir, { recursive: true, force: true });
 }

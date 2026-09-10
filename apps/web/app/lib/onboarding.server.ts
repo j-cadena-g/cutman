@@ -204,34 +204,32 @@ export async function discoverLeagues(
   const sleeperLeagues = await deps.sleeperClient.getUserLeagues(account.sleeper_user_id, season);
 
   // Ownership is only consumed for the configured pilot league. Coming-soon cards never show
-  // owner, so skip their roster reads. One `getLeagueUsers` per discovery request when the
-  // pilot appears in current-season leagues; if Sleeper omits it, one extra getLeague +
-  // getLeagueUsers confirms membership before we treat the user as not a member.
-  const leagues: DiscoveredLeague[] = [];
-  let foundPilot = false;
-  for (const league of sleeperLeagues) {
+  // owner, so skip their roster reads. Start the one `getLeagueUsers` immediately so it
+  // overlaps classification mapping — never await it inside the list walk. One call per
+  // discovery request; if Sleeper omits the pilot from current-season leagues, reuse that
+  // same lookup with getLeague to confirm membership before treating the user as not a member.
+  const membersPromise = deps.sleeperClient.getLeagueUsers(deps.pilotSleeperLeagueId);
+  const classified: Omit<DiscoveredLeague, "isOwner">[] = sleeperLeagues.map((league) => {
     const isPilot = league.league_id === deps.pilotSleeperLeagueId;
-    if (isPilot) foundPilot = true;
-    const entry = isPilot
-      ? (await deps.sleeperClient.getLeagueUsers(league.league_id)).find(
-          (member) => member.user_id === account.sleeper_user_id,
-        )
-      : undefined;
-    leagues.push({
+    return {
       sleeperLeagueId: league.league_id,
       name: league.name,
       season: league.season,
       classification: isPilot ? "pilot" : "coming_soon",
-      isOwner: Boolean(entry?.is_owner),
-    });
-  }
+    };
+  });
+  const foundPilot = classified.some((league) => league.classification === "pilot");
 
   if (!foundPilot) {
     const [pilotLeague, members] = await Promise.all([
       deps.sleeperClient.getLeague(deps.pilotSleeperLeagueId),
-      deps.sleeperClient.getLeagueUsers(deps.pilotSleeperLeagueId),
+      membersPromise,
     ]);
     const entry = members.find((member) => member.user_id === account.sleeper_user_id);
+    const leagues: DiscoveredLeague[] = classified.map((league) => ({
+      ...league,
+      isOwner: false,
+    }));
     if (pilotLeague && entry && pilotLeague.season === season) {
       leagues.unshift({
         sleeperLeagueId: pilotLeague.league_id,
@@ -241,9 +239,19 @@ export async function discoverLeagues(
         isOwner: Boolean(entry.is_owner),
       });
     }
+    return { ok: true, season, leagues };
   }
 
-  return { ok: true, season, leagues };
+  const members = await membersPromise;
+  const isOwner = Boolean(members.find((member) => member.user_id === account.sleeper_user_id)?.is_owner);
+  return {
+    ok: true,
+    season,
+    leagues: classified.map((league) => ({
+      ...league,
+      isOwner: league.classification === "pilot" ? isOwner : false,
+    })),
+  };
 }
 
 // ---------------------------------------------------------------------------

@@ -126,7 +126,7 @@ export async function action(args: Route.ActionArgs) {
     return { ok: "optin" };
   }
 
-  return { error: `Unknown action: ${intent}` };
+  return { error: "Cutman didn't recognize that action." };
 }
 
 function SignedInUserControls() {

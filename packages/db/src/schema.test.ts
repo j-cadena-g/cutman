@@ -100,16 +100,30 @@ describe("SCHEMA_SQL", () => {
     expect(statements(SCHEMA_SQL)).not.toEqual(statements(init));
   });
 
-  it("includes every final CREATE TABLE/INDEX except users in 0002", () => {
+  it("covers every final CREATE TABLE/INDEX except users across 0002 then 0003", () => {
     const onboarding = readMigration("0002_sleeper_onboarding.sql");
+    const backlog = readMigration("0003_recap_attempt_backlog.sql");
     const finalWithoutUsers = schemaFinalWithoutUsers();
-    const migrationStatements = statements(onboarding);
-    const migrationCreates = migrationFinalCreates(onboarding);
+    const migrationStatements = [...statements(onboarding), ...statements(backlog)];
+    const migrationCreates = [...migrationFinalCreates(onboarding), ...migrationFinalCreates(backlog)];
     expect(finalWithoutUsers.length).toBeGreaterThan(0);
     for (const statement of finalWithoutUsers) {
       expect(migrationStatements).toContainEqual(statement);
     }
     expect(sorted(migrationCreates)).toEqual(sorted(finalWithoutUsers));
+    expect(onboarding).not.toMatch(/recap_attempt_backlog/);
+    expect(backlog).toMatch(/CREATE TABLE IF NOT EXISTS recap_attempt_backlog\b/);
+  });
+
+  it("keeps 0003 additive (CREATE IF NOT EXISTS only, no DROP or ALTER)", () => {
+    const backlog = readMigration("0003_recap_attempt_backlog.sql");
+    expect(backlog).not.toMatch(/\bDROP\b/i);
+    expect(backlog).not.toMatch(/\bALTER\b/i);
+    const creates = migrationFinalCreates(backlog);
+    expect(creates.length).toBeGreaterThan(0);
+    for (const statement of creates) {
+      expect(statement).toMatch(/^CREATE (UNIQUE INDEX|INDEX|TABLE) IF NOT EXISTS\b/i);
+    }
   });
 
   it("copies rebuilt leagues and members with explicit column lists", () => {
@@ -184,5 +198,6 @@ describe("SCHEMA_SQL", () => {
     const liveId = /\b[1-9]\d{10,}\b/;
     expect(readMigration("0001_init.sql")).not.toMatch(liveId);
     expect(readMigration("0002_sleeper_onboarding.sql")).not.toMatch(liveId);
+    expect(readMigration("0003_recap_attempt_backlog.sql")).not.toMatch(liveId);
   });
 });

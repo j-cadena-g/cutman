@@ -1,5 +1,12 @@
 import { listActiveLeagues, type LeagueRow } from "@cutman/db";
-import { easternParts, shouldAttemptTuesdayRecap, shouldPoll, toneOrPlayful } from "@cutman/story";
+import {
+  easternParts,
+  shouldAttemptTuesdayRecap,
+  shouldPoll,
+  toneOrPlayful,
+  type RecapAttemptResult,
+  type RecapStatus,
+} from "@cutman/story";
 
 /** Cap Durable Object work per cron tick. Successive ticks continue from a D1 cursor. */
 export const MAX_SCHEDULED_LEAGUES_PER_TICK = 10;
@@ -25,6 +32,27 @@ export function parseScheduledLeagueCursor(raw: string | null): string | null {
   } catch {
     return null;
   }
+}
+
+/** America/New_York calendar date of the Tuesday that opened the current recap week. */
+export function easternRecapWeekKey(now: Date): string {
+  const { weekday } = easternParts(now);
+  const calendar = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/New_York",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(now);
+  const [yearRaw, monthRaw, dayRaw] = calendar.split("-");
+  const year = Number.parseInt(yearRaw ?? "0", 10);
+  const month = Number.parseInt(monthRaw ?? "0", 10);
+  const day = Number.parseInt(dayRaw ?? "0", 10);
+  const daysSinceTuesday = (weekday - 2 + 7) % 7;
+  const utc = new Date(Date.UTC(year, month - 1, day - daysSinceTuesday));
+  const yyyy = String(utc.getUTCFullYear());
+  const mm = String(utc.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(utc.getUTCDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
 }
 
 export function selectScheduledLeaguePage<T extends { id: string }>(input: {
@@ -71,6 +99,25 @@ export function selectScheduledLeaguePage<T extends { id: string }>(input: {
     nextAfterId: last?.id ?? null,
     hasDeferred: wrapUnique.length > remaining,
   };
+}
+
+/** Bounded last_error codes. Never store raw Error.message or model text. */
+export type RecapAttemptReason = RecapStatus | "thrown";
+
+function recapAttemptReason(result: RecapAttemptResult): RecapAttemptReason {
+  const status = result.status;
+  switch (status) {
+    case "published":
+    case "skipped_already":
+    case "skipped_not_final":
+    case "model_error":
+    case "blank":
+      return status;
+    default: {
+      const _exhaustive: never = status;
+      return _exhaustive;
+    }
+  }
 }
 
 async function loadScheduledLeaguePage(
@@ -121,6 +168,71 @@ async function writeScheduledLeagueCursor(
     .run();
 }
 
+async function deleteStaleRecapAttempts(db: D1Database, weekKey: string): Promise<void> {
+  await db.prepare("DELETE FROM recap_attempt_backlog WHERE week_key != ?").bind(weekKey).run();
+}
+
+async function enqueueActiveRecapAttempts(db: D1Database, weekKey: string, now: number): Promise<void> {
+  await db
+    .prepare(
+      `INSERT INTO recap_attempt_backlog (league_id, week_key, status, attempts, last_error, created_at, updated_at)
+       SELECT id, ?, 'pending', 0, NULL, ?, ?
+       FROM leagues
+       WHERE status = 'active'
+       ON CONFLICT(league_id, week_key) DO NOTHING`,
+    )
+    .bind(weekKey, now, now)
+    .run();
+}
+
+async function listPendingRecapLeagues(db: D1Database, weekKey: string, limit: number): Promise<LeagueRow[]> {
+  const result = await db
+    .prepare(
+      `SELECT leagues.* FROM recap_attempt_backlog
+       INNER JOIN leagues ON leagues.id = recap_attempt_backlog.league_id
+       WHERE recap_attempt_backlog.week_key = ?
+         AND recap_attempt_backlog.status = 'pending'
+         AND leagues.status = 'active'
+       ORDER BY recap_attempt_backlog.league_id ASC
+       LIMIT ?`,
+    )
+    .bind(weekKey, limit)
+    .all<LeagueRow>();
+  return result.results;
+}
+
+async function pendingRecapIds(
+  db: D1Database,
+  weekKey: string,
+  leagueIds: string[],
+): Promise<Set<string>> {
+  if (leagueIds.length === 0) return new Set();
+  const placeholders = leagueIds.map(() => "?").join(", ");
+  const result = await db
+    .prepare(
+      `SELECT league_id FROM recap_attempt_backlog
+       WHERE week_key = ? AND status = 'pending' AND league_id IN (${placeholders})`,
+    )
+    .bind(weekKey, ...leagueIds)
+    .all<{ league_id: string }>();
+  return new Set(result.results.map((row) => row.league_id));
+}
+
+async function settleRecapAttempt(
+  db: D1Database,
+  input: { leagueId: string; weekKey: string; reason: RecapAttemptReason; now: number },
+): Promise<void> {
+  const lastError = input.reason === "published" ? null : input.reason;
+  await db
+    .prepare(
+      `UPDATE recap_attempt_backlog
+       SET status = 'done', attempts = attempts + 1, last_error = ?, updated_at = ?
+       WHERE league_id = ? AND week_key = ? AND status = 'pending'`,
+    )
+    .bind(lastError, input.now, input.leagueId, input.weekKey)
+    .run();
+}
+
 export async function handleScheduled(
   env: Env,
   now = new Date(),
@@ -128,19 +240,45 @@ export async function handleScheduled(
 ): Promise<{ polled: number; recapped: number }> {
   const parts = easternParts(now);
   const poll = shouldPoll(parts);
-  const recap = shouldAttemptTuesdayRecap(parts);
-  if (!poll && !recap) {
+  const recapWindow = shouldAttemptTuesdayRecap(parts);
+  const weekKey = easternRecapWeekKey(now);
+  const nowMs = now.getTime();
+
+  if (recapWindow) {
+    await deleteStaleRecapAttempts(env.DB, weekKey);
+    await enqueueActiveRecapAttempts(env.DB, weekKey, nowMs);
+  }
+
+  const pending = recapWindow ? [] : await listPendingRecapLeagues(env.DB, weekKey, maxLeagues);
+  const drainBacklog = pending.length > 0;
+  if (!poll && !recapWindow && !drainBacklog) {
     return { polled: 0, recapped: 0 };
   }
 
-  // Process a bounded page of active leagues serially so a single tick never fans out
-  // unbounded Durable Object calls. The D1 cursor continues fairly on the next tick.
-  const afterId = await readScheduledLeagueCursor(env.DB);
-  const page = await loadScheduledLeaguePage(env.DB, afterId, maxLeagues);
+  let page: ScheduledLeaguePage<LeagueRow> | null = null;
+  let work: LeagueRow[] = [];
+  let recapIds = new Set<string>();
+
+  if (recapWindow || (poll && !drainBacklog)) {
+    const afterId = await readScheduledLeagueCursor(env.DB);
+    page = await loadScheduledLeaguePage(env.DB, afterId, maxLeagues);
+    work = page.leagues;
+    if (recapWindow) {
+      recapIds = await pendingRecapIds(
+        env.DB,
+        weekKey,
+        work.map((league) => league.id),
+      );
+    }
+  } else {
+    work = pending;
+    recapIds = new Set(work.map((league) => league.id));
+  }
 
   let polled = 0;
   let recapped = 0;
-  for (const league of page.leagues) {
+  for (const league of work) {
+    const shouldRecap = recapIds.has(league.id);
     try {
       const stub = env.LEAGUE_BRAIN.get(env.LEAGUE_BRAIN.idFromName(league.id));
       await stub.bootstrap({
@@ -149,29 +287,44 @@ export async function handleScheduled(
         name: league.name,
         tone: toneOrPlayful(league.tone),
       });
-      if (poll) {
+      if (poll || shouldRecap) {
         await stub.poll();
         polled += 1;
       }
-      if (recap) {
+      if (shouldRecap) {
         const result = await stub.attemptRecap();
         if (result.status === "published") recapped += 1;
+        await settleRecapAttempt(env.DB, {
+          leagueId: league.id,
+          weekKey,
+          reason: recapAttemptReason(result),
+          now: nowMs,
+        });
       }
     } catch (error) {
       console.error(`scheduled tick failed for league ${league.id}`, error);
+      if (shouldRecap) {
+        await settleRecapAttempt(env.DB, {
+          leagueId: league.id,
+          weekKey,
+          reason: "thrown",
+          now: nowMs,
+        });
+      }
     }
   }
 
-  await writeScheduledLeagueCursor(env.DB, page.nextAfterId, now.getTime());
-
-  if (page.hasDeferred) {
-    console.warn(
-      JSON.stringify({
-        event: "scheduled.leagues.deferred",
-        processed: page.leagues.length,
-        limit: maxLeagues,
-      }),
-    );
+  if (page) {
+    await writeScheduledLeagueCursor(env.DB, page.nextAfterId, nowMs);
+    if (page.hasDeferred) {
+      console.warn(
+        JSON.stringify({
+          event: "scheduled.leagues.deferred",
+          processed: page.leagues.length,
+          limit: maxLeagues,
+        }),
+      );
+    }
   }
 
   return { polled, recapped };

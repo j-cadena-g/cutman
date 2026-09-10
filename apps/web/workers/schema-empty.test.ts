@@ -32,13 +32,14 @@ describe("schema", () => {
     expect(await getLeagueBySleeperId(env.DB, EXAMPLE_SLEEPER_LEAGUE_ID)).toBeNull();
   });
 
-  it("yields the expected empty final schema after 0001 then 0002", async () => {
+  it("yields the expected empty final schema after 0001, 0002, then 0003", async () => {
     await ensureSchema(env.DB);
     expect(await userTables()).toEqual([
       "app_state",
       "league_members",
       "league_verifications",
       "leagues",
+      "recap_attempt_backlog",
       "sleeper_accounts",
       "users",
     ]);
@@ -50,7 +51,8 @@ describe("schema", () => {
          (SELECT COUNT(*) FROM leagues) AS leagues,
          (SELECT COUNT(*) FROM league_members) AS league_members,
          (SELECT COUNT(*) FROM league_verifications) AS league_verifications,
-         (SELECT COUNT(*) FROM app_state) AS app_state`,
+         (SELECT COUNT(*) FROM app_state) AS app_state,
+         (SELECT COUNT(*) FROM recap_attempt_backlog) AS recap_attempt_backlog`,
     ).first<Record<string, number>>();
     expect(counts).toEqual({
       users: 0,
@@ -59,6 +61,7 @@ describe("schema", () => {
       league_members: 0,
       league_verifications: 0,
       app_state: 0,
+      recap_attempt_backlog: 0,
     });
 
     const indexes = await env.DB.prepare(
@@ -68,7 +71,8 @@ describe("schema", () => {
            'league_members_user_id_idx',
            'league_verifications_user_id_idx',
            'league_verifications_sleeper_league_id_idx',
-           'league_verifications_pending_user_league_idx'
+           'league_verifications_pending_user_league_idx',
+           'recap_attempt_backlog_pending_week_idx'
          )
        ORDER BY name`,
     ).all<{ name: string }>();
@@ -77,6 +81,7 @@ describe("schema", () => {
       "league_verifications_pending_user_league_idx",
       "league_verifications_sleeper_league_id_idx",
       "league_verifications_user_id_idx",
+      "recap_attempt_backlog_pending_week_idx",
     ]);
 
     const pendingIndex = await env.DB.prepare(
@@ -101,5 +106,25 @@ describe("schema", () => {
       "provisioning_started_at",
     ]);
     expect(leagueColumns.results.find((column) => column.name === "provisioning_started_at")?.notnull).toBe(0);
+
+    const backlogColumns = await env.DB.prepare("PRAGMA table_info(recap_attempt_backlog)").all<{
+      name: string;
+      notnull: number;
+    }>();
+    expect(backlogColumns.results.map((column) => column.name)).toEqual([
+      "league_id",
+      "week_key",
+      "status",
+      "attempts",
+      "last_error",
+      "created_at",
+      "updated_at",
+    ]);
+    expect(backlogColumns.results.find((column) => column.name === "last_error")?.notnull).toBe(0);
+
+    const backlogPendingIndex = await env.DB.prepare(
+      "SELECT sql FROM sqlite_master WHERE name = 'recap_attempt_backlog_pending_week_idx'",
+    ).first<{ sql: string }>();
+    expect(backlogPendingIndex?.sql).toMatch(/WHERE\s+status\s*=\s*'pending'/i);
   });
 });

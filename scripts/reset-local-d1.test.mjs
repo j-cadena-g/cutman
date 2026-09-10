@@ -13,6 +13,7 @@ import {
   isSameRealPath,
   resetLocalD1,
   resetLocalD1MatchingExpected,
+  resolveLocalD1WebDir,
 } from "./reset-local-d1.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -46,6 +47,20 @@ const SYMLINK_CASES = [
 ];
 
 describe("reset-local-d1 path guards", () => {
+  it("walks up LOCAL_D1_SEGMENTS.length parents to reach the web dir", () => {
+    const webDir = path.resolve("/tmp/cutman-apps-web");
+    const localD1Dir = path.join(webDir, ...LOCAL_D1_SEGMENTS);
+
+    assert.equal(resolveLocalD1WebDir(localD1Dir), webDir);
+    assert.notEqual(
+      path.resolve(
+        localD1Dir,
+        ...Array.from({ length: LOCAL_D1_SEGMENTS.length - 1 }, () => ".."),
+      ),
+      webDir,
+    );
+  });
+
   it("removes a normal nested D1 directory and leaves sibling state", async () => {
     await withTempRoot(async ({ webDir, localD1Dir }) => {
       const d1File = await writeSentinel(localD1Dir, "db.sqlite");

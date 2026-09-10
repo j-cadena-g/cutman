@@ -1,5 +1,5 @@
 -- D1 holds Clerk identity, linked Sleeper accounts, leagues, per-league membership / recap opt-in,
--- and strongly consistent app_state (scheduled active-league cursor).
+-- strongly consistent app_state (scheduled active-league cursor), and the Tuesday recap attempt backlog.
 -- LeagueBrain DO holds bible, timeline, snapshot, and recaps (one DO per league id).
 -- Schema is multi-league. Leagues are created during onboarding, not auto-seeded.
 -- LeagueBrain Durable Objects are keyed by internal leagues.id.
@@ -71,3 +71,19 @@ CREATE TABLE IF NOT EXISTS app_state (
   value TEXT NOT NULL,
   updated_at INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS recap_attempt_backlog (
+  league_id TEXT NOT NULL,
+  week_key TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'done')),
+  attempts INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (league_id, week_key),
+  FOREIGN KEY (league_id) REFERENCES leagues(id)
+);
+
+CREATE INDEX IF NOT EXISTS recap_attempt_backlog_pending_week_idx
+  ON recap_attempt_backlog (week_key, league_id)
+  WHERE status = 'pending';

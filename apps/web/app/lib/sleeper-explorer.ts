@@ -326,24 +326,21 @@ export function assembleExplorerBoard(input: {
   };
 }
 
-export function describeExplorerError(
-  kind: "invalid_username" | "not_found" | "rate_limited" | "quota_exceeded" | "unavailable",
-): string {
-  switch (kind) {
-    case "invalid_username":
-      return "Enter a Sleeper username of 1–32 letters, digits, underscores, or hyphens.";
-    case "not_found":
-      return "Sleeper has no public profile for that username or league.";
-    case "rate_limited":
-      return "Sleeper asked Cutman to slow down. Try again in a minute.";
-    case "quota_exceeded":
-      return "Too many Sleeper lookups this hour. Try again later.";
-    case "unavailable":
-      return "Cutman couldn't reach Sleeper just now. Try again in a moment.";
-    default: {
-      const exhaustive: never = kind;
-      void exhaustive;
-      return "Cutman couldn't complete that Sleeper lookup. Try again in a moment.";
-    }
-  }
+type ExplorerErrorKind =
+  | "invalid_username"
+  | "not_found"
+  | "rate_limited"
+  | "quota_exceeded"
+  | "unavailable";
+
+const EXPLORER_ERROR_MESSAGES = {
+  invalid_username: "Enter a Sleeper username of 1–32 letters, digits, underscores, or hyphens.",
+  not_found: "Sleeper has no public profile for that username or league.",
+  rate_limited: "Sleeper asked Cutman to slow down. Try again in a minute.",
+  quota_exceeded: "Too many Sleeper lookups this hour. Try again later.",
+  unavailable: "Cutman couldn't reach Sleeper just now. Try again in a moment.",
+} as const satisfies Record<ExplorerErrorKind, string>;
+
+export function describeExplorerError(kind: ExplorerErrorKind): string {
+  return EXPLORER_ERROR_MESSAGES[kind];
 }
