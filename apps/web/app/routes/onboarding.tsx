@@ -226,7 +226,10 @@ function railStepFor(step: PilotLeagueStep): 1 | 2 | 3 {
 }
 
 // `initialNow` is the loader's serialized timestamp so SSR and the first client render match.
-// After mount, replace it with the live client clock immediately, then every `intervalMs`.
+// It is initialization-only and intentionally non-reactive: `useState(initialNow)` uses it as the
+// seed, and the effect below omits it from deps so a later loader timestamp does not reset the
+// ticking clock. After mount, replace the seed with the live client clock immediately, then every
+// `intervalMs`.
 function useClientNow(intervalMs: number, initialNow: number): number {
   const [now, setNow] = useState(initialNow);
   useEffect(() => {

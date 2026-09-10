@@ -8,7 +8,7 @@ import {
   LEGACY_IMPORT_PENDING_MESSAGE,
   UNBOOTSTRAPPED_MESSAGE,
   type Dashboard,
-} from "../workers/league-brain.ts";
+} from "./league-brain.ts";
 
 async function withSilentConsoleError<T>(run: () => Promise<T>): Promise<unknown[][]> {
   const errors: unknown[][] = [];

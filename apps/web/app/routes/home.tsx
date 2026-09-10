@@ -85,7 +85,7 @@ export default function Home({ loaderData }: Route.ComponentProps) {
       <ol className="mt-8 space-y-4">
         {leagues.map((league, index) => (
           <li key={league.id}>
-            <Link to={`/leagues/${league.id}`} className="block focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-flag/70 rounded-xl">
+            <Link to={`/leagues/${league.id}`} className="block focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-flag/70 rounded-xl">
               <Card className="transition-colors hover:bg-turf">
                 <Badge>League {index + 1}</Badge>
                 <CardTitle className="mt-3">{league.name}</CardTitle>

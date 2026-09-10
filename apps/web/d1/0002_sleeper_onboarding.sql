@@ -79,8 +79,8 @@ SELECT
   season,
   'active',
   tone,
-  enabled_at,
-  enabled_at,
+  enabled_at AS created_at,
+  enabled_at AS activated_at,
   NULL,
   NULL
 FROM leagues;

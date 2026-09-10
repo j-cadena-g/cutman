@@ -8,6 +8,7 @@ import {
   diffSnapshots,
   factsIfChanged,
   hashSnapshot,
+  isTone,
   recapPrompt,
   runRecapAttempt,
   toneOrPlayful,
@@ -33,6 +34,16 @@ export const LEGACY_IMPORT_PENDING_MESSAGE = "League history import is pending";
 
 /** Thrown from readSettings when leagueId or sleeperLeagueId settings are missing. */
 export const UNBOOTSTRAPPED_MESSAGE = "Cutman is not bootstrapped";
+
+function bootstrapBibleEntry(name: string, tone: Tone): string {
+  return `${name} is in the book. Tone: ${tone}.`;
+}
+
+/** True only for the exact bootstrap seed of this object's stored name and tone. */
+function isBootstrapBibleSeed(entry: string, name: string | null, tone: string | null): boolean {
+  if (!name || !tone || !isTone(tone)) return false;
+  return entry === bootstrapBibleEntry(name, tone);
+}
 
 type LegacyImportLogEvent = "league_brain.legacy_import_failed" | "league_brain.legacy_import_abandoned";
 type LegacyImportFailureReason = "error" | "unknown";
@@ -153,7 +164,7 @@ export class LeagueBrain extends DurableObject<Env> {
     if (existing.length === 0) {
       this.ctx.storage.sql.exec(
         "INSERT INTO bible (entry, created_at) VALUES (?, ?)",
-        `${input.name} is in the book. Tone: ${input.tone}.`,
+        bootstrapBibleEntry(input.name, input.tone),
         Date.now(),
       );
     }
@@ -435,9 +446,11 @@ export class LeagueBrain extends DurableObject<Env> {
       return;
     }
 
-    // Already-initialized non-empty targets keep their rows. A pending import with
-    // no history must retry; pending + existing rows still copy via INSERT OR IGNORE
-    // so a rejected export cannot be closed out by bootstrap bible / poll data.
+    // Already-initialized non-empty targets keep their rows. Bootstrap bible seed
+    // alone is not history: a seed-only object must still export from the source.
+    // A pending import with no history must retry; pending + existing rows still
+    // copy via INSERT OR IGNORE so a rejected export cannot be closed out by
+    // poll data.
     if (!this.isLegacyImportPending() && this.hasHistoricalRows()) {
       this.ctx.storage.transactionSync(() => this.markLegacyImportComplete(input.sleeperLeagueId));
       return;
@@ -574,8 +587,10 @@ export class LeagueBrain extends DurableObject<Env> {
     if (beat.length > 0) return true;
     const recap = this.ctx.storage.sql.exec("SELECT week FROM recaps LIMIT 1").toArray();
     if (recap.length > 0) return true;
-    const bible = this.ctx.storage.sql.exec("SELECT id FROM bible LIMIT 1").toArray();
-    return bible.length > 0;
+    const bible = this.ctx.storage.sql.exec("SELECT entry FROM bible").toArray() as Array<{ entry: string }>;
+    const name = this.getSetting("name");
+    const tone = this.getSetting("tone");
+    return bible.some((row) => !isBootstrapBibleSeed(row.entry, name, tone));
   }
 
   private insertLegacyState(legacy: LegacyBrainState): void {

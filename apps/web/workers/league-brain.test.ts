@@ -340,6 +340,7 @@ describe("LeagueBrain legacy Durable Object migration", () => {
       sleeperLeagueId: string,
       callerInternalLeagueId: string,
     ): Promise<LegacyBrainState | null>;
+    hasHistoricalRows(): boolean;
     legacyExportCalls?: number;
   };
 
@@ -508,6 +509,56 @@ describe("LeagueBrain legacy Durable Object migration", () => {
       );
     });
     return stub;
+  }
+
+  async function putBrainSettings(
+    stub: DurableObjectStub<LeagueBrain>,
+    settings: { name: string; tone: string },
+  ): Promise<void> {
+    await runInDurableObject(stub, async (instance) => {
+      const brain = instance as unknown as { putSetting(key: string, value: string): void };
+      brain.putSetting("name", settings.name);
+      brain.putSetting("tone", settings.tone);
+    });
+  }
+
+  async function insertBible(
+    stub: DurableObjectStub<LeagueBrain>,
+    entry: string,
+    createdAt = BIBLE_CREATED_AT,
+  ): Promise<void> {
+    await runInDurableObject(stub, async (_instance, state) => {
+      state.storage.sql.exec("INSERT INTO bible (entry, created_at) VALUES (?, ?)", entry, createdAt);
+    });
+  }
+
+  async function seedExactBootstrapBible(
+    stub: DurableObjectStub<LeagueBrain>,
+    name: string,
+    tone: "playful" | "savage" | "sportscenter",
+  ): Promise<void> {
+    await putBrainSettings(stub, { name, tone });
+    await insertBible(stub, `${name} is in the book. Tone: ${tone}.`);
+  }
+
+  async function historicalRows(stub: DurableObjectStub<LeagueBrain>): Promise<boolean> {
+    return runInDurableObject(stub, async (instance) => (instance as unknown as TestBrain).hasHistoricalRows());
+  }
+
+  async function instrumentLegacyExport(stub: DurableObjectStub<LeagueBrain>): Promise<void> {
+    await runInDurableObject(stub, async (instance) => {
+      const brain = instance as unknown as TestBrain;
+      const original = brain.exportLegacyStateFromSource.bind(brain);
+      brain.legacyExportCalls = 0;
+      brain.exportLegacyStateFromSource = async (sleeperLeagueId, callerInternalLeagueId) => {
+        brain.legacyExportCalls = (brain.legacyExportCalls ?? 0) + 1;
+        return original(sleeperLeagueId, callerInternalLeagueId);
+      };
+    });
+  }
+
+  async function legacyExportCallCount(stub: DurableObjectStub<LeagueBrain>): Promise<number> {
+    return runInDurableObject(stub, async (instance) => (instance as unknown as TestBrain).legacyExportCalls ?? 0);
   }
 
   it("copies snapshot, beat, bible, and recap from the Sleeper-named object into a distinct internal-named object", async () => {
@@ -1177,5 +1228,279 @@ describe("LeagueBrain legacy Durable Object migration", () => {
     const written = await readBrainSql(next);
     expect(written.snapshots).toHaveLength(1);
     expect(written.snapshots[0]?.payload).toBe(JSON.stringify(snapshot()));
+  });
+
+  it("hasHistoricalRows ignores the bootstrap bible seed and counts real history", async () => {
+    const empty = env.LEAGUE_BRAIN.getByName("historical-rows-empty");
+    expect(await historicalRows(empty)).toBe(false);
+
+    const seedOnly = env.LEAGUE_BRAIN.getByName("historical-rows-seed");
+    await seedExactBootstrapBible(seedOnly, "Cutman League", "playful");
+    expect(await historicalRows(seedOnly)).toBe(false);
+
+    const savageSeed = env.LEAGUE_BRAIN.getByName("historical-rows-seed-savage");
+    await seedExactBootstrapBible(savageSeed, "Legacy League", "savage");
+    expect(await historicalRows(savageSeed)).toBe(false);
+
+    const sportscenterSeed = env.LEAGUE_BRAIN.getByName("historical-rows-seed-sportscenter");
+    await seedExactBootstrapBible(sportscenterSeed, "Broadcast League", "sportscenter");
+    expect(await historicalRows(sportscenterSeed)).toBe(false);
+
+    const bootstrappedSeed = env.LEAGUE_BRAIN.getByName("historical-rows-bootstrapped-seed");
+    await bootstrappedSeed.bootstrap({
+      leagueId: "historical-rows-bootstrapped-seed",
+      sleeperLeagueId: "historical-rows-bootstrapped-seed",
+      name: "Cutman League",
+      tone: "playful",
+    });
+    expect(await historicalRows(bootstrappedSeed)).toBe(false);
+
+    const missingSettings = env.LEAGUE_BRAIN.getByName("historical-rows-missing-settings");
+    await insertBible(missingSettings, "Cutman League is in the book. Tone: playful.");
+    expect(await historicalRows(missingSettings)).toBe(true);
+
+    const mismatchedSeed = env.LEAGUE_BRAIN.getByName("historical-rows-mismatched-seed");
+    await putBrainSettings(mismatchedSeed, { name: "Cutman League", tone: "playful" });
+    await insertBible(mismatchedSeed, "Other League is in the book. Tone: savage.");
+    expect(await historicalRows(mismatchedSeed)).toBe(true);
+
+    const invalidTone = env.LEAGUE_BRAIN.getByName("historical-rows-invalid-tone");
+    await putBrainSettings(invalidTone, { name: "Cutman League", tone: "mysterious" });
+    await insertBible(invalidTone, "Cutman League is in the book. Tone: mysterious.");
+    expect(await historicalRows(invalidTone)).toBe(true);
+
+    const userBible = env.LEAGUE_BRAIN.getByName("historical-rows-user-bible");
+    await insertBible(userBible, "Week 2: the trade that split the group chat.");
+    expect(await historicalRows(userBible)).toBe(true);
+
+    const recapBible = env.LEAGUE_BRAIN.getByName("historical-rows-recap-bible");
+    await insertBible(recapBible, "Week 3 recap: Week 3 belongs to Alex");
+    expect(await historicalRows(recapBible)).toBe(true);
+
+    const seedAndUser = env.LEAGUE_BRAIN.getByName("historical-rows-seed-and-user");
+    await seedExactBootstrapBible(seedAndUser, "Cutman League", "playful");
+    await insertBible(seedAndUser, "Week 2: the trade that split the group chat.", BIBLE_CREATED_AT + 1);
+    expect(await historicalRows(seedAndUser)).toBe(true);
+
+    const snapshotOnly = env.LEAGUE_BRAIN.getByName("historical-rows-snapshot");
+    await runInDurableObject(snapshotOnly, async (_instance, state) => {
+      state.storage.sql.exec(
+        "INSERT INTO snapshots (week, payload_hash, payload, created_at) VALUES (?, ?, ?, ?)",
+        3,
+        "hash-legacy-snap",
+        JSON.stringify(LEGACY_SNAPSHOT),
+        SNAPSHOT_CREATED_AT,
+      );
+    });
+    expect(await historicalRows(snapshotOnly)).toBe(true);
+
+    const beatOnly = env.LEAGUE_BRAIN.getByName("historical-rows-beat");
+    await runInDurableObject(beatOnly, async (_instance, state) => {
+      state.storage.sql.exec(
+        "INSERT INTO beats (kind, copy, facts, week, created_at) VALUES (?, ?, ?, ?, ?)",
+        "trade",
+        "CeeDee walked so the chat could run.",
+        LEGACY_FACTS,
+        3,
+        BEAT_CREATED_AT,
+      );
+    });
+    expect(await historicalRows(beatOnly)).toBe(true);
+
+    const recapOnly = env.LEAGUE_BRAIN.getByName("historical-rows-recap");
+    await runInDurableObject(recapOnly, async (_instance, state) => {
+      state.storage.sql.exec(
+        "INSERT INTO recaps (week, subject, body, facts, emailed_at, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        3,
+        "Week 3 belongs to Alex",
+        "CeeDee changed hands and the chat lost its mind.",
+        LEGACY_FACTS,
+        RECAP_EMAILED_AT,
+        RECAP_CREATED_AT,
+      );
+    });
+    expect(await historicalRows(recapOnly)).toBe(true);
+
+    const seedPlusSnapshot = env.LEAGUE_BRAIN.getByName("historical-rows-seed-plus-snapshot");
+    await seedExactBootstrapBible(seedPlusSnapshot, "Cutman League", "playful");
+    await runInDurableObject(seedPlusSnapshot, async (_instance, state) => {
+      state.storage.sql.exec(
+        "INSERT INTO snapshots (week, payload_hash, payload, created_at) VALUES (?, ?, ?, ?)",
+        3,
+        "hash-legacy-snap",
+        JSON.stringify(LEGACY_SNAPSHOT),
+        SNAPSHOT_CREATED_AT,
+      );
+    });
+    expect(await historicalRows(seedPlusSnapshot)).toBe(true);
+  });
+
+  it("treats a seed-looking bible row as history when it does not match stored settings", async () => {
+    const sleeperId = "900000000000000095";
+    const internalId = `legacy_${sleeperId}`;
+    await seedLegacyBrain(sleeperId, { leagueId: sleeperId, sleeperLeagueId: sleeperId });
+    const next = env.LEAGUE_BRAIN.getByName(internalId);
+    await putBrainSettings(next, { name: "Cutman League", tone: "playful" });
+    await insertBible(next, "Other League is in the book. Tone: savage.");
+    expect(await historicalRows(next)).toBe(true);
+    await instrumentLegacyExport(next);
+
+    await next.bootstrap({
+      leagueId: internalId,
+      sleeperLeagueId: sleeperId,
+      name: "Cutman League",
+      tone: "playful",
+    });
+
+    expect(await legacyExportCallCount(next)).toBe(0);
+    const kept = await readBrainSql(next);
+    expect(kept.snapshots).toEqual([]);
+    expect(kept.bible).toEqual([
+      expect.objectContaining({ entry: "Other League is in the book. Tone: savage." }),
+    ]);
+    expect(kept.settings).toEqual(
+      expect.arrayContaining([{ key: "legacyMigratedFrom", value: sleeperId }]),
+    );
+  });
+
+  it("still exports into a destination that only has the bootstrap bible seed", async () => {
+    const sleeperId = "900000000000000091";
+    const internalId = `legacy_${sleeperId}`;
+    await seedLegacyBrain(sleeperId, { leagueId: sleeperId, sleeperLeagueId: sleeperId });
+    const next = env.LEAGUE_BRAIN.getByName(internalId);
+    await seedExactBootstrapBible(next, "Cutman League", "playful");
+    expect(await historicalRows(next)).toBe(false);
+    await instrumentLegacyExport(next);
+
+    await next.bootstrap({
+      leagueId: internalId,
+      sleeperLeagueId: sleeperId,
+      name: "Cutman League",
+      tone: "playful",
+    });
+
+    expect(await legacyExportCallCount(next)).toBe(1);
+    const migrated = await readBrainSql(next);
+    expect(migrated.snapshots).toEqual([
+      expect.objectContaining({ id: 7, payload_hash: "hash-legacy-snap" }),
+    ]);
+    expect(migrated.beats).toEqual([
+      expect.objectContaining({ id: 4, copy: "CeeDee walked so the chat could run." }),
+    ]);
+    expect(migrated.recaps).toEqual([
+      expect.objectContaining({ week: 3, subject: "Week 3 belongs to Alex" }),
+    ]);
+    expect(migrated.bible).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ entry: "Cutman League is in the book. Tone: playful." }),
+        expect.objectContaining({ id: 9, entry: "Week 2: the trade that split the group chat." }),
+      ]),
+    );
+    expect(migrated.settings).toEqual(
+      expect.arrayContaining([{ key: "legacyMigratedFrom", value: sleeperId }]),
+    );
+    expect(migrated.settings.some((row) => row.key === "legacyImportPending")).toBe(false);
+  });
+
+  it("skips export when the destination already has user-created bible history", async () => {
+    const sleeperId = "900000000000000092";
+    const internalId = `legacy_${sleeperId}`;
+    await seedLegacyBrain(sleeperId, { leagueId: sleeperId, sleeperLeagueId: sleeperId });
+    const next = env.LEAGUE_BRAIN.getByName(internalId);
+    await insertBible(next, "Week 2: the trade that split the group chat.");
+    expect(await historicalRows(next)).toBe(true);
+    await instrumentLegacyExport(next);
+
+    await next.bootstrap({
+      leagueId: internalId,
+      sleeperLeagueId: sleeperId,
+      name: "Cutman League",
+      tone: "playful",
+    });
+
+    expect(await legacyExportCallCount(next)).toBe(0);
+    const kept = await readBrainSql(next);
+    expect(kept.snapshots).toEqual([]);
+    expect(kept.beats).toEqual([]);
+    expect(kept.recaps).toEqual([]);
+    expect(kept.bible).toEqual([
+      expect.objectContaining({ entry: "Week 2: the trade that split the group chat." }),
+    ]);
+    expect(kept.settings).toEqual(
+      expect.arrayContaining([{ key: "legacyMigratedFrom", value: sleeperId }]),
+    );
+  });
+
+  it("skips export when the destination has recap bible history even if a seed is also present", async () => {
+    const sleeperId = "900000000000000093";
+    const internalId = `legacy_${sleeperId}`;
+    await seedLegacyBrain(sleeperId, { leagueId: sleeperId, sleeperLeagueId: sleeperId });
+    const next = env.LEAGUE_BRAIN.getByName(internalId);
+    await seedExactBootstrapBible(next, "Cutman League", "playful");
+    await insertBible(next, "Week 3 recap: Week 3 belongs to Alex", BIBLE_CREATED_AT + 1);
+    expect(await historicalRows(next)).toBe(true);
+    await instrumentLegacyExport(next);
+
+    await next.bootstrap({
+      leagueId: internalId,
+      sleeperLeagueId: sleeperId,
+      name: "Cutman League",
+      tone: "playful",
+    });
+
+    expect(await legacyExportCallCount(next)).toBe(0);
+    const kept = await readBrainSql(next);
+    expect(kept.snapshots).toEqual([]);
+    expect(kept.bible).toEqual([
+      expect.objectContaining({ entry: "Cutman League is in the book. Tone: playful." }),
+      expect.objectContaining({ entry: "Week 3 recap: Week 3 belongs to Alex" }),
+    ]);
+    expect(kept.settings).toEqual(
+      expect.arrayContaining([{ key: "legacyMigratedFrom", value: sleeperId }]),
+    );
+  });
+
+  it("exports a seed-only legacy source into an empty destination and marks import complete", async () => {
+    const sleeperId = "900000000000000094";
+    const internalId = `legacy_${sleeperId}`;
+    const source = env.LEAGUE_BRAIN.getByName(sleeperId);
+    await source.bootstrap({
+      leagueId: sleeperId,
+      sleeperLeagueId: sleeperId,
+      name: "Legacy League",
+      tone: "savage",
+    });
+    const sourceSql = await readBrainSql(source);
+    expect(sourceSql.snapshots).toEqual([]);
+    expect(sourceSql.beats).toEqual([]);
+    expect(sourceSql.recaps).toEqual([]);
+    expect(sourceSql.bible).toEqual([
+      expect.objectContaining({ entry: "Legacy League is in the book. Tone: savage." }),
+    ]);
+
+    const next = env.LEAGUE_BRAIN.getByName(internalId);
+    await instrumentLegacyExport(next);
+    await next.bootstrap({
+      leagueId: internalId,
+      sleeperLeagueId: sleeperId,
+      name: "Cutman League",
+      tone: "playful",
+    });
+
+    expect(await legacyExportCallCount(next)).toBe(1);
+    const migrated = await readBrainSql(next);
+    expect(migrated.snapshots).toEqual([]);
+    expect(migrated.beats).toEqual([]);
+    expect(migrated.recaps).toEqual([]);
+    expect(migrated.bible).toEqual([
+      expect.objectContaining({ entry: "Legacy League is in the book. Tone: savage." }),
+    ]);
+    expect(migrated.settings).toEqual(
+      expect.arrayContaining([
+        { key: "leagueId", value: internalId },
+        { key: "sleeperLeagueId", value: sleeperId },
+        { key: "legacyMigratedFrom", value: sleeperId },
+      ]),
+    );
   });
 });
