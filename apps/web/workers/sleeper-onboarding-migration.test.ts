@@ -168,7 +168,34 @@ describe("0002 sleeper onboarding migration", () => {
       { id: "user_unlinked", email: "unlinked@example.test", created_at: 4_000 },
     ]);
 
-    const leagues = await env.DB.prepare("SELECT * FROM leagues ORDER BY id").all<{
+    const leagueColumns = await env.DB.prepare("PRAGMA table_info(leagues)").all<{ name: string }>();
+    expect(leagueColumns.results.map((column) => column.name)).toEqual([
+      "id",
+      "sleeper_league_id",
+      "name",
+      "season",
+      "status",
+      "tone",
+      "created_at",
+      "activated_at",
+      "provisioning_error",
+    ]);
+    const memberColumns = await env.DB.prepare("PRAGMA table_info(league_members)").all<{
+      name: string;
+    }>();
+    expect(memberColumns.results.map((column) => column.name)).toEqual([
+      "league_id",
+      "user_id",
+      "role",
+      "recap_email_opt_in",
+      "created_at",
+    ]);
+
+    const leagues = await env.DB.prepare(
+      `SELECT id, sleeper_league_id, name, season, status, tone, created_at, activated_at, provisioning_error
+       FROM leagues
+       ORDER BY id`,
+    ).all<{
       id: string;
       sleeper_league_id: string;
       name: string;

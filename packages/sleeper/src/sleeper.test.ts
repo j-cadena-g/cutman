@@ -12,6 +12,7 @@ import {
   MUTABLE_SLEEPER_PREVIOUS_USERNAME,
   MUTABLE_SLEEPER_USER_ID,
   MUTABLE_SLEEPER_USERNAME,
+  REQUEST_TIMEOUT_MS,
   V1_LEAGUE_ID,
   V1_LEAGUE_NAME,
   comingSoonFixtureLeague,
@@ -207,15 +208,27 @@ describe("HttpSleeperClient errors", () => {
   });
 
   it("passes a timeout AbortSignal so a hung Sleeper call cannot stall forever", async () => {
-    let signal: AbortSignal | null | undefined;
-    const nflState = { week: 1, season_type: "regular", season: "2026", league_season: "2026" };
-    const client = new HttpSleeperClient(async (_input, init) => {
-      signal = init?.signal;
-      return new Response(JSON.stringify(nflState), { status: 200 });
+    const requested: number[] = [];
+    const original = AbortSignal.timeout.bind(AbortSignal);
+    const spy = vi.spyOn(AbortSignal, "timeout").mockImplementation((ms: number) => {
+      requested.push(ms);
+      return original(ms);
     });
-    await expect(client.getNflState()).resolves.toEqual(nflState);
-    expect(signal).toBeDefined();
-    expect(signal?.aborted).toBe(false);
+    try {
+      let signal: AbortSignal | null | undefined;
+      const nflState = { week: 1, season_type: "regular", season: "2026", league_season: "2026" };
+      const fetchImpl: typeof fetch = async (_input, init) => {
+        signal = init?.signal;
+        return new Response(JSON.stringify(nflState), { status: 200 });
+      };
+      const client = new HttpSleeperClient(fetchImpl);
+      await expect(client.getNflState()).resolves.toEqual(nflState);
+      expect(signal).toBeDefined();
+      expect(signal?.aborted).toBe(false);
+      expect(requested).toEqual([REQUEST_TIMEOUT_MS]);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it("uses a longer timeout for getPlayers so the body read is covered", async () => {

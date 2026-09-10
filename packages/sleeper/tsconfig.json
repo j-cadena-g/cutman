@@ -2,6 +2,7 @@
   "extends": "@cutman/tsconfig/base.json",
   "include": ["src", "vitest.config.ts"],
   "compilerOptions": {
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "types": ["vitest/globals"]
   }
 }

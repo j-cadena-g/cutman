@@ -21,6 +21,10 @@ import {
 import { getPlayerMap, sleeperFromEnv } from "./sleeper.ts";
 
 const LEGACY_MIGRATED_FROM_KEY = "legacyMigratedFrom";
+const LEGACY_IMPORT_PENDING_KEY = "legacyImportPending";
+
+/** Thrown from readSettings while a legacy copy is unfinished so poll/recap/dashboard cannot seed a new history. */
+export const LEGACY_IMPORT_PENDING_MESSAGE = "League history import is pending";
 
 type Settings = {
   leagueId: string;
@@ -122,11 +126,18 @@ export class LeagueBrain extends DurableObject<Env> {
   }
 
   async bootstrap(input: { leagueId: string; sleeperLeagueId: string; name: string; tone: Tone }): Promise<void> {
-    await this.importLegacyStateIfNeeded(input);
+    try {
+      await this.importLegacyStateIfNeeded(input);
+    } catch {
+      // Do not log the rejection: RPC / storage errors can embed Durable Object and league ids.
+      console.error(JSON.stringify({ event: "league_brain.legacy_import_failed" }));
+      this.putSetting(LEGACY_IMPORT_PENDING_KEY, "1");
+    }
     this.putSetting("leagueId", input.leagueId);
     this.putSetting("sleeperLeagueId", input.sleeperLeagueId);
     this.putSetting("name", input.name);
     this.putSetting("tone", input.tone);
+    if (this.isLegacyImportPending()) return;
     const existing = this.ctx.storage.sql.exec("SELECT id FROM bible LIMIT 1").toArray();
     if (existing.length === 0) {
       this.ctx.storage.sql.exec(
@@ -368,6 +379,7 @@ export class LeagueBrain extends DurableObject<Env> {
   }
 
   private readSettings(): Settings {
+    if (this.isLegacyImportPending()) throw new Error(LEGACY_IMPORT_PENDING_MESSAGE);
     const leagueId = this.getSetting("leagueId");
     const sleeperLeagueId = this.getSetting("sleeperLeagueId");
     const name = this.getSetting("name") ?? "Example League";
@@ -387,32 +399,56 @@ export class LeagueBrain extends DurableObject<Env> {
     leagueId: string;
     sleeperLeagueId: string;
   }): Promise<void> {
-    if (this.getSetting(LEGACY_MIGRATED_FROM_KEY)) return;
+    if (this.getSetting(LEGACY_MIGRATED_FROM_KEY)) {
+      this.deleteSetting(LEGACY_IMPORT_PENDING_KEY);
+      return;
+    }
 
     const legacyId = this.env.LEAGUE_BRAIN.idFromName(input.sleeperLeagueId);
     if (legacyId.equals(this.ctx.id) || input.leagueId === input.sleeperLeagueId) {
-      this.putSetting(LEGACY_MIGRATED_FROM_KEY, input.sleeperLeagueId);
+      this.markLegacyImportComplete(input.sleeperLeagueId);
       return;
     }
 
-    if (this.hasHistoricalRows()) {
-      this.putSetting(LEGACY_MIGRATED_FROM_KEY, input.sleeperLeagueId);
+    // Already-initialized non-empty targets keep their rows. A pending import with
+    // no history must retry; pending + existing rows still copy via INSERT OR IGNORE
+    // so a rejected export cannot be closed out by bootstrap bible / poll data.
+    if (!this.isLegacyImportPending() && this.hasHistoricalRows()) {
+      this.markLegacyImportComplete(input.sleeperLeagueId);
       return;
     }
 
-    const legacy = await this.env.LEAGUE_BRAIN.getByName(input.sleeperLeagueId).exportLegacyState(input.sleeperLeagueId);
-    if (this.getSetting(LEGACY_MIGRATED_FROM_KEY) || this.hasHistoricalRows()) {
-      this.putSetting(LEGACY_MIGRATED_FROM_KEY, input.sleeperLeagueId);
+    const legacy = await this.exportLegacyStateFromSource(input.sleeperLeagueId);
+    if (this.getSetting(LEGACY_MIGRATED_FROM_KEY) || (!this.isLegacyImportPending() && this.hasHistoricalRows())) {
+      this.markLegacyImportComplete(input.sleeperLeagueId);
       return;
     }
 
     // SqlStorage has no BEGIN/COMMIT. transactionSync batches the INSERT OR IGNORE
-    // writes; a throw rolls them back and the next bootstrap retries. The marker is
-    // written in the same transaction so a partial copy cannot look "done".
+    // writes; a throw rolls them back and the next bootstrap retries. Completion
+    // clears pending in the same transaction so a partial copy cannot look "done".
     this.ctx.storage.transactionSync(() => {
       if (legacy) this.insertLegacyState(legacy);
-      this.putSetting(LEGACY_MIGRATED_FROM_KEY, input.sleeperLeagueId);
+      this.markLegacyImportComplete(input.sleeperLeagueId);
     });
+  }
+
+  /** Test seam: replace on the instance to simulate a rejected export RPC. */
+  private async exportLegacyStateFromSource(sleeperLeagueId: string): Promise<LegacyBrainState | null> {
+    return this.env.LEAGUE_BRAIN.getByName(sleeperLeagueId).exportLegacyState(sleeperLeagueId);
+  }
+
+  private isLegacyImportPending(): boolean {
+    return this.getSetting(LEGACY_IMPORT_PENDING_KEY) !== null;
+  }
+
+  private markLegacyImportComplete(sleeperLeagueId: string): void {
+    this.putSetting(LEGACY_MIGRATED_FROM_KEY, sleeperLeagueId);
+    this.deleteSetting(LEGACY_IMPORT_PENDING_KEY);
+  }
+
+  private deleteSetting(key: string): void {
+    this.ctx.storage.sql.exec("DELETE FROM settings WHERE key = ?", key);
   }
 
   private isLegacySourceFor(sleeperLeagueId: string): boolean {

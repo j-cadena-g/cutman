@@ -198,12 +198,15 @@ export default function League({ loaderData, actionData }: Route.ComponentProps)
                   name="tone"
                   value={option}
                   variant={tone === option ? "default" : "secondary"}
-                  disabled={!isOwner}
+                  disabled={!isOwner || dashboard === null}
                 >
                   {toneLabel(option)}
                 </Button>
               ))}
             </div>
+            {dashboard === null ? (
+              <p className="text-sm text-muted">Tone opens once setup finishes.</p>
+            ) : null}
           </Form>
           <Form method="post" className="space-y-3">
             <input type="hidden" name="intent" value="optin" />

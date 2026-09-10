@@ -382,7 +382,9 @@ describe("handleScheduled", () => {
   });
 
   it("ignores a corrupt D1 cursor and still processes a bounded page", async () => {
-    await seedLeague("corrupt_cursor", 1_805_600_000_000, "active");
+    // Two active leagues so hasDeferred (and the warning) do not depend on leftover D1 rows.
+    await seedLeague("corrupt_cursor_a", 1_805_600_000_000, "active");
+    await seedLeague("corrupt_cursor_b", 1_805_600_000_100, "active");
     await putAppState(SCHEDULED_LEAGUE_CURSOR_KEY, "!!!corrupt");
 
     const originalPoll = LeagueBrain.prototype.poll;

@@ -43,8 +43,9 @@ export function isSleeperRateLimited(error: unknown): boolean {
   return error instanceof Error && / failed: 429$/.test(error.message);
 }
 
+export const REQUEST_TIMEOUT_MS = 10_000;
+
 export class HttpSleeperClient implements SleeperClient {
-  private static readonly REQUEST_TIMEOUT_MS = 10_000;
   private static readonly PLAYERS_TIMEOUT_MS = 30_000;
 
   constructor(
@@ -88,7 +89,7 @@ export class HttpSleeperClient implements SleeperClient {
     return this.getJson<PlayerMap>("/players/nfl", HttpSleeperClient.PLAYERS_TIMEOUT_MS);
   }
 
-  private async getJson<T>(path: string, timeoutMs = HttpSleeperClient.REQUEST_TIMEOUT_MS): Promise<T> {
+  private async getJson<T>(path: string, timeoutMs = REQUEST_TIMEOUT_MS): Promise<T> {
     const signal = AbortSignal.timeout(timeoutMs);
     const response = await this.fetchPath(path, signal);
     if (!response.ok) {
@@ -98,7 +99,7 @@ export class HttpSleeperClient implements SleeperClient {
   }
 
   private async getJsonOrNull<T>(path: string): Promise<T | null> {
-    const signal = AbortSignal.timeout(HttpSleeperClient.REQUEST_TIMEOUT_MS);
+    const signal = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
     const response = await this.fetchPath(path, signal);
     if (response.status === 404) return null;
     if (!response.ok) {

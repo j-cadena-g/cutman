@@ -21,7 +21,7 @@ import {
 } from "@cutman/sleeper";
 import type { LeagueSnapshot } from "@cutman/story";
 import { beforeAll, describe, expect, it } from "vitest";
-import { LeagueBrain } from "./league-brain.ts";
+import { LeagueBrain, LEGACY_IMPORT_PENDING_MESSAGE, type LegacyBrainState } from "./league-brain.ts";
 
 type D1Migration = { name: string; queries: string[] };
 
@@ -445,8 +445,10 @@ describe("LeagueBrain legacy Durable Object migration", () => {
         { key: "sleeperLeagueId", value: LEGACY_SLEEPER_ID },
         { key: "name", value: "Cutman League" },
         { key: "tone", value: "playful" },
+        { key: "legacyMigratedFrom", value: LEGACY_SLEEPER_ID },
       ]),
     );
+    expect(migrated.settings.some((row) => row.key === "legacyImportPending")).toBe(false);
 
     const dashboard = await next.getDashboard();
     expect(dashboard.leagueId).toBe(INTERNAL_ID);
@@ -543,5 +545,180 @@ describe("LeagueBrain legacy Durable Object migration", () => {
     expect(empty.beats).toEqual([]);
     expect(empty.recaps).toEqual([]);
     expect(empty.bible).toHaveLength(1);
+  });
+
+  it("catches a rejected legacy export, refuses history while pending, then imports on retry", async () => {
+    const retrySleeperId = "900000000000000021";
+    const retryInternalId = "league_internal_migrated_retry";
+    await seedLegacyBrain(retrySleeperId, {
+      leagueId: retrySleeperId,
+      sleeperLeagueId: retrySleeperId,
+    });
+    const next = env.LEAGUE_BRAIN.getByName(retryInternalId);
+    const input = {
+      leagueId: retryInternalId,
+      sleeperLeagueId: retrySleeperId,
+      name: "Cutman League",
+      tone: "playful" as const,
+    };
+
+    type TestBrain = {
+      bootstrap: LeagueBrain["bootstrap"];
+      getDashboard: LeagueBrain["getDashboard"];
+      poll: LeagueBrain["poll"];
+      attemptRecap: LeagueBrain["attemptRecap"];
+      exportLegacyStateFromSource(sleeperLeagueId: string): Promise<LegacyBrainState | null>;
+    };
+
+    const logged = await runInDurableObject(next, async (instance) => {
+      const brain = instance as unknown as TestBrain;
+      const original = brain.exportLegacyStateFromSource.bind(brain);
+      let attempts = 0;
+      brain.exportLegacyStateFromSource = async (sleeperLeagueId) => {
+        attempts += 1;
+        if (attempts === 1) {
+          throw new Error(`rpc rejected ${sleeperLeagueId}`);
+        }
+        return original(sleeperLeagueId);
+      };
+      const events: unknown[][] = [];
+      const originalError = console.error;
+      console.error = ((...args: unknown[]) => {
+        events.push(args);
+      }) as typeof console.error;
+      try {
+        await brain.bootstrap(input);
+      } finally {
+        console.error = originalError;
+      }
+      return events;
+    });
+
+    expect(logged).toEqual([[JSON.stringify({ event: "league_brain.legacy_import_failed" })]]);
+    expect(JSON.stringify(logged)).not.toContain(retrySleeperId);
+    expect(JSON.stringify(logged)).not.toContain("rpc rejected");
+
+    const pending = await readBrainSql(next);
+    expect(pending.snapshots).toEqual([]);
+    expect(pending.beats).toEqual([]);
+    expect(pending.recaps).toEqual([]);
+    expect(pending.bible).toEqual([]);
+    expect(pending.settings).toEqual(
+      expect.arrayContaining([
+        { key: "leagueId", value: retryInternalId },
+        { key: "sleeperLeagueId", value: retrySleeperId },
+        { key: "name", value: "Cutman League" },
+        { key: "tone", value: "playful" },
+        { key: "legacyImportPending", value: "1" },
+      ]),
+    );
+    expect(pending.settings.some((row) => row.key === "legacyMigratedFrom")).toBe(false);
+
+    const refusals = await runInDurableObject(next, async (instance) => {
+      const brain = instance as unknown as TestBrain;
+      const messages: { dashboard?: string; poll?: string; recap?: string } = {};
+      try {
+        await brain.getDashboard();
+      } catch (error) {
+        messages.dashboard = error instanceof Error ? error.message : String(error);
+      }
+      try {
+        await brain.poll();
+      } catch (error) {
+        messages.poll = error instanceof Error ? error.message : String(error);
+      }
+      try {
+        await brain.attemptRecap();
+      } catch (error) {
+        messages.recap = error instanceof Error ? error.message : String(error);
+      }
+      return messages;
+    });
+    expect(refusals).toEqual({
+      dashboard: LEGACY_IMPORT_PENDING_MESSAGE,
+      poll: LEGACY_IMPORT_PENDING_MESSAGE,
+      recap: LEGACY_IMPORT_PENDING_MESSAGE,
+    });
+    const stillPending = await readBrainSql(next);
+    expect(stillPending.snapshots).toEqual([]);
+    expect(stillPending.beats).toEqual([]);
+    expect(stillPending.recaps).toEqual([]);
+    expect(stillPending.bible).toEqual([]);
+    expect(stillPending.settings.some((row) => row.key === "legacyImportPending")).toBe(true);
+
+    await expect(next.bootstrap(input)).resolves.toBeUndefined();
+
+    const migrated = await readBrainSql(next);
+    expect(migrated.snapshots).toEqual([
+      {
+        id: 7,
+        week: 3,
+        payload_hash: "hash-legacy-snap",
+        payload: JSON.stringify(LEGACY_SNAPSHOT),
+        created_at: SNAPSHOT_CREATED_AT,
+      },
+    ]);
+    expect(migrated.beats).toEqual([
+      {
+        id: 4,
+        kind: "trade",
+        copy: "CeeDee walked so the chat could run.",
+        facts: LEGACY_FACTS,
+        week: 3,
+        created_at: BEAT_CREATED_AT,
+      },
+    ]);
+    expect(migrated.bible).toEqual([
+      {
+        id: 9,
+        entry: "Week 2: the trade that split the group chat.",
+        created_at: BIBLE_CREATED_AT,
+      },
+    ]);
+    expect(migrated.recaps).toEqual([
+      {
+        week: 3,
+        subject: "Week 3 belongs to Alex",
+        body: "CeeDee changed hands and the chat lost its mind.",
+        facts: LEGACY_FACTS,
+        emailed_at: RECAP_EMAILED_AT,
+        created_at: RECAP_CREATED_AT,
+      },
+    ]);
+    expect(migrated.settings).toEqual(
+      expect.arrayContaining([
+        { key: "leagueId", value: retryInternalId },
+        { key: "sleeperLeagueId", value: retrySleeperId },
+        { key: "name", value: "Cutman League" },
+        { key: "tone", value: "playful" },
+        { key: "legacyMigratedFrom", value: retrySleeperId },
+      ]),
+    );
+    expect(migrated.settings.some((row) => row.key === "legacyImportPending")).toBe(false);
+
+    const dashboard = await next.getDashboard();
+    expect(dashboard.bible).toEqual([
+      expect.objectContaining({
+        id: 9,
+        entry: "Week 2: the trade that split the group chat.",
+        createdAt: BIBLE_CREATED_AT,
+      }),
+    ]);
+    expect(dashboard.recaps).toEqual([
+      expect.objectContaining({
+        week: 3,
+        subject: "Week 3 belongs to Alex",
+        body: "CeeDee changed hands and the chat lost its mind.",
+        createdAt: RECAP_CREATED_AT,
+      }),
+    ]);
+
+    await expect(next.bootstrap(input)).resolves.toBeUndefined();
+    const again = await readBrainSql(next);
+    expect(again.snapshots).toEqual(migrated.snapshots);
+    expect(again.beats).toEqual(migrated.beats);
+    expect(again.bible).toEqual(migrated.bible);
+    expect(again.recaps).toEqual(migrated.recaps);
+    expect(again.settings).toEqual(migrated.settings);
   });
 });

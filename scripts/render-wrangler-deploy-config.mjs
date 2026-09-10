@@ -119,18 +119,20 @@ function allowedOutputDescription() {
 }
 
 async function assertDestinationIsNotSymlink(outputPath) {
+  let stat;
   try {
-    const stat = await lstat(outputPath);
-    if (stat.isSymbolicLink()) {
-      throw new Error(
-        `Refusing to write Wrangler config through symlink at ${formatRepoPath(outputPath)}.`,
-      );
-    }
+    stat = await lstat(outputPath);
   } catch (error) {
     if (error && error.code === "ENOENT") {
       return;
     }
     throw error;
+  }
+
+  if (stat.isSymbolicLink()) {
+    throw new Error(
+      `Refusing to write Wrangler config through symlink at ${formatRepoPath(outputPath)}.`,
+    );
   }
 }
 

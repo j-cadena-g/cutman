@@ -38,7 +38,7 @@ export {
   v1FixtureUser,
   v1FixtureUsers,
 } from "./fixtures.ts";
-export { HttpSleeperClient, SleeperRequestError, isSleeperRateLimited } from "./http-client.ts";
+export { HttpSleeperClient, REQUEST_TIMEOUT_MS, SleeperRequestError, isSleeperRateLimited } from "./http-client.ts";
 export type {
   NflState,
   PlayerMap,

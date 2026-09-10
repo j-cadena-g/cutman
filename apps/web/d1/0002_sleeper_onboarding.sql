@@ -51,7 +51,9 @@ CREATE TABLE IF NOT EXISTS app_state (
   updated_at INTEGER NOT NULL
 );
 
-CREATE TABLE _cutman_0002_leagues (
+-- Scratch rebuilds use IF NOT EXISTS. D1 applies this file in a transaction (failed
+-- attempts roll back); do not pre-DROP leftover scratch names.
+CREATE TABLE IF NOT EXISTS _cutman_0002_leagues (
   id TEXT PRIMARY KEY,
   sleeper_league_id TEXT NOT NULL UNIQUE,
   name TEXT NOT NULL,
@@ -78,7 +80,7 @@ SELECT
   NULL
 FROM leagues;
 
-CREATE TABLE _cutman_0002_league_members (
+CREATE TABLE IF NOT EXISTS _cutman_0002_league_members (
   league_id TEXT NOT NULL,
   user_id TEXT NOT NULL,
   role TEXT NOT NULL,
@@ -148,7 +150,12 @@ CREATE TABLE IF NOT EXISTS leagues (
   provisioning_error TEXT
 );
 
-INSERT INTO leagues SELECT * FROM _cutman_0002_leagues;
+INSERT INTO leagues (
+  id, sleeper_league_id, name, season, status, tone, created_at, activated_at, provisioning_error
+)
+SELECT
+  id, sleeper_league_id, name, season, status, tone, created_at, activated_at, provisioning_error
+FROM _cutman_0002_leagues;
 DROP TABLE _cutman_0002_leagues;
 
 CREATE TABLE IF NOT EXISTS league_members (
@@ -162,7 +169,12 @@ CREATE TABLE IF NOT EXISTS league_members (
   FOREIGN KEY (user_id) REFERENCES users(id)
 );
 
-INSERT INTO league_members SELECT * FROM _cutman_0002_league_members;
+INSERT INTO league_members (
+  league_id, user_id, role, recap_email_opt_in, created_at
+)
+SELECT
+  league_id, user_id, role, recap_email_opt_in, created_at
+FROM _cutman_0002_league_members;
 DROP TABLE _cutman_0002_league_members;
 
 CREATE INDEX IF NOT EXISTS league_members_user_id_idx ON league_members (user_id);

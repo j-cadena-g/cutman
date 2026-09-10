@@ -45,12 +45,31 @@ CREATE TABLE IF NOT EXISTS league_members (
 );
 `;
 
+const FINAL_CREATE_RE =
+  /^(CREATE TABLE IF NOT EXISTS|CREATE INDEX IF NOT EXISTS|CREATE UNIQUE INDEX IF NOT EXISTS)\b/i;
+const SCRATCH_NAME_RE = /\b_cutman_0002_/;
+const USERS_CREATE_RE = /^CREATE TABLE IF NOT EXISTS users\b/i;
+
 function statements(sql: string): string[] {
   return sql
     .replace(/--.*$/gm, "")
     .split(";")
     .map((part) => part.trim())
     .filter((part) => part.length > 0);
+}
+
+function sorted(values: string[]): string[] {
+  return [...values].sort();
+}
+
+function schemaFinalWithoutUsers(): string[] {
+  return statements(SCHEMA_SQL).filter((statement) => !USERS_CREATE_RE.test(statement));
+}
+
+function migrationFinalCreates(onboarding: string): string[] {
+  return statements(onboarding).filter(
+    (statement) => FINAL_CREATE_RE.test(statement) && !SCRATCH_NAME_RE.test(statement),
+  );
 }
 
 function readMigration(name: string): string {
@@ -80,14 +99,57 @@ describe("SCHEMA_SQL", () => {
 
   it("includes every final CREATE TABLE/INDEX except users in 0002", () => {
     const onboarding = readMigration("0002_sleeper_onboarding.sql");
-    const finalWithoutUsers = statements(SCHEMA_SQL).filter(
-      (statement) => !/^CREATE TABLE IF NOT EXISTS users\b/i.test(statement),
-    );
+    const finalWithoutUsers = schemaFinalWithoutUsers();
     const migrationStatements = statements(onboarding);
+    const migrationCreates = migrationFinalCreates(onboarding);
     expect(finalWithoutUsers.length).toBeGreaterThan(0);
     for (const statement of finalWithoutUsers) {
       expect(migrationStatements).toContainEqual(statement);
     }
+    expect(sorted(migrationCreates)).toEqual(sorted(finalWithoutUsers));
+  });
+
+  it("copies rebuilt leagues and members with explicit column lists", () => {
+    const onboarding = readMigration("0002_sleeper_onboarding.sql");
+    const migrationStatements = statements(onboarding);
+
+    expect(
+      migrationStatements.filter((statement) =>
+        /^CREATE TABLE IF NOT EXISTS _cutman_0002_leagues\b/i.test(statement),
+      ),
+    ).toHaveLength(1);
+    expect(
+      migrationStatements.filter((statement) =>
+        /^CREATE TABLE IF NOT EXISTS _cutman_0002_league_members\b/i.test(statement),
+      ),
+    ).toHaveLength(1);
+    expect(migrationStatements.some((statement) => /^CREATE TABLE _cutman_0002_/i.test(statement))).toBe(
+      false,
+    );
+
+    expect(onboarding).not.toMatch(/INSERT INTO leagues\s+SELECT\s+\*/i);
+    expect(onboarding).not.toMatch(/INSERT INTO league_members\s+SELECT\s+\*/i);
+
+    expect(migrationStatements).toContainEqual(
+      [
+        "INSERT INTO leagues (",
+        "  id, sleeper_league_id, name, season, status, tone, created_at, activated_at, provisioning_error",
+        ")",
+        "SELECT",
+        "  id, sleeper_league_id, name, season, status, tone, created_at, activated_at, provisioning_error",
+        "FROM _cutman_0002_leagues",
+      ].join("\n"),
+    );
+    expect(migrationStatements).toContainEqual(
+      [
+        "INSERT INTO league_members (",
+        "  league_id, user_id, role, recap_email_opt_in, created_at",
+        ")",
+        "SELECT",
+        "  league_id, user_id, role, recap_email_opt_in, created_at",
+        "FROM _cutman_0002_league_members",
+      ].join("\n"),
+    );
   });
 
   it("does not embed live Sleeper ids in migration SQL", () => {
