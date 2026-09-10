@@ -192,6 +192,20 @@ describe("assembleStandings / assembleScoreboard", () => {
     expect(games[1]?.sides[0]?.starters[0]?.name).toBe("Jalen Hurts");
   });
 
+  it("skips Sleeper empty-slot sentinel 0 without shifting later roster positions", () => {
+    const users: SleeperLeagueUser[] = [
+      { user_id: "u-a", username: "a", display_name: "Alex", metadata: { team_name: "A" } },
+    ];
+    const rosters: SleeperRoster[] = [{ roster_id: 1, owner_id: "u-a" }];
+    const matchups: SleeperMatchup[] = [
+      { roster_id: 1, matchup_id: 1, points: 10, starters: ["4046", "0", "4881"] },
+    ];
+    const games = assembleScoreboard(rosters, users, matchups, fixturePlayers, ["QB", "RB", "WR"]);
+    const starters = games[0]?.sides[0]?.starters ?? [];
+    expect(starters.map((player) => player.playerId)).toEqual(["4046", "4881"]);
+    expect(starters[1]).toMatchObject({ playerId: "4881", position: "WR" });
+  });
+
   it("resolves starter names from the player map on a fixture board", () => {
     const board = assembleExplorerBoard({
       league: v1FixtureLeague,

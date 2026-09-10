@@ -175,7 +175,7 @@ function starterPlayers(
 ): ExplorerPlayer[] {
   const ids = starterIds ?? [];
   return ids.flatMap((playerId, index) => {
-    if (!playerId) return [];
+    if (!playerId || playerId === "0") return [];
     return [toExplorerPlayer(playerId, players, points, rosterPositions?.[index] ?? null)];
   });
 }

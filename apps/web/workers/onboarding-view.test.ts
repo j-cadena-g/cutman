@@ -288,13 +288,15 @@ describe("describeOnboardingError", () => {
   const kinds = Object.keys(allKinds) as OnboardingErrorKind[];
 
   it("returns non-empty, distinct, plain-language copy for every error kind", () => {
+    const forbiddenMarkers = /error:|Error\]|D1_ERROR|TypeError|\bundefined\b|\bNaN\b/i;
     const messages = kinds.map((kind) => describeOnboardingError(kind));
     for (const message of messages) {
       expect(message.trim().length).toBeGreaterThan(0);
       // Never expose internal error/parse strings: no stack-trace-ish or raw-code markers.
-      expect(message).not.toMatch(/error:|Error\]|D1_ERROR|TypeError|undefined|NaN/i);
+      expect(message).not.toMatch(forbiddenMarkers);
     }
     expect(new Set(messages).size).toBe(messages.length);
+    expect("banana").not.toMatch(forbiddenMarkers);
   });
 
   it("gives clear expiry guidance for an expired challenge", () => {
