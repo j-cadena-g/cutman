@@ -21,7 +21,12 @@ import {
 } from "@cutman/sleeper";
 import type { LeagueSnapshot } from "@cutman/story";
 import { beforeAll, describe, expect, it } from "vitest";
-import { LeagueBrain, LEGACY_IMPORT_PENDING_MESSAGE, type LegacyBrainState } from "./league-brain.ts";
+import {
+  LeagueBrain,
+  LEGACY_IMPORT_MAX_ATTEMPTS,
+  LEGACY_IMPORT_PENDING_MESSAGE,
+  type LegacyBrainState,
+} from "./league-brain.ts";
 
 type D1Migration = { name: string; queries: string[] };
 
@@ -314,6 +319,80 @@ describe("LeagueBrain legacy Durable Object migration", () => {
     settings: Array<{ key: string; value: string }>;
   };
 
+  type TestBrain = {
+    bootstrap: LeagueBrain["bootstrap"];
+    getDashboard: LeagueBrain["getDashboard"];
+    poll: LeagueBrain["poll"];
+    attemptRecap: LeagueBrain["attemptRecap"];
+    exportLegacyStateFromSource(sleeperLeagueId: string): Promise<LegacyBrainState | null>;
+    legacyExportCalls?: number;
+  };
+
+  function legacyImportFailedLog(leagueId: string, attempt: number): unknown[] {
+    return [
+      JSON.stringify({
+        event: "league_brain.legacy_import_failed",
+        leagueId,
+        attempt,
+        max: LEGACY_IMPORT_MAX_ATTEMPTS,
+      }),
+    ];
+  }
+
+  function legacyImportAbandonedLog(leagueId: string, attempt: number): unknown[] {
+    return [
+      JSON.stringify({
+        event: "league_brain.legacy_import_abandoned",
+        leagueId,
+        attempt,
+        max: LEGACY_IMPORT_MAX_ATTEMPTS,
+      }),
+    ];
+  }
+
+  function expectSafeLegacyImportLogs(logged: unknown, forbidden: string[]): void {
+    const serialized = JSON.stringify(logged);
+    for (const token of forbidden) {
+      expect(serialized).not.toContain(token);
+    }
+    const payloads = (Array.isArray(logged) ? logged : []).flat();
+    for (const payload of payloads) {
+      if (typeof payload !== "string") continue;
+      expect(Object.keys(JSON.parse(payload) as Record<string, unknown>).sort()).toEqual([
+        "attempt",
+        "event",
+        "leagueId",
+        "max",
+      ]);
+    }
+  }
+
+  async function captureBootstrapLogs(
+    stub: DurableObjectStub<LeagueBrain>,
+    input: { leagueId: string; sleeperLeagueId: string; name: string; tone: "playful" },
+  ): Promise<{ errors: unknown[][]; warns: unknown[][] }> {
+    return runInDurableObject(stub, async (instance) => {
+      const brain = instance as unknown as TestBrain;
+      const errors: unknown[][] = [];
+      const warns: unknown[][] = [];
+      const originalError = console.error;
+      const originalWarn = console.warn;
+      console.error = ((...args: unknown[]) => {
+        errors.push(args);
+      }) as typeof console.error;
+      console.warn = ((...args: unknown[]) => {
+        warns.push(args);
+      }) as typeof console.warn;
+      try {
+        await brain.bootstrap(input);
+      } finally {
+        console.error = originalError;
+        console.warn = originalWarn;
+      }
+      return { errors, warns };
+    });
+  }
+
   async function readBrainSql(stub: DurableObjectStub<LeagueBrain>): Promise<BrainSql> {
     return runInDurableObject(stub, async (_instance, state) => {
       return {
@@ -550,6 +629,7 @@ describe("LeagueBrain legacy Durable Object migration", () => {
   it("catches a rejected legacy export, refuses history while pending, then imports on retry", async () => {
     const retrySleeperId = "900000000000000021";
     const retryInternalId = "league_internal_migrated_retry";
+    const leak = `rpc rejected ${retrySleeperId} durable-object-id-secret`;
     await seedLegacyBrain(retrySleeperId, {
       leagueId: retrySleeperId,
       sleeperLeagueId: retrySleeperId,
@@ -562,14 +642,6 @@ describe("LeagueBrain legacy Durable Object migration", () => {
       tone: "playful" as const,
     };
 
-    type TestBrain = {
-      bootstrap: LeagueBrain["bootstrap"];
-      getDashboard: LeagueBrain["getDashboard"];
-      poll: LeagueBrain["poll"];
-      attemptRecap: LeagueBrain["attemptRecap"];
-      exportLegacyStateFromSource(sleeperLeagueId: string): Promise<LegacyBrainState | null>;
-    };
-
     const logged = await runInDurableObject(next, async (instance) => {
       const brain = instance as unknown as TestBrain;
       const original = brain.exportLegacyStateFromSource.bind(brain);
@@ -577,7 +649,7 @@ describe("LeagueBrain legacy Durable Object migration", () => {
       brain.exportLegacyStateFromSource = async (sleeperLeagueId) => {
         attempts += 1;
         if (attempts === 1) {
-          throw new Error(`rpc rejected ${sleeperLeagueId}`);
+          throw new Error(leak);
         }
         return original(sleeperLeagueId);
       };
@@ -594,9 +666,8 @@ describe("LeagueBrain legacy Durable Object migration", () => {
       return events;
     });
 
-    expect(logged).toEqual([[JSON.stringify({ event: "league_brain.legacy_import_failed" })]]);
-    expect(JSON.stringify(logged)).not.toContain(retrySleeperId);
-    expect(JSON.stringify(logged)).not.toContain("rpc rejected");
+    expect(logged).toEqual([legacyImportFailedLog(retryInternalId, 1)]);
+    expectSafeLegacyImportLogs(logged, [retrySleeperId, "rpc rejected", "durable-object-id-secret"]);
 
     const pending = await readBrainSql(next);
     expect(pending.snapshots).toEqual([]);
@@ -610,9 +681,11 @@ describe("LeagueBrain legacy Durable Object migration", () => {
         { key: "name", value: "Cutman League" },
         { key: "tone", value: "playful" },
         { key: "legacyImportPending", value: "1" },
+        { key: "legacyImportFailureCount", value: "1" },
       ]),
     );
     expect(pending.settings.some((row) => row.key === "legacyMigratedFrom")).toBe(false);
+    expect(pending.settings.some((row) => row.key === "legacyImportAbandoned")).toBe(false);
 
     const refusals = await runInDurableObject(next, async (instance) => {
       const brain = instance as unknown as TestBrain;
@@ -695,6 +768,8 @@ describe("LeagueBrain legacy Durable Object migration", () => {
       ]),
     );
     expect(migrated.settings.some((row) => row.key === "legacyImportPending")).toBe(false);
+    expect(migrated.settings.some((row) => row.key === "legacyImportFailureCount")).toBe(false);
+    expect(migrated.settings.some((row) => row.key === "legacyImportAbandoned")).toBe(false);
 
     const dashboard = await next.getDashboard();
     expect(dashboard.bible).toEqual([
@@ -720,5 +795,139 @@ describe("LeagueBrain legacy Durable Object migration", () => {
     expect(again.bible).toEqual(migrated.bible);
     expect(again.recaps).toEqual(migrated.recaps);
     expect(again.settings).toEqual(migrated.settings);
+  });
+
+  it("abandons legacy import after consecutive failures and then bootstraps a fresh book", async () => {
+    const abandonSleeperId = "900000000000000031";
+    const abandonInternalId = "league_internal_migrated_abandon";
+    const leak = `rpc rejected ${abandonSleeperId} durable-object-id-secret`;
+    await seedLegacyBrain(abandonSleeperId, {
+      leagueId: abandonSleeperId,
+      sleeperLeagueId: abandonSleeperId,
+    });
+    const next = env.LEAGUE_BRAIN.getByName(abandonInternalId);
+    const input = {
+      leagueId: abandonInternalId,
+      sleeperLeagueId: abandonSleeperId,
+      name: "Cutman League",
+      tone: "playful" as const,
+    };
+
+    await runInDurableObject(next, async (instance) => {
+      const brain = instance as unknown as TestBrain;
+      brain.legacyExportCalls = 0;
+      brain.exportLegacyStateFromSource = async () => {
+        brain.legacyExportCalls = (brain.legacyExportCalls ?? 0) + 1;
+        throw new Error(leak);
+      };
+    });
+
+    const forbidden = [abandonSleeperId, "rpc rejected", "durable-object-id-secret"];
+    const exportCalls = (): Promise<number> =>
+      runInDurableObject(next, async (instance) => (instance as unknown as TestBrain).legacyExportCalls ?? 0);
+
+    const first = await captureBootstrapLogs(next, input);
+    expect(first.errors).toEqual([legacyImportFailedLog(abandonInternalId, 1)]);
+    expect(first.warns).toEqual([]);
+    expectSafeLegacyImportLogs(first.errors, forbidden);
+    const afterFirst = await readBrainSql(next);
+    expect(afterFirst.snapshots).toEqual([]);
+    expect(afterFirst.beats).toEqual([]);
+    expect(afterFirst.recaps).toEqual([]);
+    expect(afterFirst.bible).toEqual([]);
+    expect(afterFirst.settings).toEqual(
+      expect.arrayContaining([
+        { key: "legacyImportPending", value: "1" },
+        { key: "legacyImportFailureCount", value: "1" },
+      ]),
+    );
+    expect(afterFirst.settings.some((row) => row.key === "legacyMigratedFrom")).toBe(false);
+    expect(afterFirst.settings.some((row) => row.key === "legacyImportAbandoned")).toBe(false);
+    expect(
+      await runInDurableObject(next, async (instance) => {
+        try {
+          await (instance as unknown as TestBrain).getDashboard();
+          return null;
+        } catch (error) {
+          return error instanceof Error ? error.message : String(error);
+        }
+      }),
+    ).toBe(LEGACY_IMPORT_PENDING_MESSAGE);
+    expect(await exportCalls()).toBe(1);
+
+    const second = await captureBootstrapLogs(next, input);
+    expect(second.errors).toEqual([legacyImportFailedLog(abandonInternalId, 2)]);
+    expect(second.warns).toEqual([]);
+    expectSafeLegacyImportLogs(second.errors, forbidden);
+    const afterSecond = await readBrainSql(next);
+    expect(afterSecond.snapshots).toEqual([]);
+    expect(afterSecond.beats).toEqual([]);
+    expect(afterSecond.recaps).toEqual([]);
+    expect(afterSecond.bible).toEqual([]);
+    expect(afterSecond.settings).toEqual(
+      expect.arrayContaining([
+        { key: "legacyImportPending", value: "1" },
+        { key: "legacyImportFailureCount", value: "2" },
+      ]),
+    );
+    expect(afterSecond.settings.some((row) => row.key === "legacyImportAbandoned")).toBe(false);
+    expect(
+      await runInDurableObject(next, async (instance) => {
+        try {
+          await (instance as unknown as TestBrain).getDashboard();
+          return null;
+        } catch (error) {
+          return error instanceof Error ? error.message : String(error);
+        }
+      }),
+    ).toBe(LEGACY_IMPORT_PENDING_MESSAGE);
+    expect(await exportCalls()).toBe(2);
+
+    const third = await captureBootstrapLogs(next, input);
+    expect(third.errors).toEqual([legacyImportFailedLog(abandonInternalId, LEGACY_IMPORT_MAX_ATTEMPTS)]);
+    expect(third.warns).toEqual([legacyImportAbandonedLog(abandonInternalId, LEGACY_IMPORT_MAX_ATTEMPTS)]);
+    expectSafeLegacyImportLogs([...third.errors, ...third.warns], forbidden);
+    const afterThird = await readBrainSql(next);
+    expect(afterThird.snapshots).toEqual([]);
+    expect(afterThird.beats).toEqual([]);
+    expect(afterThird.recaps).toEqual([]);
+    expect(afterThird.bible).toEqual([
+      expect.objectContaining({
+        entry: "Cutman League is in the book. Tone: playful.",
+      }),
+    ]);
+    expect(afterThird.settings).toEqual(
+      expect.arrayContaining([
+        { key: "leagueId", value: abandonInternalId },
+        { key: "sleeperLeagueId", value: abandonSleeperId },
+        { key: "legacyImportAbandoned", value: "1" },
+        { key: "legacyImportFailureCount", value: String(LEGACY_IMPORT_MAX_ATTEMPTS) },
+      ]),
+    );
+    expect(afterThird.settings.some((row) => row.key === "legacyImportPending")).toBe(false);
+    expect(afterThird.settings.some((row) => row.key === "legacyMigratedFrom")).toBe(false);
+
+    const dashboard = await next.getDashboard();
+    expect(dashboard.leagueId).toBe(abandonInternalId);
+    expect(dashboard.bible).toEqual([
+      expect.objectContaining({
+        entry: "Cutman League is in the book. Tone: playful.",
+      }),
+    ]);
+    expect(dashboard.timeline).toEqual([]);
+    expect(dashboard.recaps).toEqual([]);
+
+    expect(await exportCalls()).toBe(LEGACY_IMPORT_MAX_ATTEMPTS);
+
+    const fourth = await captureBootstrapLogs(next, input);
+    expect(fourth.errors).toEqual([]);
+    expect(fourth.warns).toEqual([]);
+    expect(await exportCalls()).toBe(LEGACY_IMPORT_MAX_ATTEMPTS);
+    const afterFourth = await readBrainSql(next);
+    expect(afterFourth.bible).toEqual(afterThird.bible);
+    expect(afterFourth.snapshots).toEqual([]);
+    expect(afterFourth.settings.some((row) => row.key === "legacyImportAbandoned")).toBe(true);
+    expect(afterFourth.settings.some((row) => row.key === "legacyMigratedFrom")).toBe(false);
+    expect(afterFourth.settings.some((row) => row.key === "legacyImportPending")).toBe(false);
   });
 });

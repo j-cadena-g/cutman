@@ -50,6 +50,8 @@ export type SleeperRoster = {
     losses?: number;
     ties?: number;
     fpts?: number;
+    // Hundredths of a point; Sleeper may send a negative value with a negative `fpts`.
+    fpts_decimal?: number;
   };
 };
 

@@ -59,10 +59,14 @@ function secureRandom(): number {
 }
 
 export function createChallengeCode(random: () => number = secureRandom): string {
+  const lastIndex = UNAMBIGUOUS_CHALLENGE_CHARS.length - 1;
   let suffix = "";
   for (let i = 0; i < 4; i++) {
-    const index = Math.floor(random() * UNAMBIGUOUS_CHALLENGE_CHARS.length);
-    suffix += UNAMBIGUOUS_CHALLENGE_CHARS[index];
+    // Injected `random()` may be 1 or negative; clamp to a valid index so the suffix never
+    // contains `undefined`. The secure default is already in [0, 1), so this does not change
+    // its distribution.
+    const index = Math.min(lastIndex, Math.max(0, Math.floor(random() * UNAMBIGUOUS_CHALLENGE_CHARS.length)));
+    suffix += UNAMBIGUOUS_CHALLENGE_CHARS.charAt(index);
   }
   return `CUTMAN-${suffix}`;
 }

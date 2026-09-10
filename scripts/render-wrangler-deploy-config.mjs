@@ -14,6 +14,12 @@ const secretsExamplePath = path.join(webDir, ".wrangler.secrets.example");
 export const WRANGLER_DEPLOY_OUTPUT_PATH = path.join(webDir, ".wrangler.deploy.jsonc");
 export const WRANGLER_DEV_OUTPUT_PATH = path.join(webDir, ".wrangler.dev.jsonc");
 
+/** Tracked wrangler.jsonc placeholder. Live ids are injected at render time. */
+export const PLACEHOLDER_PILOT_ID = "0000000000000000000";
+/** Distinct local-dev KV placeholders so Miniflare does not share PLAYERS and EXPLORER_CACHE. */
+export const PLACEHOLDER_PLAYERS_KV_ID = "00000000000000000000000000000000";
+export const PLACEHOLDER_EXPLORER_KV_ID = "00000000000000000000000000000002";
+
 const ALLOWED_OUTPUT_PATHS = Object.freeze([
   path.resolve(WRANGLER_DEPLOY_OUTPUT_PATH),
   path.resolve(WRANGLER_DEV_OUTPUT_PATH),
@@ -30,7 +36,11 @@ const requiredValues = {
   },
   CLOUDFLARE_KV_NAMESPACE_ID: {
     pattern: /^[a-f0-9]{32}$/i,
-    description: "32-character KV namespace id",
+    description: "32-character PLAYERS KV namespace id",
+  },
+  CLOUDFLARE_EXPLORER_KV_NAMESPACE_ID: {
+    pattern: /^[a-f0-9]{32}$/i,
+    description: "32-character EXPLORER_CACHE KV namespace id",
   },
   CLOUDFLARE_CUSTOM_DOMAIN: {
     pattern: /^[^/\s]+(?:\/\*)?$/i,
@@ -67,10 +77,14 @@ const replacements = [
     envName: "CLOUDFLARE_D1_DATABASE_ID",
   },
   {
-    label: "kv namespace id",
-    pattern:
-      /("kv_namespaces"\s*:\s*\[\s*\{[\s\S]*?"id"\s*:\s*")([^"]*)(")/,
+    label: "PLAYERS kv namespace id",
+    pattern: /("binding"\s*:\s*"PLAYERS"\s*,\s*"id"\s*:\s*")([^"]*)(")/,
     envName: "CLOUDFLARE_KV_NAMESPACE_ID",
+  },
+  {
+    label: "EXPLORER_CACHE kv namespace id",
+    pattern: /("binding"\s*:\s*"EXPLORER_CACHE"\s*,\s*"id"\s*:\s*")([^"]*)(")/,
+    envName: "CLOUDFLARE_EXPLORER_KV_NAMESPACE_ID",
   },
   {
     label: "route pattern",
@@ -118,21 +132,45 @@ function allowedOutputDescription() {
   );
 }
 
-async function assertDestinationIsNotSymlink(outputPath) {
-  let stat;
-  try {
-    stat = await lstat(outputPath);
-  } catch (error) {
-    if (error && error.code === "ENOENT") {
-      return;
-    }
-    throw error;
+/**
+ * lstat every existing path component from `rootPath` through `destinationPath`.
+ * The root itself is not checked (the repo directory may be a symlink). Missing
+ * tail components are safe — stop at the first ENOENT. Any symlink in the chain
+ * (parent or destination) is rejected so writes cannot follow it.
+ */
+export async function assertPathChainHasNoSymlinks(rootPath, destinationPath) {
+  const resolvedRoot = path.resolve(rootPath);
+  const resolvedDestination = path.resolve(destinationPath);
+  const relative = path.relative(resolvedRoot, resolvedDestination);
+  if (relative.startsWith("..") || path.isAbsolute(relative)) {
+    throw new Error(
+      `Refusing to write Wrangler config to ${formatRepoPath(resolvedDestination)}.`,
+    );
   }
 
-  if (stat.isSymbolicLink()) {
-    throw new Error(
-      `Refusing to write Wrangler config through symlink at ${formatRepoPath(outputPath)}.`,
-    );
+  const segments = relative === "" ? [] : relative.split(path.sep).filter(Boolean);
+  const chain = [];
+  let current = resolvedRoot;
+  for (const segment of segments) {
+    current = path.join(current, segment);
+    chain.push(current);
+  }
+
+  for (const candidate of chain) {
+    let stats;
+    try {
+      stats = await lstat(candidate);
+    } catch (error) {
+      if (error && error.code === "ENOENT") {
+        return;
+      }
+      throw error;
+    }
+    if (stats.isSymbolicLink()) {
+      throw new Error(
+        `Refusing to write Wrangler config through symlink at ${formatRepoPath(candidate)}.`,
+      );
+    }
   }
 }
 
@@ -149,7 +187,7 @@ export async function resolveAndAssertOutputPath(
     );
   }
 
-  await assertDestinationIsNotSymlink(outputPath);
+  await assertPathChainHasNoSymlinks(repoRoot, outputPath);
 
   return {
     outputPath,
@@ -238,8 +276,11 @@ export function renderWranglerConfig(
       ? "00000000-0000-0000-0000-000000000000"
       : getRequiredValue("CLOUDFLARE_D1_DATABASE_ID", env),
     CLOUDFLARE_KV_NAMESPACE_ID: isDevConfig
-      ? "00000000000000000000000000000000"
+      ? PLACEHOLDER_PLAYERS_KV_ID
       : getRequiredValue("CLOUDFLARE_KV_NAMESPACE_ID", env),
+    CLOUDFLARE_EXPLORER_KV_NAMESPACE_ID: isDevConfig
+      ? PLACEHOLDER_EXPLORER_KV_ID
+      : getRequiredValue("CLOUDFLARE_EXPLORER_KV_NAMESPACE_ID", env),
     CLOUDFLARE_CUSTOM_DOMAIN: isDevConfig
       ? "localhost"
       : getRequiredValue("CLOUDFLARE_CUSTOM_DOMAIN", env),
@@ -250,13 +291,19 @@ export function renderWranglerConfig(
       (isDevConfig ? "development" : "production"),
     PILOT_SLEEPER_LEAGUE_ID: resolvePilotSleeperLeagueId(isDevConfig, env),
   };
+  if (
+    deployValues.CLOUDFLARE_KV_NAMESPACE_ID ===
+    deployValues.CLOUDFLARE_EXPLORER_KV_NAMESPACE_ID
+  ) {
+    throw new Error(
+      "CLOUDFLARE_EXPLORER_KV_NAMESPACE_ID must differ from CLOUDFLARE_KV_NAMESPACE_ID.",
+    );
+  }
   let rendered = template;
   for (const replacement of replacements) {
     if (
       isDevConfig &&
-      ["account_id", "database_id", "kv namespace id", "route pattern"].includes(
-        replacement.label,
-      )
+      ["account_id", "database_id", "route pattern"].includes(replacement.label)
     ) {
       continue;
     }

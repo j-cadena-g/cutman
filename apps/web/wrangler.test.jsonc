@@ -26,6 +26,10 @@
     {
       "binding": "PLAYERS",
       "id": "00000000000000000000000000000001"
+    },
+    {
+      "binding": "EXPLORER_CACHE",
+      "id": "00000000000000000000000000000003"
     }
   ],
   "durable_objects": {

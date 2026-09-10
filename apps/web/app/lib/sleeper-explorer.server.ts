@@ -20,7 +20,7 @@ import {
   type ExplorerLeagueCard,
   type ExplorerUserCard,
 } from "./sleeper-explorer.ts";
-import { getPlayerMap, sleeperFromEnv } from "../../workers/sleeper.ts";
+import { getPlayerMap, sleeperFromEnv } from "./sleeper.server.ts";
 
 export const NFL_STATE_TTL_MS = 15 * 60 * 1000;
 export const USER_TTL_MS = 60 * 60 * 1000;
@@ -75,7 +75,7 @@ export function explorerDepsFromEnv(env: Env): ExplorerDeps {
   const sleeper = sleeperFromEnv(env);
   return {
     sleeper,
-    cache: kvExplorerCache(env.PLAYERS),
+    cache: kvExplorerCache(env.EXPLORER_CACHE),
     getPlayers: () => getPlayerMap(env, sleeper),
     now: () => Date.now(),
   };

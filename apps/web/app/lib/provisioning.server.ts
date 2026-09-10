@@ -22,23 +22,37 @@ export type ProvisioningDeps = {
   db: D1Database;
   brain: LeagueBrainHandle;
   now: () => number;
+  // Monotonic clock for the shared bootstrap+poll deadline. Defaults to Date.now; tests
+  // inject this (or fake timers that advance Date.now) so remaining budget stays deterministic.
+  clock?: () => number;
 };
 
 export const PROVISION_TIMEOUT_MS = 20_000;
 
-// Races `operation` against a 20s timer and always clears that timer. LeagueBrain RPC cannot
-// be cancelled; a timeout still rejects here so the caller can failOrConverge. A late RPC may
-// still finish and race a peer that already activated (CAS miss → success) or leave the league
-// in error for retry.
-async function withProvisionTimeout<T>(operation: Promise<T>): Promise<T> {
+const PROVISION_TIMEOUT_MESSAGE = "League setup timed out";
+
+function provisionClock(deps: ProvisioningDeps): () => number {
+  return deps.clock ?? Date.now;
+}
+
+// Bootstrap then poll share one 20s deadline. Remaining is computed before each RPC — a
+// depleted budget rejects immediately without starting the next call — and each promise is
+// raced using only that remaining time. The race timer is always cleared. LeagueBrain RPC
+// cannot be cancelled; a timeout still rejects here so the caller can failOrConverge. A late
+// RPC may still finish and race a peer that already activated (CAS miss → success) or leave
+// the league in error for retry.
+async function withProvisionTimeout<T>(start: () => Promise<T>, remainingMs: number): Promise<T> {
+  if (remainingMs <= 0) {
+    throw new Error(PROVISION_TIMEOUT_MESSAGE);
+  }
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const timeout = new Promise<never>((_, reject) => {
       timer = setTimeout(() => {
-        reject(new Error("League setup timed out"));
-      }, PROVISION_TIMEOUT_MS);
+        reject(new Error(PROVISION_TIMEOUT_MESSAGE));
+      }, remainingMs);
     });
-    return await Promise.race([operation, timeout]);
+    return await Promise.race([start(), timeout]);
   } finally {
     if (timer !== undefined) clearTimeout(timer);
   }
@@ -101,15 +115,19 @@ export async function provisionAndActivateLeague(
   }
 
   try {
+    const clock = provisionClock(deps);
+    const deadline = clock() + PROVISION_TIMEOUT_MS;
     await withProvisionTimeout(
-      deps.brain.bootstrap({
-        leagueId: current.id,
-        sleeperLeagueId: current.sleeper_league_id,
-        name: current.name,
-        tone: toneOrPlayful(current.tone),
-      }),
+      () =>
+        deps.brain.bootstrap({
+          leagueId: current.id,
+          sleeperLeagueId: current.sleeper_league_id,
+          name: current.name,
+          tone: toneOrPlayful(current.tone),
+        }),
+      deadline - clock(),
     );
-    await withProvisionTimeout(deps.brain.poll());
+    await withProvisionTimeout(() => deps.brain.poll(), deadline - clock());
   } catch (error) {
     return failOrConverge(deps, current.id, error);
   }

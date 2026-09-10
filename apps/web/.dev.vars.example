@@ -6,9 +6,9 @@
 # `pnpm run dev:verify` requires the keys in the Required section (names only;
 # no values printed). Optional PILOT_SLEEPER_LEAGUE_ID may be unset for a first
 # run (wrangler.jsonc keeps a fake placeholder). Do not create, mount, or commit
-# `.dev.vars`. Cloudflare account / zone / D1 / KV IDs belong in
-# apps/web/.deploy.env.example. Worker secrets for deploy live in
-# apps/web/.wrangler.secrets.example.
+# `.dev.vars`. Cloudflare account / zone / D1 / KV IDs (PLAYERS and
+# EXPLORER_CACHE) belong in apps/web/.deploy.env.example. Worker secrets for
+# deploy live in apps/web/.wrangler.secrets.example.
 # =============================================================================
 
 # -----------------------------------------------------------------------------

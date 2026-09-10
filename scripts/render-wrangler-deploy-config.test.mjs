@@ -1,12 +1,16 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { lstat, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import {
+  assertPathChainHasNoSymlinks,
   isSameRealPath,
+  PLACEHOLDER_EXPLORER_KV_ID,
+  PLACEHOLDER_PILOT_ID,
+  PLACEHOLDER_PLAYERS_KV_ID,
   renderWranglerConfig,
   resolveAndAssertOutputPath,
   WRANGLER_DEPLOY_OUTPUT_PATH,
@@ -20,11 +24,36 @@ const templatePath = path.join(repoRoot, "apps/web/wrangler.jsonc");
 const secretsExamplePath = path.join(repoRoot, "apps/web/.wrangler.secrets.example");
 
 const FAKE_PILOT_ID = "1111111111111111111";
-const PLACEHOLDER_PILOT_ID = "0000000000000000000";
 const ALL_ZERO_PILOT_ID = "000000";
+const FAKE_PLAYERS_KV_ID = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+const FAKE_EXPLORER_KV_ID = "cccccccccccccccccccccccccccccccc";
+const INVALID_EXPLORER_KV_ID = "not-a-kv-namespace-id";
 
 const template = await readFile(templatePath, "utf8");
 const secretsExample = await readFile(secretsExamplePath, "utf8");
+
+function trackedTemplateString(name) {
+  const match = template.match(new RegExp(`"${name}"\\s*:\\s*"([^"]*)"`));
+  assert.ok(match, `tracked wrangler.jsonc is missing ${name}`);
+  return match[1];
+}
+
+function trackedTemplateKvId(binding) {
+  const match = template.match(
+    new RegExp(`"binding"\\s*:\\s*"${binding}"\\s*,\\s*"id"\\s*:\\s*"([^"]*)"`),
+  );
+  assert.ok(match, `tracked wrangler.jsonc is missing ${binding} kv id`);
+  return match[1];
+}
+
+const trackedPilotId = trackedTemplateString("PILOT_SLEEPER_LEAGUE_ID");
+const trackedUseSleeperFixtures = trackedTemplateString("USE_SLEEPER_FIXTURES");
+const trackedPlayersKvId = trackedTemplateKvId("PLAYERS");
+const trackedExplorerKvId = trackedTemplateKvId("EXPLORER_CACHE");
+
+function kvBindingIdPattern(binding, id) {
+  return new RegExp(`"binding"\\s*:\\s*"${binding}"\\s*,\\s*"id"\\s*:\\s*"${id}"`);
+}
 
 function baseEnv(overrides = {}) {
   const env = { ...process.env };
@@ -35,7 +64,8 @@ function baseEnv(overrides = {}) {
     ...env,
     CLOUDFLARE_ACCOUNT_ID: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     CLOUDFLARE_D1_DATABASE_ID: "00000000-0000-0000-0000-000000000000",
-    CLOUDFLARE_KV_NAMESPACE_ID: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    CLOUDFLARE_KV_NAMESPACE_ID: FAKE_PLAYERS_KV_ID,
+    CLOUDFLARE_EXPLORER_KV_NAMESPACE_ID: FAKE_EXPLORER_KV_ID,
     CLOUDFLARE_CUSTOM_DOMAIN: "example.test",
     CLERK_PUBLISHABLE_KEY: "pk_test_abcdefghijklmnop",
     APP_ORIGIN: "https://example.test",
@@ -203,6 +233,41 @@ describe("render-wrangler-deploy-config output path", () => {
       });
     } finally {
       await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns at the first missing path component without throwing", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "cutman-wrangler-missing-"));
+    try {
+      await assertPathChainHasNoSymlinks(root, path.join(root, "missing", "out.jsonc"));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a parent directory symlink without mutating real repo directories", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "cutman-wrangler-parent-link-"));
+    try {
+      const realDir = path.join(root, "real");
+      await mkdir(realDir);
+      const target = path.join(realDir, "secret.jsonc");
+      await writeFile(target, "should-not-be-overwritten");
+      const parentLink = path.join(root, "linked-parent");
+      await symlink(realDir, parentLink);
+      const destination = path.join(parentLink, ".wrangler.deploy.jsonc");
+
+      await assert.rejects(
+        () => assertPathChainHasNoSymlinks(root, destination),
+        /symlink/,
+      );
+      assert.equal((await lstat(parentLink)).isSymbolicLink(), true);
+      assert.equal(await readFile(target, "utf8"), "should-not-be-overwritten");
+      await assert.rejects(
+        () => resolveAndAssertOutputPath(destination),
+        /Refusing to write Wrangler config/,
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
     }
   });
 
@@ -412,17 +477,26 @@ describe("render-wrangler-deploy-config", () => {
   it("writes a live-shaped PILOT_SLEEPER_LEAGUE_ID on local-dev render when USE_SLEEPER_FIXTURES is false", () => {
     const rendered = renderDev(baseEnv());
     assert.match(rendered, new RegExp(`"PILOT_SLEEPER_LEAGUE_ID"\\s*:\\s*"${FAKE_PILOT_ID}"`));
-    assert.match(rendered, /"USE_SLEEPER_FIXTURES"\s*:\s*"false"/);
+    assert.match(
+      rendered,
+      new RegExp(`"USE_SLEEPER_FIXTURES"\\s*:\\s*"${trackedUseSleeperFixtures}"`),
+    );
   });
 
   it("keeps the fake placeholder when fixture-mode local-dev render omits PILOT_SLEEPER_LEAGUE_ID", () => {
     const rendered = renderDev(
       baseEnv({ USE_SLEEPER_FIXTURES: "true", PILOT_SLEEPER_LEAGUE_ID: "" }),
     );
+    assert.equal(trackedPilotId, PLACEHOLDER_PILOT_ID);
     assert.match(
       rendered,
       new RegExp(`"PILOT_SLEEPER_LEAGUE_ID"\\s*:\\s*"${PLACEHOLDER_PILOT_ID}"`),
     );
+    assert.match(
+      rendered,
+      new RegExp(`"USE_SLEEPER_FIXTURES"\\s*:\\s*"${trackedUseSleeperFixtures}"`),
+    );
+    assert.notEqual(trackedUseSleeperFixtures, "true");
   });
 
   it("keeps the fake placeholder when PILOT_SLEEPER_LEAGUE_ID is absent on fixture-mode local-dev render", () => {
@@ -432,6 +506,79 @@ describe("render-wrangler-deploy-config", () => {
     assert.match(
       rendered,
       new RegExp(`"PILOT_SLEEPER_LEAGUE_ID"\\s*:\\s*"${PLACEHOLDER_PILOT_ID}"`),
+    );
+    assert.match(
+      rendered,
+      new RegExp(`"USE_SLEEPER_FIXTURES"\\s*:\\s*"${trackedUseSleeperFixtures}"`),
+    );
+  });
+
+  it("exports PLACEHOLDER_PILOT_ID matching the tracked wrangler template", () => {
+    assert.equal(trackedPilotId, PLACEHOLDER_PILOT_ID);
+  });
+
+  it("renders both production KV ids onto the matching bindings", () => {
+    const rendered = renderProduction(baseEnv());
+    assert.match(rendered, kvBindingIdPattern("PLAYERS", FAKE_PLAYERS_KV_ID));
+    assert.match(rendered, kvBindingIdPattern("EXPLORER_CACHE", FAKE_EXPLORER_KV_ID));
+    assert.doesNotMatch(rendered, kvBindingIdPattern("PLAYERS", FAKE_EXPLORER_KV_ID));
+    assert.doesNotMatch(rendered, kvBindingIdPattern("EXPLORER_CACHE", FAKE_PLAYERS_KV_ID));
+  });
+
+  it("renders distinct local-dev KV placeholders without requiring env ids", () => {
+    assert.equal(trackedPlayersKvId, PLACEHOLDER_PLAYERS_KV_ID);
+    assert.equal(trackedExplorerKvId, PLACEHOLDER_EXPLORER_KV_ID);
+    assert.notEqual(PLACEHOLDER_PLAYERS_KV_ID, PLACEHOLDER_EXPLORER_KV_ID);
+
+    const env = baseEnv();
+    delete env.CLOUDFLARE_KV_NAMESPACE_ID;
+    delete env.CLOUDFLARE_EXPLORER_KV_NAMESPACE_ID;
+    const rendered = renderDev(env);
+    assert.match(rendered, kvBindingIdPattern("PLAYERS", PLACEHOLDER_PLAYERS_KV_ID));
+    assert.match(rendered, kvBindingIdPattern("EXPLORER_CACHE", PLACEHOLDER_EXPLORER_KV_ID));
+  });
+
+  it("rejects a missing CLOUDFLARE_EXPLORER_KV_NAMESPACE_ID without exposing values", () => {
+    const env = baseEnv();
+    delete env.CLOUDFLARE_EXPLORER_KV_NAMESPACE_ID;
+    assert.throws(
+      () => renderProduction(env),
+      (error) => {
+        assert.match(error.message, /Missing CLOUDFLARE_EXPLORER_KV_NAMESPACE_ID/);
+        assert.doesNotMatch(error.message, new RegExp(FAKE_PLAYERS_KV_ID));
+        assert.doesNotMatch(error.message, new RegExp(FAKE_EXPLORER_KV_ID));
+        assert.doesNotMatch(error.message, /aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/);
+        return true;
+      },
+    );
+  });
+
+  it("rejects an invalid CLOUDFLARE_EXPLORER_KV_NAMESPACE_ID without exposing the value", () => {
+    assert.throws(
+      () =>
+        renderProduction(
+          baseEnv({ CLOUDFLARE_EXPLORER_KV_NAMESPACE_ID: INVALID_EXPLORER_KV_ID }),
+        ),
+      (error) => {
+        assert.match(error.message, /Invalid CLOUDFLARE_EXPLORER_KV_NAMESPACE_ID/);
+        assert.doesNotMatch(error.message, new RegExp(INVALID_EXPLORER_KV_ID));
+        assert.doesNotMatch(error.message, new RegExp(FAKE_PLAYERS_KV_ID));
+        return true;
+      },
+    );
+  });
+
+  it("rejects identical PLAYERS and EXPLORER_CACHE KV ids without exposing values", () => {
+    assert.throws(
+      () =>
+        renderProduction(
+          baseEnv({ CLOUDFLARE_EXPLORER_KV_NAMESPACE_ID: FAKE_PLAYERS_KV_ID }),
+        ),
+      (error) => {
+        assert.match(error.message, /CLOUDFLARE_EXPLORER_KV_NAMESPACE_ID must differ/);
+        assert.doesNotMatch(error.message, new RegExp(FAKE_PLAYERS_KV_ID));
+        return true;
+      },
     );
   });
 });

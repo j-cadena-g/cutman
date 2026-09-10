@@ -12,13 +12,13 @@ Licensing is TBD.
 - Commissioner authority comes only from Sleeper ownership verification: a team-name challenge, then LeagueBrain provision. Once the league is active, members join without a challenge. No allowlist, claim flow, FF-XXXX, or magic-link
 - One configured pilot Sleeper league (`PILOT_SLEEPER_LEAGUE_ID`). Other discovered leagues show Coming soon. D1 already models many leagues; one LeagueBrain Durable Object per internal `leagues.id`
 - Dashboard reads the Durable Object snapshot (bible, timeline, recaps). It does not hit Sleeper on every page load
-- D1 holds Clerk users, leagues, and per-league membership / recap opt-in. KV holds the NFL player map
+- D1 holds Clerk users, leagues, and per-league membership / recap opt-in. `PLAYERS` KV holds the NFL player map; `EXPLORER_CACHE` KV holds explorer lookup cache and origin quota
 - Cron is hourly UTC; the handler uses `America/New_York`. Poll every 3 hours. One idempotent Tuesday recap at 9:00
 - Default tone is playful when unset
 
 ## Quick Start
 
-You do **not** need a Cloudflare account, Workers Builds, Cursor Cloud Agent secrets, or a production Environment to open the repo. Local Vite uses simulated D1/KV.
+You do **not** need a Cloudflare account, Workers Builds, Cursor Cloud Agent secrets, or a production Environment to open the repo. Local Vite uses simulated D1/KV (including a dedicated explorer cache namespace).
 
 ### Prerequisites
 
@@ -35,7 +35,7 @@ You do **not** need a Cloudflare account, Workers Builds, Cursor Cloud Agent sec
 ### Install and Run
 
 1. Create a personal 1Password Environment for local development (a common display name is `Cutman (dev)`), **or** plan to export required vars in your shell.
-2. Set the **required** keys from [`apps/web/.dev.vars.example`](./apps/web/.dev.vars.example): `APP_ENV`, `APP_ORIGIN`, `CLERK_SECRET_KEY`, `CLERK_PUBLISHABLE_KEY`. Cloudflare account / zone / D1 / KV IDs belong only on the deploy manifest.
+2. Set the **required** keys from [`apps/web/.dev.vars.example`](./apps/web/.dev.vars.example): `APP_ENV`, `APP_ORIGIN`, `CLERK_SECRET_KEY`, `CLERK_PUBLISHABLE_KEY`. Cloudflare account / zone / D1 / KV IDs belong only on the deploy manifest (production needs two KV namespace IDs).
 
 ```bash
 pnpm install
@@ -92,6 +92,7 @@ Current Worker bindings in the public `apps/web/wrangler.jsonc` template:
 | --- | --- | --- |
 | `DB` | D1 | Clerk users, leagues, memberships, recap opt-in, scheduled rotation cursor |
 | `PLAYERS` | KV | NFL player map, fetched at most once per day |
+| `EXPLORER_CACHE` | KV | Explorer lookup cache and origin quota (independent of `PLAYERS`) |
 | `LEAGUE_BRAIN` | SQLite Durable Object | Snapshots, beats, bible, recaps. id = internal `leagues.id` |
 | `AI` | Workers AI | `@cf/google/gemma-4-26b-a4b-it` only |
 | `EMAIL` | Email Service | `env.EMAIL.send` for Tuesday recaps. From-name is **Cutman** |
@@ -144,7 +145,7 @@ pnpm cf-typegen
 
 ## Deployment
 
-`pnpm run deploy` first renders `apps/web/.wrangler.deploy.jsonc` from the current shell environment, then uses that ignored file for remote D1 migrations and the Worker deploy. The committed [`apps/web/wrangler.jsonc`](./apps/web/wrangler.jsonc) stays as a public-safe template.
+`pnpm run deploy` first renders `apps/web/.wrangler.deploy.jsonc` from the current shell environment, then uses that ignored file for remote D1 migrations and the Worker deploy. The committed [`apps/web/wrangler.jsonc`](./apps/web/wrangler.jsonc) stays as a public-safe template. Production requires two KV namespaces: `PLAYERS` (`CLOUDFLARE_KV_NAMESPACE_ID`) and `EXPLORER_CACHE` (`CLOUDFLARE_EXPLORER_KV_NAMESPACE_ID`). Local `pnpm run dev` uses Wrangler's emulated bindings for both. v1 still serves one configured pilot Sleeper league.
 
 Operators should store production and development secrets in [1Password Environments](https://www.1password.dev/environments/). The repo tracks **names** in [`apps/web/.deploy.env.example`](./apps/web/.deploy.env.example) and [`apps/web/.wrangler.secrets.example`](./apps/web/.wrangler.secrets.example). Do not use `wrangler secret put` or the Cloudflare dashboard to author secrets — `pnpm run deploy` renders a temporary secrets file from `op run` and passes it to `wrangler deploy --secrets-file`.
 

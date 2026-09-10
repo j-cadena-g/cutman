@@ -1,3 +1,5 @@
+/// <reference types="@cloudflare/vitest-pool-workers/types" />
+import { env } from "cloudflare:test";
 import {
   EXAMPLE_SLEEPER_USERNAME,
   SleeperRequestError,
@@ -20,6 +22,7 @@ import {
   BOARD_TTL_MS,
   USER_TTL_MS,
   createMemoryExplorerCache,
+  explorerDepsFromEnv,
   lookupExplorerBoard,
   lookupExplorerUser,
   type ExplorerCache,
@@ -134,6 +137,14 @@ describe("describeExplorerError", () => {
       "Enter a Sleeper username of 1–32 letters, digits, underscores, or hyphens.",
     );
   });
+
+  it("returns a generic fallback for a runtime-unexpected kind", () => {
+    // Compile-time exhaustiveness is the `never` default in describeExplorerError.
+    // @ts-expect-error only this test may pass a kind the union rejects, to hit that branch.
+    expect(describeExplorerError("not_a_real_kind")).toBe(
+      "Cutman couldn't complete that Sleeper lookup. Try again in a moment.",
+    );
+  });
 });
 
 describe("isValidExplorerLeagueId", () => {
@@ -224,6 +235,25 @@ describe("assembleStandings / assembleScoreboard / assembleRosters", () => {
       { wins: 5, ties: 0, pointsFor: 300 },
       { wins: 5, ties: 0, pointsFor: 200 },
       { wins: 4, ties: 2, pointsFor: 200 },
+    ]);
+  });
+
+  it("adds fpts_decimal at hundredths and sorts by the precise pointsFor", () => {
+    const users: SleeperLeagueUser[] = [];
+    const rosters: SleeperRoster[] = [
+      { roster_id: 2, owner_id: null, settings: { wins: 3, fpts: 100 } },
+      { roster_id: 1, owner_id: null, settings: { wins: 3, fpts: 100, fpts_decimal: 45 } },
+      { roster_id: 3, owner_id: null, settings: { wins: 3, fpts: 100, fpts_decimal: 0 } },
+      { roster_id: 4, owner_id: null, settings: { wins: 3 } },
+      { roster_id: 5, owner_id: null, settings: { wins: 3, fpts: -5, fpts_decimal: -67 } },
+    ];
+    const standings = assembleStandings(rosters, users);
+    expect(standings.map((row) => ({ rosterId: row.rosterId, pointsFor: row.pointsFor }))).toEqual([
+      { rosterId: 1, pointsFor: 100 + 45 / 100 },
+      { rosterId: 2, pointsFor: 100 },
+      { rosterId: 3, pointsFor: 100 },
+      { rosterId: 4, pointsFor: 0 },
+      { rosterId: 5, pointsFor: -5 + -67 / 100 },
     ]);
   });
 
@@ -732,5 +762,25 @@ describe("story dashboard isolation", () => {
     });
     expect(dashboard?.name).toBe(V1_LEAGUE_NAME);
     expect(dashboard).not.toHaveProperty("sleeper");
+  });
+});
+
+describe("explorerDepsFromEnv KV isolation", () => {
+  it("writes explorer cache to EXPLORER_CACHE and the player map to PLAYERS", async () => {
+    const deps = explorerDepsFromEnv(env);
+    const marker = `explore:isolation:${crypto.randomUUID()}`;
+    await deps.cache.putJson(marker, { ok: true });
+    expect(await env.EXPLORER_CACHE.get(marker, "json")).toEqual({ ok: true });
+    expect(await env.PLAYERS.get(marker)).toBeNull();
+
+    await env.PLAYERS.delete("players:nfl");
+    await env.PLAYERS.delete("players:nfl:fetched_at");
+    await env.EXPLORER_CACHE.delete("players:nfl");
+    await env.EXPLORER_CACHE.delete("players:nfl:fetched_at");
+    await deps.getPlayers();
+    expect(await env.PLAYERS.get("players:nfl")).not.toBeNull();
+    expect(await env.PLAYERS.get("players:nfl:fetched_at")).not.toBeNull();
+    expect(await env.EXPLORER_CACHE.get("players:nfl")).toBeNull();
+    expect(await env.EXPLORER_CACHE.get("players:nfl:fetched_at")).toBeNull();
   });
 });

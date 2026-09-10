@@ -209,7 +209,7 @@ export function assembleStandings(
       wins: roster.settings?.wins ?? 0,
       losses: roster.settings?.losses ?? 0,
       ties: roster.settings?.ties ?? 0,
-      pointsFor: roster.settings?.fpts ?? 0,
+      pointsFor: (roster.settings?.fpts ?? 0) + (roster.settings?.fpts_decimal ?? 0) / 100,
     };
   });
   rows.sort((left, right) => {
@@ -342,7 +342,8 @@ export function describeExplorerError(
       return "Cutman couldn't reach Sleeper just now. Try again in a moment.";
     default: {
       const exhaustive: never = kind;
-      return exhaustive;
+      void exhaustive;
+      return "Cutman couldn't complete that Sleeper lookup. Try again in a moment.";
     }
   }
 }

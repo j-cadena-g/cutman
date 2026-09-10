@@ -22,9 +22,16 @@ import { getPlayerMap, sleeperFromEnv } from "./sleeper.ts";
 
 const LEGACY_MIGRATED_FROM_KEY = "legacyMigratedFrom";
 const LEGACY_IMPORT_PENDING_KEY = "legacyImportPending";
+const LEGACY_IMPORT_FAILURE_COUNT_KEY = "legacyImportFailureCount";
+const LEGACY_IMPORT_ABANDONED_KEY = "legacyImportAbandoned";
+
+/** Consecutive rejected exports before the target brain gives up and starts a fresh book. */
+export const LEGACY_IMPORT_MAX_ATTEMPTS = 3;
 
 /** Thrown from readSettings while a legacy copy is unfinished so poll/recap/dashboard cannot seed a new history. */
 export const LEGACY_IMPORT_PENDING_MESSAGE = "League history import is pending";
+
+type LegacyImportLogEvent = "league_brain.legacy_import_failed" | "league_brain.legacy_import_abandoned";
 
 type Settings = {
   leagueId: string;
@@ -129,9 +136,8 @@ export class LeagueBrain extends DurableObject<Env> {
     try {
       await this.importLegacyStateIfNeeded(input);
     } catch {
-      // Do not log the rejection: RPC / storage errors can embed Durable Object and league ids.
-      console.error(JSON.stringify({ event: "league_brain.legacy_import_failed" }));
-      this.putSetting(LEGACY_IMPORT_PENDING_KEY, "1");
+      // Do not log the rejection: RPC / storage errors can embed Durable Object and Sleeper ids.
+      this.recordLegacyImportRejection(input.leagueId);
     }
     this.putSetting("leagueId", input.leagueId);
     this.putSetting("sleeperLeagueId", input.sleeperLeagueId);
@@ -400,13 +406,20 @@ export class LeagueBrain extends DurableObject<Env> {
     sleeperLeagueId: string;
   }): Promise<void> {
     if (this.getSetting(LEGACY_MIGRATED_FROM_KEY)) {
+      this.ctx.storage.transactionSync(() => this.clearLegacyImportInFlight());
+      return;
+    }
+
+    // Abandoned means we already gave up on the source. Do not retry the export,
+    // and do not write legacyMigratedFrom — that marker would claim a copy we never made.
+    if (this.getSetting(LEGACY_IMPORT_ABANDONED_KEY)) {
       this.deleteSetting(LEGACY_IMPORT_PENDING_KEY);
       return;
     }
 
     const legacyId = this.env.LEAGUE_BRAIN.idFromName(input.sleeperLeagueId);
     if (legacyId.equals(this.ctx.id) || input.leagueId === input.sleeperLeagueId) {
-      this.markLegacyImportComplete(input.sleeperLeagueId);
+      this.ctx.storage.transactionSync(() => this.markLegacyImportComplete(input.sleeperLeagueId));
       return;
     }
 
@@ -414,19 +427,26 @@ export class LeagueBrain extends DurableObject<Env> {
     // no history must retry; pending + existing rows still copy via INSERT OR IGNORE
     // so a rejected export cannot be closed out by bootstrap bible / poll data.
     if (!this.isLegacyImportPending() && this.hasHistoricalRows()) {
-      this.markLegacyImportComplete(input.sleeperLeagueId);
+      this.ctx.storage.transactionSync(() => this.markLegacyImportComplete(input.sleeperLeagueId));
       return;
     }
 
     const legacy = await this.exportLegacyStateFromSource(input.sleeperLeagueId);
-    if (this.getSetting(LEGACY_MIGRATED_FROM_KEY) || (!this.isLegacyImportPending() && this.hasHistoricalRows())) {
-      this.markLegacyImportComplete(input.sleeperLeagueId);
+    // The export await yields the DO input gate. Re-read completion markers before
+    // writing so a concurrent bootstrap cannot look "done" with a partial copy.
+    if (this.getSetting(LEGACY_MIGRATED_FROM_KEY)) {
+      this.ctx.storage.transactionSync(() => this.clearLegacyImportInFlight());
+      return;
+    }
+    if (this.getSetting(LEGACY_IMPORT_ABANDONED_KEY)) return;
+    if (!this.isLegacyImportPending() && this.hasHistoricalRows()) {
+      this.ctx.storage.transactionSync(() => this.markLegacyImportComplete(input.sleeperLeagueId));
       return;
     }
 
     // SqlStorage has no BEGIN/COMMIT. transactionSync batches the INSERT OR IGNORE
     // writes; a throw rolls them back and the next bootstrap retries. Completion
-    // clears pending in the same transaction so a partial copy cannot look "done".
+    // clears pending / failure count in the same transaction so a partial copy cannot look "done".
     this.ctx.storage.transactionSync(() => {
       if (legacy) this.insertLegacyState(legacy);
       this.markLegacyImportComplete(input.sleeperLeagueId);
@@ -442,9 +462,70 @@ export class LeagueBrain extends DurableObject<Env> {
     return this.getSetting(LEGACY_IMPORT_PENDING_KEY) !== null;
   }
 
+  private legacyImportFailureCount(): number {
+    const raw = this.getSetting(LEGACY_IMPORT_FAILURE_COUNT_KEY);
+    if (raw === null) return 0;
+    const parsed = Number.parseInt(raw, 10);
+    return Number.isInteger(parsed) && parsed > 0 ? parsed : 0;
+  }
+
+  /**
+   * Increment the consecutive-failure counter in one synchronous transaction so a
+   * concurrent waiter at the export await cannot observe a half-updated pending/abandoned pair.
+   * Skip if a sibling request already completed or abandoned the copy.
+   */
+  private recordLegacyImportRejection(leagueId: string): void {
+    let attempt = 0;
+    this.ctx.storage.transactionSync(() => {
+      if (this.getSetting(LEGACY_MIGRATED_FROM_KEY) || this.getSetting(LEGACY_IMPORT_ABANDONED_KEY)) {
+        return;
+      }
+      attempt = this.legacyImportFailureCount() + 1;
+      this.putSetting(LEGACY_IMPORT_FAILURE_COUNT_KEY, String(attempt));
+      if (attempt >= LEGACY_IMPORT_MAX_ATTEMPTS) {
+        this.deleteSetting(LEGACY_IMPORT_PENDING_KEY);
+        this.putSetting(LEGACY_IMPORT_ABANDONED_KEY, "1");
+      } else {
+        this.putSetting(LEGACY_IMPORT_PENDING_KEY, "1");
+      }
+    });
+    if (attempt === 0) return;
+    this.logLegacyImportEvent("league_brain.legacy_import_failed", leagueId, attempt);
+    if (attempt >= LEGACY_IMPORT_MAX_ATTEMPTS) {
+      this.logLegacyImportEvent("league_brain.legacy_import_abandoned", leagueId, attempt);
+    }
+  }
+
+  private logLegacyImportEvent(event: LegacyImportLogEvent, leagueId: string, attempt: number): void {
+    const payload = JSON.stringify({
+      event,
+      leagueId,
+      attempt,
+      max: LEGACY_IMPORT_MAX_ATTEMPTS,
+    });
+    switch (event) {
+      case "league_brain.legacy_import_failed":
+        console.error(payload);
+        return;
+      case "league_brain.legacy_import_abandoned":
+        console.warn(payload);
+        return;
+      default: {
+        const _exhaustive: never = event;
+        return _exhaustive;
+      }
+    }
+  }
+
+  private clearLegacyImportInFlight(): void {
+    this.deleteSetting(LEGACY_IMPORT_PENDING_KEY);
+    this.deleteSetting(LEGACY_IMPORT_FAILURE_COUNT_KEY);
+    this.deleteSetting(LEGACY_IMPORT_ABANDONED_KEY);
+  }
+
   private markLegacyImportComplete(sleeperLeagueId: string): void {
     this.putSetting(LEGACY_MIGRATED_FROM_KEY, sleeperLeagueId);
-    this.deleteSetting(LEGACY_IMPORT_PENDING_KEY);
+    this.clearLegacyImportInFlight();
   }
 
   private deleteSetting(key: string): void {

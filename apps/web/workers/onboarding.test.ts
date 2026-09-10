@@ -138,6 +138,24 @@ describe("createChallengeCode", () => {
     expect(createChallengeCode(random)).toBe("CUTMAN-ABCD");
     expect(index).toBe(4);
   });
+
+  it("selects the first character when injected random() is 0", () => {
+    const code = createChallengeCode(() => 0);
+    expect(code).toBe("CUTMAN-AAAA");
+    expect(code).not.toContain("undefined");
+  });
+
+  it("selects the last character when injected random() is just below 1", () => {
+    const code = createChallengeCode(() => 1 - Number.EPSILON);
+    expect(code).toBe("CUTMAN-9999");
+    expect(code).not.toContain("undefined");
+  });
+
+  it("selects the last character when injected random() is exactly 1", () => {
+    const code = createChallengeCode(() => 1);
+    expect(code).toBe("CUTMAN-9999");
+    expect(code).not.toContain("undefined");
+  });
 });
 
 describe("connectSleeperAccount", () => {

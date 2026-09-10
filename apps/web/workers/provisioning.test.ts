@@ -67,8 +67,8 @@ function silentBrain(): LeagueBrainHandle {
   };
 }
 
-function depsWithBrain(brain: LeagueBrainHandle, now: number): ProvisioningDeps {
-  return { db: env.DB, brain, now: () => now };
+function depsWithBrain(brain: LeagueBrainHandle, now: number, clock: () => number = Date.now): ProvisioningDeps {
+  return { db: env.DB, brain, now: () => now, clock };
 }
 
 function deferred<T = void>(): {
@@ -89,6 +89,16 @@ function useProvisionFakeTimers(): void {
   vi.useFakeTimers({
     toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"],
   });
+}
+
+function injectableClock(start = 0): { clock: () => number; elapse: (ms: number) => void } {
+  let t = start;
+  return {
+    clock: () => t,
+    elapse: (ms: number) => {
+      t += ms;
+    },
+  };
 }
 
 describe("provisionAndActivateLeague", () => {
@@ -293,7 +303,7 @@ describe("provision deadlines", () => {
 
     useProvisionFakeTimers();
     let settled = false;
-    const pending = provisionAndActivateLeague(depsWithBrain(brain, now + 1), league).then((result) => {
+    const pending = provisionAndActivateLeague(depsWithBrain(brain, now + 1, injectableClock().clock), league).then((result) => {
       settled = true;
       return result;
     });
@@ -329,7 +339,7 @@ describe("provision deadlines", () => {
 
     useProvisionFakeTimers();
     let settled = false;
-    const pending = provisionAndActivateLeague(depsWithBrain(brain, now + 1), league).then((result) => {
+    const pending = provisionAndActivateLeague(depsWithBrain(brain, now + 1, injectableClock().clock), league).then((result) => {
       settled = true;
       return result;
     });
@@ -361,7 +371,7 @@ describe("provision deadlines", () => {
     };
 
     useProvisionFakeTimers();
-    const pending = provisionAndActivateLeague(depsWithBrain(brain, now + 1), league);
+    const pending = provisionAndActivateLeague(depsWithBrain(brain, now + 1, injectableClock().clock), league);
     bootstrap.resolve();
     poll.resolve();
     await vi.advanceTimersByTimeAsync(0);
@@ -386,7 +396,7 @@ describe("provision deadlines", () => {
     };
 
     useProvisionFakeTimers();
-    const pending = provisionAndActivateLeague(depsWithBrain(brain, now + 1), league);
+    const pending = provisionAndActivateLeague(depsWithBrain(brain, now + 1, injectableClock().clock), league);
     bootstrap.resolve();
     poll.resolve();
     await vi.advanceTimersByTimeAsync(0);
@@ -405,28 +415,39 @@ describe("provision deadlines", () => {
     expect((await getLeague(env.DB, league.id))?.status).toBe("active");
   });
 
-  it("gives poll its own 20s deadline after bootstrap has already used some of the clock", async () => {
+  it("gives poll only the remaining budget after a slow bootstrap, and never exceeds 20s total", async () => {
     const now = 1_804_140_000_000;
-    const league = await seedProvisioningLeague("own_deadline", now);
+    const league = await seedProvisioningLeague("shared_deadline", now);
     const bootstrap = deferred<void>();
     const poll = deferred<void>();
+    let pollCalls = 0;
     const brain: LeagueBrainHandle = {
       bootstrap: () => bootstrap.promise,
-      poll: () => poll.promise,
+      poll: () => {
+        pollCalls += 1;
+        return poll.promise;
+      },
     };
 
+    const { clock, elapse } = injectableClock();
     useProvisionFakeTimers();
     let settled = false;
-    const pending = provisionAndActivateLeague(depsWithBrain(brain, now + 1), league).then((result) => {
+    const pending = provisionAndActivateLeague(depsWithBrain(brain, now + 1, clock), league).then((result) => {
       settled = true;
       return result;
     });
 
     await vi.advanceTimersByTimeAsync(15_000);
+    elapse(15_000);
     expect(settled).toBe(false);
+    expect(pollCalls).toBe(0);
     bootstrap.resolve();
     await vi.advanceTimersByTimeAsync(0);
-    await vi.advanceTimersByTimeAsync(PROVISION_TIMEOUT_MS - 1);
+    expect(pollCalls).toBe(1);
+    expect(settled).toBe(false);
+
+    const remainingAfterBootstrap = PROVISION_TIMEOUT_MS - 15_000;
+    await vi.advanceTimersByTimeAsync(remainingAfterBootstrap - 1);
     expect(settled).toBe(false);
 
     await vi.advanceTimersByTimeAsync(1);
@@ -436,6 +457,59 @@ describe("provision deadlines", () => {
 
     expect(result).toEqual({ ok: false, error: { kind: "provisioning_failed" } });
     expect((await getLeague(env.DB, league.id))?.provisioning_error).toBe("League setup timed out");
+  });
+
+  it("activates when a slow bootstrap leaves enough remaining time for poll", async () => {
+    const now = 1_804_145_000_000;
+    const league = await seedProvisioningLeague("remainder_success", now);
+    const bootstrap = deferred<void>();
+    const poll = deferred<void>();
+    const brain: LeagueBrainHandle = {
+      bootstrap: () => bootstrap.promise,
+      poll: () => poll.promise,
+    };
+
+    const { clock, elapse } = injectableClock();
+    useProvisionFakeTimers();
+    const pending = provisionAndActivateLeague(depsWithBrain(brain, now + 1, clock), league);
+
+    await vi.advanceTimersByTimeAsync(15_000);
+    elapse(15_000);
+    bootstrap.resolve();
+    poll.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(vi.getTimerCount()).toBe(0);
+
+    vi.useRealTimers();
+    const result = await pending;
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected ok");
+    expect(result.league.status).toBe("active");
+    expect(result.league.provisioning_error).toBeNull();
+  });
+
+  it("skips poll when bootstrap consumes the entire deadline", async () => {
+    const now = 1_804_150_000_000;
+    const league = await seedProvisioningLeague("budget_exhausted", now);
+    let elapsed = 0;
+    let pollCalls = 0;
+    const brain: LeagueBrainHandle = {
+      async bootstrap() {
+        elapsed = PROVISION_TIMEOUT_MS;
+      },
+      poll: async () => {
+        pollCalls += 1;
+      },
+    };
+
+    const result = await provisionAndActivateLeague(depsWithBrain(brain, now + 1, () => elapsed), league);
+
+    expect(pollCalls).toBe(0);
+    expect(result).toEqual({ ok: false, error: { kind: "provisioning_failed" } });
+    const stored = await getLeague(env.DB, league.id);
+    expect(stored?.status).toBe("error");
+    expect(stored?.provisioning_error).toBe("League setup timed out");
   });
 });
 
