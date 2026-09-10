@@ -933,6 +933,33 @@ describe("verifyCommissionerChallenge", () => {
     expect(persisted?.attempts).toBe(1);
   });
 
+  it("errors not_a_pilot_league_member when the challenger is no longer on the Sleeper league roster", async () => {
+    const pilotSleeperLeagueId = nextPilotLeagueId("verify_absent_member");
+    const requestNow = 1_801_250_000_000;
+    const { user, requested } = await setupOwner({
+      clerkUserId: "user_verify_absent_member",
+      email: "verify-absent-member@example.test",
+      pilotSleeperLeagueId,
+      sleeperUserId: "sleeper_v_absent",
+      username: "commish_absent",
+      teamName: "whatever",
+      isOwner: true,
+      requestNow,
+    });
+    const absentClient = createFakeSleeperClient({
+      leagueUsersById: { [pilotSleeperLeagueId]: [] },
+    });
+
+    const result = await verifyCommissionerChallenge(
+      makeDeps({ sleeperClient: absentClient, pilotSleeperLeagueId, now: () => requestNow + 1000 }),
+      { clerkUserId: user.id },
+    );
+
+    expect(result).toEqual({ ok: false, error: { kind: "not_a_pilot_league_member" } });
+    const persisted = await getVerification(env.DB, requested.verificationId);
+    expect(persisted?.attempts).toBe(1);
+  });
+
   it("accepts a case-insensitive challenge match, consumes it once, creates the league in provisioning, writes commissioner membership, and rejects replay", async () => {
     const pilotSleeperLeagueId = nextPilotLeagueId("verify5");
     const requestNow = 1_801_300_000_000;

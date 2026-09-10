@@ -27,9 +27,11 @@ import {
 } from "../app/lib/sleeper-explorer.server.ts";
 import {
   assembleExplorerBoard,
+  assembleRosters,
   assembleScoreboard,
   assembleStandings,
   describeExplorerError,
+  isRealPlayerId,
   isValidExplorerLeagueId,
   isValidExplorerUsername,
 } from "../app/lib/sleeper-explorer.ts";
@@ -150,7 +152,22 @@ describe("isValidExplorerLeagueId", () => {
   });
 });
 
-describe("assembleStandings / assembleScoreboard", () => {
+describe("isRealPlayerId", () => {
+  it("rejects null, undefined, empty string, and Sleeper placeholder 0", () => {
+    expect(isRealPlayerId(null)).toBe(false);
+    expect(isRealPlayerId(undefined)).toBe(false);
+    expect(isRealPlayerId("")).toBe(false);
+    expect(isRealPlayerId("0")).toBe(false);
+  });
+
+  it("keeps legitimate Sleeper player and defense ids", () => {
+    expect(isRealPlayerId("4046")).toBe(true);
+    expect(isRealPlayerId("PHI")).toBe(true);
+    expect(isRealPlayerId("10")).toBe(true);
+  });
+});
+
+describe("assembleStandings / assembleScoreboard / assembleRosters", () => {
   it("joins roster_id to owner display names, sorts by wins then PF, and marks abandoned seats", () => {
     const users: SleeperLeagueUser[] = [
       { user_id: "u-a", username: "a", display_name: "Alex", metadata: { team_name: "Purdy Please" } },
@@ -283,6 +300,39 @@ describe("assembleStandings / assembleScoreboard", () => {
     expect(starters[1]).toMatchObject({ playerId: "4881", position: "WR" });
   });
 
+  it("never renders placeholder 0, empty, or null ids in starters, bench, or reserve", () => {
+    const users: SleeperLeagueUser[] = [
+      { user_id: "u-a", username: "a", display_name: "Alex", metadata: { team_name: "A" } },
+    ];
+    const placeholderIds = ["0", "", null, undefined] as unknown as string[];
+    const rosters: SleeperRoster[] = [
+      {
+        roster_id: 1,
+        owner_id: "u-a",
+        starters: ["4046", ...placeholderIds, "4881"],
+        reserve: [...placeholderIds, "4984"],
+        players: ["4046", ...placeholderIds, "4881", "4984", "6794", "PHI"],
+      },
+    ];
+    const views = assembleRosters(rosters, users, [], fixturePlayers, ["QB", "RB", "WR"]);
+    const roster = views[0];
+    expect(roster).toBeDefined();
+    const groups = {
+      starters: roster?.starters.map((player) => player.playerId) ?? [],
+      bench: roster?.bench.map((player) => player.playerId) ?? [],
+      reserve: roster?.reserve.map((player) => player.playerId) ?? [],
+    };
+    for (const ids of Object.values(groups)) {
+      expect(ids).not.toContain("0");
+      expect(ids).not.toContain("");
+      expect(ids).not.toContain(null);
+      expect(ids).not.toContain(undefined);
+    }
+    expect(groups.starters).toEqual(["4046", "4881"]);
+    expect(groups.reserve).toEqual(["4984"]);
+    expect(groups.bench).toEqual(["6794", "PHI"]);
+  });
+
   it("resolves starter names from the player map on a fixture board", () => {
     const board = assembleExplorerBoard({
       league: v1FixtureLeague,
@@ -413,12 +463,14 @@ describe("lookupExplorerUser", () => {
   it("returns quota_exceeded for a stale negative user cache when origin quota is spent", async () => {
     const cache = createMemoryExplorerCache();
     const now = 1_700_000_000_000;
-    await cache.putJson("explore:user:nobody_here", {
-      fetchedAt: now - USER_TTL_MS - 1,
-      payload: null,
+    const staleAt = now - USER_TTL_MS - 1;
+    const miss = await lookupExplorerUser(makeDeps({ cache, now: () => staleAt }), {
+      username: "nobody_here",
+      clerkUserId: "clerk_1",
     });
-    const deps = makeDeps({ cache, now: () => now, quotaPerHour: 1 });
-    const first = await lookupExplorerUser(deps, {
+    expect(miss).toEqual({ kind: "not_found", username: "nobody_here" });
+
+    const first = await lookupExplorerUser(makeDeps({ cache, now: () => now, quotaPerHour: 1 }), {
       username: EXAMPLE_SLEEPER_USERNAME,
       clerkUserId: "clerk_1",
     });

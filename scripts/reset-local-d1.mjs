@@ -13,7 +13,7 @@
  * `league_members`, `league_verifications`, `sleeper_accounts`) and `ensureSchema`'s
  * purely-additive `CREATE TABLE IF NOT EXISTS` can't reconcile the old shape on its own.
  */
-import { lstat, rm } from "node:fs/promises";
+import { lstat, realpath, rm } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -76,9 +76,20 @@ async function main() {
   console.log("Next: migrations reapply automatically if you ran `pnpm run db:reset:local`.");
 }
 
+export async function isSameRealPath(leftPath, rightPath) {
+  try {
+    return (await realpath(leftPath)) === (await realpath(rightPath));
+  } catch (error) {
+    if (error && error.code === "ENOENT") {
+      return false;
+    }
+    throw error;
+  }
+}
+
 const isCliEntrypoint =
   Boolean(process.argv[1]) &&
-  path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+  (await isSameRealPath(process.argv[1], fileURLToPath(import.meta.url)));
 
 if (isCliEntrypoint) {
   await main();

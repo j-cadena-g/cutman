@@ -153,8 +153,9 @@ export function describeOnboardingError(kind: OnboardingErrorKind): string {
       return "That verification code was already used. Request a new one if you still need to verify.";
     case "pilot_league_not_found":
       // Used both when Sleeper has no league for the configured id and when retry-provision
-      // cannot find a D1 row for it. Copy is intentionally generic — no league name or id.
-      return "Cutman couldn't read this league from Sleeper right now. Try again in a moment.";
+      // cannot find a D1 row for it. Copy is intentionally source-neutral — no Sleeper, no
+      // league name or id.
+      return "Cutman couldn't find this league right now. Try again in a moment.";
     case "pilot_league_not_active":
       return "This league isn't open for members yet.";
     case "not_commissioner":

@@ -1,10 +1,10 @@
 import { listActiveLeagues, type LeagueRow } from "@cutman/db";
 import { easternParts, shouldAttemptTuesdayRecap, shouldPoll, toneOrPlayful } from "@cutman/story";
 
-/** Cap Durable Object work per cron tick. Successive ticks continue from a KV cursor. */
+/** Cap Durable Object work per cron tick. Successive ticks continue from a D1 cursor. */
 export const MAX_SCHEDULED_LEAGUES_PER_TICK = 10;
 
-/** Dedicated PLAYERS KV key; namespaced away from the NFL player map. */
+/** Dedicated app_state key for fair active-league rotation. */
 export const SCHEDULED_LEAGUE_CURSOR_KEY = "scheduled:active-leagues:cursor";
 
 export type ScheduledLeaguePage<T extends { id: string } = { id: string }> = {
@@ -94,16 +94,31 @@ async function loadScheduledLeaguePage(
   return selectScheduledLeaguePage({ forward, wrap, limit, afterId, prefixExists });
 }
 
-async function readScheduledLeagueCursor(kv: KVNamespace): Promise<string | null> {
-  return parseScheduledLeagueCursor(await kv.get(SCHEDULED_LEAGUE_CURSOR_KEY));
+async function readScheduledLeagueCursor(db: D1Database): Promise<string | null> {
+  const row = await db
+    .prepare("SELECT value FROM app_state WHERE key = ?")
+    .bind(SCHEDULED_LEAGUE_CURSOR_KEY)
+    .first<{ value: string }>();
+  return parseScheduledLeagueCursor(row?.value ?? null);
 }
 
-async function writeScheduledLeagueCursor(kv: KVNamespace, afterId: string | null): Promise<void> {
+async function writeScheduledLeagueCursor(
+  db: D1Database,
+  afterId: string | null,
+  now: number,
+): Promise<void> {
   if (afterId === null) {
-    await kv.delete(SCHEDULED_LEAGUE_CURSOR_KEY);
+    await db.prepare("DELETE FROM app_state WHERE key = ?").bind(SCHEDULED_LEAGUE_CURSOR_KEY).run();
     return;
   }
-  await kv.put(SCHEDULED_LEAGUE_CURSOR_KEY, JSON.stringify({ afterId }));
+  await db
+    .prepare(
+      `INSERT INTO app_state (key, value, updated_at)
+       VALUES (?, ?, ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+    )
+    .bind(SCHEDULED_LEAGUE_CURSOR_KEY, JSON.stringify({ afterId }), now)
+    .run();
 }
 
 export async function handleScheduled(
@@ -119,8 +134,8 @@ export async function handleScheduled(
   }
 
   // Process a bounded page of active leagues serially so a single tick never fans out
-  // unbounded Durable Object calls. The KV cursor continues fairly on the next tick.
-  const afterId = await readScheduledLeagueCursor(env.PLAYERS);
+  // unbounded Durable Object calls. The D1 cursor continues fairly on the next tick.
+  const afterId = await readScheduledLeagueCursor(env.DB);
   const page = await loadScheduledLeaguePage(env.DB, afterId, maxLeagues);
 
   let polled = 0;
@@ -147,7 +162,7 @@ export async function handleScheduled(
     }
   }
 
-  await writeScheduledLeagueCursor(env.PLAYERS, page.nextAfterId);
+  await writeScheduledLeagueCursor(env.DB, page.nextAfterId, now.getTime());
 
   if (page.hasDeferred) {
     console.warn(

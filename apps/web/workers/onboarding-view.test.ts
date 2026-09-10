@@ -349,11 +349,17 @@ describe("describeOnboardingError", () => {
 
   it("describes a missing configured league without leaking identity or blaming the role", () => {
     const message = describeOnboardingError("pilot_league_not_found");
-    expect(message).toBe(
-      "Cutman couldn't read this league from Sleeper right now. Try again in a moment.",
-    );
+    expect(message).toBe("Cutman couldn't find this league right now. Try again in a moment.");
     expect(message).not.toBe(describeOnboardingError("not_commissioner"));
     expect(message).not.toMatch(/commissioner/i);
+    expect(message).not.toMatch(/sleeper/i);
+    expect(message).not.toMatch(/\d{6,}/);
+  });
+
+  it("describes a missing league member without leaking identity or blaming ownership", () => {
+    const message = describeOnboardingError("not_a_pilot_league_member");
+    expect(message).toBe("That Sleeper account isn't in this league.");
+    expect(message).not.toBe(describeOnboardingError("not_owner"));
     expect(message).not.toMatch(/\d{6,}/);
   });
 

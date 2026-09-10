@@ -31,7 +31,6 @@ type Settings = {
 
 export type LegacyBrainState = {
   sleeperLeagueId: string;
-  settings: { name: string | null; tone: string | null };
   snapshots: Array<{
     id: number;
     week: number;
@@ -146,10 +145,6 @@ export class LeagueBrain extends DurableObject<Env> {
     if (!this.isLegacySourceFor(sleeperLeagueId)) return null;
     return {
       sleeperLeagueId,
-      settings: {
-        name: this.getSetting("name"),
-        tone: this.getSetting("tone"),
-      },
       snapshots: this.ctx.storage.sql
         .exec(
           "SELECT id, week, payload_hash AS payloadHash, payload, created_at AS createdAt FROM snapshots ORDER BY id",
@@ -482,8 +477,6 @@ export class LeagueBrain extends DurableObject<Env> {
         row.createdAt,
       );
     }
-    if (legacy.settings.name) this.putSetting("name", legacy.settings.name);
-    if (legacy.settings.tone) this.putSetting("tone", legacy.settings.tone);
   }
 
   private putSetting(key: string, value: string): void {

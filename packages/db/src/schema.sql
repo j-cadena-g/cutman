@@ -1,4 +1,5 @@
--- D1 holds Clerk identity, linked Sleeper accounts, leagues, and per-league membership / recap opt-in.
+-- D1 holds Clerk identity, linked Sleeper accounts, leagues, per-league membership / recap opt-in,
+-- and strongly consistent app_state (scheduled active-league cursor).
 -- LeagueBrain DO holds bible, timeline, snapshot, and recaps (one DO per league id).
 -- Schema is multi-league. Leagues are created during onboarding, not auto-seeded.
 -- LeagueBrain Durable Objects are keyed by internal leagues.id.
@@ -62,3 +63,10 @@ CREATE INDEX IF NOT EXISTS league_verifications_sleeper_league_id_idx ON league_
 CREATE UNIQUE INDEX IF NOT EXISTS league_verifications_pending_user_league_idx
   ON league_verifications (user_id, sleeper_league_id)
   WHERE status = 'pending';
+
+-- Strongly consistent worker key/value (scheduled active-league cursor).
+CREATE TABLE IF NOT EXISTS app_state (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);

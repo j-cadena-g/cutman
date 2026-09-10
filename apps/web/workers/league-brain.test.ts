@@ -382,7 +382,7 @@ describe("LeagueBrain legacy Durable Object migration", () => {
     return stub;
   }
 
-  it("copies snapshot, beat, bible, recap, and settings from the Sleeper-named object into a distinct internal-named object", async () => {
+  it("copies snapshot, beat, bible, and recap from the Sleeper-named object into a distinct internal-named object", async () => {
     const legacy = await seedLegacyBrain(LEGACY_SLEEPER_ID, {
       leagueId: LEGACY_SLEEPER_ID,
       sleeperLeagueId: LEGACY_SLEEPER_ID,
@@ -479,6 +479,15 @@ describe("LeagueBrain legacy Durable Object migration", () => {
         createdAt: RECAP_CREATED_AT,
       }),
     ]);
+
+    const exported = await legacy.exportLegacyState(LEGACY_SLEEPER_ID);
+    expect(exported).not.toBeNull();
+    expect(exported).not.toHaveProperty("settings");
+    expect(exported?.sleeperLeagueId).toBe(LEGACY_SLEEPER_ID);
+    expect(exported?.snapshots).toHaveLength(1);
+    expect(exported?.beats).toHaveLength(1);
+    expect(exported?.bible).toHaveLength(1);
+    expect(exported?.recaps).toHaveLength(1);
 
     const leftover = await readBrainSql(legacy);
     expect(leftover.snapshots).toHaveLength(1);

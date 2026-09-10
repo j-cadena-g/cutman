@@ -38,6 +38,11 @@ export function playerDisplayName(playerId: string, players: PlayerMap): string 
   return parts.length > 0 ? parts.join(" ") : playerId;
 }
 
+// Sleeper uses "0" as an empty-slot sentinel. Treat that, plus missing or blank ids, as not a player.
+export function isRealPlayerId(playerId: string | null | undefined): playerId is string {
+  return typeof playerId === "string" && playerId.length > 0 && playerId !== "0";
+}
+
 export function formatLeagueStatus(status: string | null | undefined): string {
   if (!status) return "Unknown";
   return status.replaceAll("_", " ");
@@ -175,7 +180,7 @@ function starterPlayers(
 ): ExplorerPlayer[] {
   const ids = starterIds ?? [];
   return ids.flatMap((playerId, index) => {
-    if (!playerId || playerId === "0") return [];
+    if (!isRealPlayerId(playerId)) return [];
     return [toExplorerPlayer(playerId, players, points, rosterPositions?.[index] ?? null)];
   });
 }
@@ -187,7 +192,8 @@ function remainingPlayers(
   points: Record<string, number> | null | undefined,
 ): ExplorerPlayer[] {
   return (playerIds ?? [])
-    .filter((playerId) => playerId && !exclude.has(playerId))
+    .filter(isRealPlayerId)
+    .filter((playerId) => !exclude.has(playerId))
     .map((playerId) => toExplorerPlayer(playerId, players, points, null));
 }
 
@@ -277,8 +283,8 @@ export function assembleRosters(
       const manager = managerForRoster(roster, owners);
       const points = pointsByRoster.get(roster.roster_id);
       const starters = starterPlayers(roster.starters, rosterPositions, players, points);
-      const starterIds = new Set((roster.starters ?? []).filter(Boolean));
-      const reserveIds = new Set((roster.reserve ?? []).filter(Boolean));
+      const starterIds = new Set((roster.starters ?? []).filter(isRealPlayerId));
+      const reserveIds = new Set((roster.reserve ?? []).filter(isRealPlayerId));
       const exclude = new Set([...starterIds, ...reserveIds]);
       return {
         ...manager,

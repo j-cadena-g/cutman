@@ -30,7 +30,7 @@ export type OnboardingDeps = {
   db: D1Database;
   sleeperClient: SleeperClient;
   // The Sleeper league id for the single configured pilot league (`PILOT_SLEEPER_LEAGUE_ID`
-  // via app/lib/v1.server.ts `pilotSleeperLeagueId`). Passed explicitly here, rather than
+  // via app/lib/pilot-league.server.ts `pilotSleeperLeagueId`). Passed explicitly here, rather than
   // read from `Env`, to keep this module a plain, testable service.
   pilotSleeperLeagueId: string;
   now: () => number;
@@ -305,6 +305,7 @@ export type VerifyCommissionerChallengeError =
   | { kind: "no_pending_challenge" }
   | { kind: "sleeper_account_mismatch" }
   | { kind: "challenge_expired" }
+  | { kind: "not_a_pilot_league_member" }
   | { kind: "not_owner" }
   | { kind: "challenge_not_found_in_team_name" }
   | { kind: "challenge_already_used" }
@@ -350,7 +351,11 @@ export async function verifyCommissionerChallenge(
   // Re-check against the *same stable Sleeper user* the challenge was issued for (already
   // confirmed above to match the currently connected account), not insertion order.
   const entry = members.find((member) => member.user_id === verification.sleeper_user_id);
-  if (!entry || !entry.is_owner) {
+  if (!entry) {
+    await recordVerificationAttempt(deps.db, { id: verification.id, now });
+    return { ok: false, error: { kind: "not_a_pilot_league_member" } };
+  }
+  if (!entry.is_owner) {
     await recordVerificationAttempt(deps.db, { id: verification.id, now });
     return { ok: false, error: { kind: "not_owner" } };
   }

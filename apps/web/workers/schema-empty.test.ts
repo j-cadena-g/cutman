@@ -35,6 +35,7 @@ describe("schema", () => {
   it("yields the expected empty final schema after 0001 then 0002", async () => {
     await ensureSchema(env.DB);
     expect(await userTables()).toEqual([
+      "app_state",
       "league_members",
       "league_verifications",
       "leagues",
@@ -48,7 +49,8 @@ describe("schema", () => {
          (SELECT COUNT(*) FROM sleeper_accounts) AS sleeper_accounts,
          (SELECT COUNT(*) FROM leagues) AS leagues,
          (SELECT COUNT(*) FROM league_members) AS league_members,
-         (SELECT COUNT(*) FROM league_verifications) AS league_verifications`,
+         (SELECT COUNT(*) FROM league_verifications) AS league_verifications,
+         (SELECT COUNT(*) FROM app_state) AS app_state`,
     ).first<Record<string, number>>();
     expect(counts).toEqual({
       users: 0,
@@ -56,6 +58,7 @@ describe("schema", () => {
       leagues: 0,
       league_members: 0,
       league_verifications: 0,
+      app_state: 0,
     });
 
     const indexes = await env.DB.prepare(

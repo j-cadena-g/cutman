@@ -16,6 +16,6 @@ interface Env {
   // Optional at the type level: runtime `pilotSleeperLeagueId` treats missing/blank as a
   // configuration error (throws), so absence is a valid Env shape. Live value comes from
   // 1Password (`Cutman (dev)` / deploy Environment); tracked wrangler templates keep a fake
-  // placeholder. Never a V1_* fallback — see app/lib/v1.server.ts `pilotSleeperLeagueId`.
+  // placeholder. Never a V1_* fallback — see app/lib/pilot-league.server.ts `pilotSleeperLeagueId`.
   PILOT_SLEEPER_LEAGUE_ID?: string;
 }

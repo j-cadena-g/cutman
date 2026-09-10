@@ -35,7 +35,26 @@ const RECAP_NOW = new Date("2026-09-08T13:00:00.000Z");
 const IDLE_NOW = new Date("2026-09-08T14:00:00.000Z");
 
 async function clearScheduledCursor(): Promise<void> {
-  await env.PLAYERS.delete(SCHEDULED_LEAGUE_CURSOR_KEY);
+  await env.DB.prepare("DELETE FROM app_state WHERE key = ?").bind(SCHEDULED_LEAGUE_CURSOR_KEY).run();
+}
+
+async function scheduledCursorValue(): Promise<string | null> {
+  const row = await env.DB
+    .prepare("SELECT value FROM app_state WHERE key = ?")
+    .bind(SCHEDULED_LEAGUE_CURSOR_KEY)
+    .first<{ value: string }>();
+  return row?.value ?? null;
+}
+
+async function putAppState(key: string, value: string, updatedAt = 1): Promise<void> {
+  await env.DB
+    .prepare(
+      `INSERT INTO app_state (key, value, updated_at)
+       VALUES (?, ?, ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+    )
+    .bind(key, value, updatedAt)
+    .run();
 }
 
 let seq = 0;
@@ -226,7 +245,12 @@ describe("handleScheduled", () => {
     expect(await settingKeys(discoveredOnlySleeperId)).toEqual([]);
     expect(await settingKeys(V1_LEAGUE_ID)).toEqual([]);
     expect("V1_LEAGUE_ID" in env).toBe(false);
-    expect(await settingKeys(env.PILOT_SLEEPER_LEAGUE_ID)).toEqual([]);
+    // Optional on Env: only assert leftover-env DO emptiness when a non-blank value is
+    // actually configured. Do not fall back to V1_LEAGUE_ID or the fixture placeholder.
+    const leftoverPilotSleeperId = env.PILOT_SLEEPER_LEAGUE_ID?.trim();
+    if (leftoverPilotSleeperId) {
+      expect(await settingKeys(leftoverPilotSleeperId)).toEqual([]);
+    }
   });
 
   it("polls every active league on Tuesday 9:00 America/New_York and publishes no recap when no week is final", async () => {
@@ -305,11 +329,11 @@ describe("handleScheduled", () => {
     }
   });
 
-  it("caps Durable Object work, persists a PLAYERS cursor, and warns once when leagues remain", async () => {
+  it("caps Durable Object work, persists a D1 cursor, and warns once when leagues remain", async () => {
     await seedLeague("cursor_a", 1_805_500_000_000, "active");
     await seedLeague("cursor_b", 1_805_500_000_100, "active");
     await seedLeague("cursor_c", 1_805_500_000_200, "active");
-    await env.PLAYERS.put("scheduled-test:keep", "1");
+    await putAppState("scheduled-test:keep", "1");
 
     const originalPoll = LeagueBrain.prototype.poll;
     const originalWarn = console.warn;
@@ -324,7 +348,8 @@ describe("handleScheduled", () => {
       expect(first.polled).toBe(2);
       expect(first.recapped).toBe(0);
 
-      const raw1 = await env.PLAYERS.get(SCHEDULED_LEAGUE_CURSOR_KEY);
+      expect(await env.PLAYERS.get(SCHEDULED_LEAGUE_CURSOR_KEY)).toBeNull();
+      const raw1 = await scheduledCursorValue();
       const cursor1 = parseScheduledLeagueCursor(raw1);
       expect(cursor1).not.toBeNull();
       expect(raw1).toBe(JSON.stringify({ afterId: cursor1 }));
@@ -339,21 +364,26 @@ describe("handleScheduled", () => {
 
       const second = await handleScheduled(env, POLL_NOW, 2);
       expect(second.polled).toBe(2);
-      const cursor2 = parseScheduledLeagueCursor(await env.PLAYERS.get(SCHEDULED_LEAGUE_CURSOR_KEY));
+      expect(await env.PLAYERS.get(SCHEDULED_LEAGUE_CURSOR_KEY)).toBeNull();
+      const cursor2 = parseScheduledLeagueCursor(await scheduledCursorValue());
       expect(cursor2).not.toBeNull();
       expect(cursor2).not.toBe(cursor1);
       expect(warnings).toHaveLength(2);
-      expect(await env.PLAYERS.get("scheduled-test:keep")).toBe("1");
+      const kept = await env.DB
+        .prepare("SELECT value FROM app_state WHERE key = ?")
+        .bind("scheduled-test:keep")
+        .first<{ value: string }>();
+      expect(kept?.value).toBe("1");
     } finally {
       LeagueBrain.prototype.poll = originalPoll;
       console.warn = originalWarn;
-      await env.PLAYERS.delete("scheduled-test:keep");
+      await env.DB.prepare("DELETE FROM app_state WHERE key = ?").bind("scheduled-test:keep").run();
     }
   });
 
-  it("ignores a corrupt PLAYERS cursor and still processes a bounded page", async () => {
+  it("ignores a corrupt D1 cursor and still processes a bounded page", async () => {
     await seedLeague("corrupt_cursor", 1_805_600_000_000, "active");
-    await env.PLAYERS.put(SCHEDULED_LEAGUE_CURSOR_KEY, "!!!corrupt");
+    await putAppState(SCHEDULED_LEAGUE_CURSOR_KEY, "!!!corrupt");
 
     const originalPoll = LeagueBrain.prototype.poll;
     const originalWarn = console.warn;
@@ -367,7 +397,8 @@ describe("handleScheduled", () => {
       const result = await handleScheduled(env, POLL_NOW, 1);
       expect(result.polled).toBe(1);
       expect(warnings).toHaveLength(1);
-      const stored = await env.PLAYERS.get(SCHEDULED_LEAGUE_CURSOR_KEY);
+      expect(await env.PLAYERS.get(SCHEDULED_LEAGUE_CURSOR_KEY)).toBeNull();
+      const stored = await scheduledCursorValue();
       expect(stored).not.toBe("!!!corrupt");
       expect(parseScheduledLeagueCursor(stored)).not.toBeNull();
     } finally {

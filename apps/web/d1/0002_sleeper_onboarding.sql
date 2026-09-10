@@ -8,8 +8,12 @@
 --   leagues.id = 'legacy_' || sleeper_league_id (stable, distinct from Sleeper snowflakes)
 --   enabled leagues -> status 'active', created_at/activated_at from enabled_at
 --   is_owner = 1 -> commissioner, else member. recap_email_opt_in copied
---   sleeper_accounts from memberships, then allowlist rows whose clerk_email matches users.email
---   username/display_name from allowlist.sleeper_username, else 'legacy_' || sleeper_user_id
+--   sleeper_accounts: one row per user. Membership identity is the sleeper_user_id from
+--   that user's most recently enabled league (leagues.enabled_at DESC). Ties break on
+--   sleeper_league_id ASC, then sleeper_user_id ASC — not lexical MIN(sleeper_user_id).
+--   Then allowlist rows whose LOWER(TRIM(clerk_email)) matches LOWER(TRIM(users.email));
+--   null clerk_email is not matched. username/display_name from allowlist.sleeper_username,
+--   else 'legacy_' || sleeper_user_id
 -- Drop allowlist and rebuilt legacy tables only after copies succeed.
 
 CREATE TABLE IF NOT EXISTS sleeper_accounts (
@@ -40,6 +44,12 @@ CREATE INDEX IF NOT EXISTS league_verifications_sleeper_league_id_idx ON league_
 CREATE UNIQUE INDEX IF NOT EXISTS league_verifications_pending_user_league_idx
   ON league_verifications (user_id, sleeper_league_id)
   WHERE status = 'pending';
+
+CREATE TABLE IF NOT EXISTS app_state (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
 
 CREATE TABLE _cutman_0002_leagues (
   id TEXT PRIMARY KEY,
@@ -91,18 +101,25 @@ INNER JOIN leagues AS l ON l.sleeper_league_id = lm.sleeper_league_id;
 
 INSERT OR IGNORE INTO sleeper_accounts (user_id, sleeper_user_id, username, display_name, updated_at)
 SELECT
-  grouped.user_id,
-  grouped.sleeper_user_id,
-  COALESCE(NULLIF(a.sleeper_username, ''), 'legacy_' || grouped.sleeper_user_id),
-  COALESCE(NULLIF(a.sleeper_username, ''), 'legacy_' || grouped.sleeper_user_id),
+  ranked.user_id,
+  ranked.sleeper_user_id,
+  COALESCE(NULLIF(a.sleeper_username, ''), 'legacy_' || ranked.sleeper_user_id),
+  COALESCE(NULLIF(a.sleeper_username, ''), 'legacy_' || ranked.sleeper_user_id),
   COALESCE(a.created_at, u.created_at)
 FROM (
-  SELECT user_id, MIN(sleeper_user_id) AS sleeper_user_id
-  FROM league_members
-  GROUP BY user_id
-) AS grouped
-INNER JOIN users AS u ON u.id = grouped.user_id
-LEFT JOIN allowlist AS a ON a.sleeper_user_id = grouped.sleeper_user_id;
+  SELECT
+    lm.user_id AS user_id,
+    lm.sleeper_user_id AS sleeper_user_id,
+    ROW_NUMBER() OVER (
+      PARTITION BY lm.user_id
+      ORDER BY l.enabled_at DESC, l.sleeper_league_id ASC, lm.sleeper_user_id ASC
+    ) AS rn
+  FROM league_members AS lm
+  INNER JOIN leagues AS l ON l.sleeper_league_id = lm.sleeper_league_id
+) AS ranked
+INNER JOIN users AS u ON u.id = ranked.user_id
+LEFT JOIN allowlist AS a ON a.sleeper_user_id = ranked.sleeper_user_id
+WHERE ranked.rn = 1;
 
 INSERT OR IGNORE INTO sleeper_accounts (user_id, sleeper_user_id, username, display_name, updated_at)
 SELECT
@@ -112,7 +129,7 @@ SELECT
   COALESCE(NULLIF(a.sleeper_username, ''), 'legacy_' || a.sleeper_user_id),
   COALESCE(a.created_at, u.created_at)
 FROM allowlist AS a
-INNER JOIN users AS u ON u.email = a.clerk_email
+INNER JOIN users AS u ON LOWER(TRIM(u.email)) = LOWER(TRIM(a.clerk_email))
 WHERE a.clerk_email IS NOT NULL;
 
 DROP TABLE league_members;

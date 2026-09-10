@@ -32,7 +32,7 @@ import { Label } from "~/components/ui/label";
 import { cloudflareEnv } from "~/lib/env";
 import { requireUser } from "~/lib/session.server";
 import { sleeperFromEnv } from "~/lib/sleeper.server";
-import { pilotSleeperLeagueId } from "~/lib/v1.server";
+import { pilotSleeperLeagueId } from "~/lib/pilot-league.server";
 import type { Route } from "./+types/onboarding";
 
 // `/onboarding`: connect one Sleeper account, discover current-season leagues, then either the
@@ -346,6 +346,7 @@ export default function Onboarding({ loaderData, actionData }: Route.ComponentPr
   const errorForIntent = (intent: string) =>
     actionData && "error" in actionData && actionData.intent === intent ? actionData.error : undefined;
   const connectError = errorForIntent("connect");
+  const setupError = errorForIntent("retry-provision") ?? errorForIntent("verify-challenge");
 
   return (
     <main className="mx-auto max-w-2xl px-6 py-16">
@@ -470,9 +471,9 @@ export default function Onboarding({ loaderData, actionData }: Route.ComponentPr
             <CardDescription>
               Something went wrong setting up this league. Try again shortly, or reach out if it keeps happening.
             </CardDescription>
-            {errorForIntent("retry-provision") ?? errorForIntent("verify-challenge") ? (
+            {setupError ? (
               <p role="alert" className="mt-3 text-sm text-danger">
-                {errorForIntent("retry-provision") ?? errorForIntent("verify-challenge")}
+                {setupError}
               </p>
             ) : null}
             {isCommissioner ? (

@@ -62,6 +62,10 @@ describe("SCHEMA_SQL", () => {
     expect(statements("-- whole line\nSELECT 1 -- inline\n; -- trailing")).toEqual(["SELECT 1"]);
   });
 
+  it("contains no -- SQL comments because ensureSchema splits on semicolons without stripping them", () => {
+    expect(SCHEMA_SQL).not.toMatch(/--/);
+  });
+
   it("matches schema.sql after stripping comments", () => {
     const packaged = readFileSync(join(here, "schema.sql"), "utf8");
     expect(statements(SCHEMA_SQL)).toEqual(statements(packaged));

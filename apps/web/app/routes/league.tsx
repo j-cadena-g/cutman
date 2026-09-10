@@ -1,6 +1,6 @@
 import { Show, SignOutButton, UserButton } from "@clerk/react-router";
 import { setLeagueTone, setRecapOptIn } from "@cutman/db";
-import { isTone, parseTone, toneBlurb, toneLabel, toneOrPlayful, TONES } from "@cutman/story";
+import { isTone, parseTone, toneBlurb, toneLabel, toneOrPlayful, TONES, type Tone } from "@cutman/story";
 import { Form, redirect } from "react-router";
 import { resolveLeagueAccess } from "~/lib/access.server";
 import { BrandNav } from "~/components/brand-nav";
@@ -90,7 +90,7 @@ export async function action(args: Route.ActionArgs) {
     // typed error — do not reverse this order. If rollback also fails, tell the commissioner the
     // live tone may be out of sync and to retry.
     const saveError = { error: "Cutman couldn't save that tone. Try again." } as const;
-    let priorTone;
+    let priorTone: Tone;
     try {
       priorTone = (await stub.getDashboard()).tone;
     } catch {

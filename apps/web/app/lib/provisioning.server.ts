@@ -24,6 +24,26 @@ export type ProvisioningDeps = {
   now: () => number;
 };
 
+export const PROVISION_TIMEOUT_MS = 20_000;
+
+// Races `operation` against a 20s timer and always clears that timer. LeagueBrain RPC cannot
+// be cancelled; a timeout still rejects here so the caller can failOrConverge. A late RPC may
+// still finish and race a peer that already activated (CAS miss → success) or leave the league
+// in error for retry.
+async function withProvisionTimeout<T>(operation: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        reject(new Error("League setup timed out"));
+      }, PROVISION_TIMEOUT_MS);
+    });
+    return await Promise.race([operation, timeout]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
 export type ProvisionLeagueError = { kind: "provisioning_failed" };
 
 export type ProvisionLeagueResult =
@@ -81,13 +101,15 @@ export async function provisionAndActivateLeague(
   }
 
   try {
-    await deps.brain.bootstrap({
-      leagueId: current.id,
-      sleeperLeagueId: current.sleeper_league_id,
-      name: current.name,
-      tone: toneOrPlayful(current.tone),
-    });
-    await deps.brain.poll();
+    await withProvisionTimeout(
+      deps.brain.bootstrap({
+        leagueId: current.id,
+        sleeperLeagueId: current.sleeper_league_id,
+        name: current.name,
+        tone: toneOrPlayful(current.tone),
+      }),
+    );
+    await withProvisionTimeout(deps.brain.poll());
   } catch (error) {
     return failOrConverge(deps, current.id, error);
   }

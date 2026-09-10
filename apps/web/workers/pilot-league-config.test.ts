@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { pilotSleeperLeagueId } from "../app/lib/v1.server.ts";
+import { pilotSleeperLeagueId } from "../app/lib/pilot-league.server.ts";
 
 function envWith(overrides: Record<string, string | undefined> = {}): Env {
   return overrides as unknown as Env;

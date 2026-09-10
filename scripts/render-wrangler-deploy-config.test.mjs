@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import {
+  isSameRealPath,
   renderWranglerConfig,
   resolveAndAssertOutputPath,
   WRANGLER_DEPLOY_OUTPUT_PATH,
@@ -180,6 +181,31 @@ describe("render-wrangler-deploy-config output path", () => {
     assert.doesNotMatch(result.stderr, /Missing CLOUDFLARE_ACCOUNT_ID/);
   });
 
+  it("rejects a symbolic link at the allowed production destination", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "cutman-wrangler-deploy-link-"));
+    const target = path.join(dir, "target.jsonc");
+    await writeFile(target, "should-not-be-overwritten");
+
+    try {
+      await withRestoredGitignoredFile(WRANGLER_DEPLOY_OUTPUT_PATH, async () => {
+        await rm(WRANGLER_DEPLOY_OUTPUT_PATH, { force: true });
+        await symlink(target, WRANGLER_DEPLOY_OUTPUT_PATH);
+        try {
+          await assert.rejects(
+            () => resolveAndAssertOutputPath(WRANGLER_DEPLOY_OUTPUT_PATH),
+            /symlink/,
+          );
+          assert.equal((await lstat(WRANGLER_DEPLOY_OUTPUT_PATH)).isSymbolicLink(), true);
+          assert.equal(await readFile(target, "utf8"), "should-not-be-overwritten");
+        } finally {
+          await rm(WRANGLER_DEPLOY_OUTPUT_PATH, { force: true });
+        }
+      });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("does not write files on a normal non-test import", async () => {
     const before = await snapshotAllowedOutputs();
     const env = {
@@ -206,6 +232,64 @@ describe("render-wrangler-deploy-config output path", () => {
     assert.equal(result.status, 0, result.stderr);
     assert.equal(result.stdout, "");
     assert.deepEqual(await snapshotAllowedOutputs(), before);
+  });
+
+  it("runs as CLI when invoked through a symlink to the script", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "cutman-wrangler-cli-link-"));
+    const linkPath = path.join(dir, "render-wrangler-deploy-config.mjs");
+    await symlink(scriptPath, linkPath);
+    try {
+      const result = spawnSync(process.execPath, [linkPath], {
+        cwd: repoRoot,
+        env: {
+          ...process.env,
+          WRANGLER_RENDER_OUTPUT: path.join(dir, ".wrangler.deploy.jsonc"),
+        },
+        encoding: "utf8",
+      });
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /Refusing to write Wrangler config/);
+      assert.doesNotMatch(result.stderr, /CLOUDFLARE_ACCOUNT_ID/);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("treats a missing argv path as not this module", async () => {
+    assert.equal(
+      await isSameRealPath("/this/path/does/not/exist.mjs", scriptPath),
+      false,
+    );
+  });
+
+  it("selects the production default when injected env omits output even if process.env points elsewhere", async () => {
+    const previousOutput = process.env.WRANGLER_RENDER_OUTPUT;
+    process.env.WRANGLER_RENDER_OUTPUT = WRANGLER_DEV_OUTPUT_PATH;
+    const env = baseEnv();
+    delete env.WRANGLER_RENDER_OUTPUT;
+
+    try {
+      await withRestoredGitignoredFile(WRANGLER_DEV_OUTPUT_PATH, async () => {
+        await withRestoredGitignoredFile(WRANGLER_DEPLOY_OUTPUT_PATH, async () => {
+          await rm(WRANGLER_DEPLOY_OUTPUT_PATH, { force: true });
+          const devBefore = await snapshotFile(WRANGLER_DEV_OUTPUT_PATH);
+          await writeRenderedWranglerConfig({ env });
+          const written = await readFile(WRANGLER_DEPLOY_OUTPUT_PATH, "utf8");
+          assert.match(
+            written,
+            new RegExp(`"PILOT_SLEEPER_LEAGUE_ID"\\s*:\\s*"${FAKE_PILOT_ID}"`),
+          );
+          assert.doesNotMatch(written, /"secrets"\s*:\s*\{/);
+          assert.deepEqual(await snapshotFile(WRANGLER_DEV_OUTPUT_PATH), devBefore);
+        });
+      });
+    } finally {
+      if (previousOutput === undefined) {
+        delete process.env.WRANGLER_RENDER_OUTPUT;
+      } else {
+        process.env.WRANGLER_RENDER_OUTPUT = previousOutput;
+      }
+    }
   });
 
   it("writes the allowed local-dev file only when writeRenderedWranglerConfig is invoked", async () => {

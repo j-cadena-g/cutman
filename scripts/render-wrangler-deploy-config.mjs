@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { lstat, mkdir, readFile, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseManifestKeys } from "./lib/parse-manifest-keys.mjs";
@@ -306,7 +306,7 @@ export async function writeRenderedWranglerConfig({
   env = process.env,
 } = {}) {
   const { outputPath, isDevConfig } = await resolveAndAssertOutputPath(
-    requestedOutputPath ?? env.WRANGLER_RENDER_OUTPUT,
+    requestedOutputPath ?? env.WRANGLER_RENDER_OUTPUT ?? null,
   );
   const template = await readFile(templatePath, "utf8");
   const secretsExample = isDevConfig
@@ -328,8 +328,19 @@ async function main() {
   await writeRenderedWranglerConfig();
 }
 
+export async function isSameRealPath(leftPath, rightPath) {
+  try {
+    return (await realpath(leftPath)) === (await realpath(rightPath));
+  } catch (error) {
+    if (error && error.code === "ENOENT") {
+      return false;
+    }
+    throw error;
+  }
+}
+
 const isCliEntrypoint =
   Boolean(process.argv[1]) &&
-  path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+  (await isSameRealPath(process.argv[1], fileURLToPath(import.meta.url)));
 
 if (isCliEntrypoint) await main();

@@ -90,7 +90,7 @@ Current Worker bindings in the public `apps/web/wrangler.jsonc` template:
 
 | Binding | Type | Purpose |
 | --- | --- | --- |
-| `DB` | D1 | Clerk users, leagues, memberships, recap opt-in |
+| `DB` | D1 | Clerk users, leagues, memberships, recap opt-in, scheduled rotation cursor |
 | `PLAYERS` | KV | NFL player map, fetched at most once per day |
 | `LEAGUE_BRAIN` | SQLite Durable Object | Snapshots, beats, bible, recaps. id = internal `leagues.id` |
 | `AI` | Workers AI | `@cf/google/gemma-4-26b-a4b-it` only |
