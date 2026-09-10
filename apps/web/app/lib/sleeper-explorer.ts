@@ -227,7 +227,8 @@ export function assembleScoreboard(
   const rostersById = new Map(rosters.map((roster) => [roster.roster_id, roster]));
   const groups = new Map<string, SleeperMatchup[]>();
   for (const matchup of matchups) {
-    const key = matchup.matchup_id === null ? `bye:${matchup.roster_id}` : `m:${matchup.matchup_id}`;
+    // `== null` is intentional: treat both null and omitted/undefined as a bye, but keep 0 as `m:0`.
+    const key = matchup.matchup_id == null ? `bye:${matchup.roster_id}` : `m:${matchup.matchup_id}`;
     const list = groups.get(key) ?? [];
     list.push(matchup);
     groups.set(key, list);

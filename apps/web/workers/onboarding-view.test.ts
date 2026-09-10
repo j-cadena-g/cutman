@@ -5,6 +5,7 @@ import {
   describeOnboardingError,
   formatChallengeCountdown,
   isStuckProvisioning,
+  STUCK_PROVISIONING_MS,
   type OnboardingErrorKind,
 } from "../app/lib/onboarding-view.ts";
 
@@ -265,13 +266,20 @@ describe("isStuckProvisioning", () => {
     expect(isStuckProvisioning(1_000, 1_000 + 120_000, 120_000)).toBe(true);
     expect(isStuckProvisioning(null, 1_000)).toBe(false);
   });
+
+  it("uses a server-provided now the same way SSR/first paint will, with no null clock", () => {
+    const startedAt = 1_700_000_000_000;
+    expect(isStuckProvisioning(startedAt, startedAt + STUCK_PROVISIONING_MS - 1)).toBe(false);
+    expect(isStuckProvisioning(startedAt, startedAt + STUCK_PROVISIONING_MS)).toBe(true);
+  });
 });
 
 describe("formatChallengeCountdown", () => {
   const now = 1_000_000;
 
-  it("returns null until the client clock has hydrated", () => {
+  it("returns null when no clock is available, and copy when given a serialized server now", () => {
     expect(formatChallengeCountdown(now + 60_000, null)).toBeNull();
+    expect(formatChallengeCountdown(now + 60_000, now)).toBe("Expires in about 1 minute.");
   });
 
   it("does not claim expiry while any time remains, even under 30 seconds", () => {
@@ -337,6 +345,16 @@ describe("describeOnboardingError", () => {
     expect(describeOnboardingError("not_commissioner")).toBe(
       "Only this league's commissioner can retry setup.",
     );
+  });
+
+  it("describes a missing configured league without leaking identity or blaming the role", () => {
+    const message = describeOnboardingError("pilot_league_not_found");
+    expect(message).toBe(
+      "Cutman couldn't read this league from Sleeper right now. Try again in a moment.",
+    );
+    expect(message).not.toBe(describeOnboardingError("not_commissioner"));
+    expect(message).not.toMatch(/commissioner/i);
+    expect(message).not.toMatch(/\d{6,}/);
   });
 
   it("gives a retryable setup-failed message without echoing internals", () => {

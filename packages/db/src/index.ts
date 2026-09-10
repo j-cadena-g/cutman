@@ -155,7 +155,10 @@ export async function listLeaguesForUser(db: D1Database, userId: string): Promis
 }
 
 export type ListActiveLeaguesOptions = {
-  /** Exclusive lower bound on `leagues.id`. Ignored when empty. */
+  /**
+   * Exclusive lower bound on `leagues.id`. Ignored when empty.
+   * Setting this orders results by `id ASC` rather than `activated_at ASC, id ASC`.
+   */
   afterId?: string;
   /** When set, results are ordered by `id ASC` and truncated to this many rows. */
   limit?: number;

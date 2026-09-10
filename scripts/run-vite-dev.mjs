@@ -17,6 +17,10 @@ import {
   formatMissingAgenticNote,
 } from "./lib/local-dev-secrets.mjs";
 import { parseManifestKeys } from "./lib/parse-manifest-keys.mjs";
+import {
+  WRANGLER_DEV_OUTPUT_PATH,
+  writeRenderedWranglerConfig,
+} from "./render-wrangler-deploy-config.mjs";
 
 const CUTMAN_DEV_PORT = 41789;
 
@@ -106,10 +110,11 @@ if (command === "vite") {
   }
 }
 
-const devWranglerConfig = path.join(webDir, ".wrangler.dev.jsonc");
-process.env.WRANGLER_RENDER_OUTPUT = devWranglerConfig;
-await import("./render-wrangler-deploy-config.mjs");
-process.env.CUTMAN_WRANGLER_CONFIG = devWranglerConfig;
+await writeRenderedWranglerConfig({
+  outputPath: WRANGLER_DEV_OUTPUT_PATH,
+  env: process.env,
+});
+process.env.CUTMAN_WRANGLER_CONFIG = WRANGLER_DEV_OUTPUT_PATH;
 
 const viteBin = path.join(repoRoot, "node_modules/vite/bin/vite.js");
 const useVite =

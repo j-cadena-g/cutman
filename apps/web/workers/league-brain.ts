@@ -20,11 +20,42 @@ import {
 } from "@cutman/story";
 import { getPlayerMap, sleeperFromEnv } from "./sleeper.ts";
 
+const LEGACY_MIGRATED_FROM_KEY = "legacyMigratedFrom";
+
 type Settings = {
   leagueId: string;
   sleeperLeagueId: string;
   name: string;
   tone: Tone;
+};
+
+export type LegacyBrainState = {
+  sleeperLeagueId: string;
+  settings: { name: string | null; tone: string | null };
+  snapshots: Array<{
+    id: number;
+    week: number;
+    payloadHash: string;
+    payload: string;
+    createdAt: number;
+  }>;
+  beats: Array<{
+    id: number;
+    kind: string;
+    copy: string;
+    facts: string;
+    week: number;
+    createdAt: number;
+  }>;
+  bible: Array<{ id: number; entry: string; createdAt: number }>;
+  recaps: Array<{
+    week: number;
+    subject: string;
+    body: string;
+    facts: string;
+    emailedAt: number | null;
+    createdAt: number;
+  }>;
 };
 
 export type Dashboard = {
@@ -92,6 +123,7 @@ export class LeagueBrain extends DurableObject<Env> {
   }
 
   async bootstrap(input: { leagueId: string; sleeperLeagueId: string; name: string; tone: Tone }): Promise<void> {
+    await this.importLegacyStateIfNeeded(input);
     this.putSetting("leagueId", input.leagueId);
     this.putSetting("sleeperLeagueId", input.sleeperLeagueId);
     this.putSetting("name", input.name);
@@ -104,6 +136,37 @@ export class LeagueBrain extends DurableObject<Env> {
         Date.now(),
       );
     }
+  }
+
+  /**
+   * Read-only RPC used by the internal-id object. Returns history only when this
+   * source still has pre-onboarding identity (`leagueId` equals the Sleeper id).
+   */
+  async exportLegacyState(sleeperLeagueId: string): Promise<LegacyBrainState | null> {
+    if (!this.isLegacySourceFor(sleeperLeagueId)) return null;
+    return {
+      sleeperLeagueId,
+      settings: {
+        name: this.getSetting("name"),
+        tone: this.getSetting("tone"),
+      },
+      snapshots: this.ctx.storage.sql
+        .exec(
+          "SELECT id, week, payload_hash AS payloadHash, payload, created_at AS createdAt FROM snapshots ORDER BY id",
+        )
+        .toArray() as LegacyBrainState["snapshots"],
+      beats: this.ctx.storage.sql
+        .exec("SELECT id, kind, copy, facts, week, created_at AS createdAt FROM beats ORDER BY id")
+        .toArray() as LegacyBrainState["beats"],
+      bible: this.ctx.storage.sql
+        .exec("SELECT id, entry, created_at AS createdAt FROM bible ORDER BY id")
+        .toArray() as LegacyBrainState["bible"],
+      recaps: this.ctx.storage.sql
+        .exec(
+          "SELECT week, subject, body, facts, emailed_at AS emailedAt, created_at AS createdAt FROM recaps ORDER BY week",
+        )
+        .toArray() as LegacyBrainState["recaps"],
+    };
   }
 
   async setTone(tone: Tone): Promise<void> {
@@ -323,6 +386,104 @@ export class LeagueBrain extends DurableObject<Env> {
       | { value: string }
       | undefined;
     return row?.value ?? null;
+  }
+
+  private async importLegacyStateIfNeeded(input: {
+    leagueId: string;
+    sleeperLeagueId: string;
+  }): Promise<void> {
+    if (this.getSetting(LEGACY_MIGRATED_FROM_KEY)) return;
+
+    const legacyId = this.env.LEAGUE_BRAIN.idFromName(input.sleeperLeagueId);
+    if (legacyId.equals(this.ctx.id) || input.leagueId === input.sleeperLeagueId) {
+      this.putSetting(LEGACY_MIGRATED_FROM_KEY, input.sleeperLeagueId);
+      return;
+    }
+
+    if (this.hasHistoricalRows()) {
+      this.putSetting(LEGACY_MIGRATED_FROM_KEY, input.sleeperLeagueId);
+      return;
+    }
+
+    const legacy = await this.env.LEAGUE_BRAIN.getByName(input.sleeperLeagueId).exportLegacyState(input.sleeperLeagueId);
+    if (this.getSetting(LEGACY_MIGRATED_FROM_KEY) || this.hasHistoricalRows()) {
+      this.putSetting(LEGACY_MIGRATED_FROM_KEY, input.sleeperLeagueId);
+      return;
+    }
+
+    // SqlStorage has no BEGIN/COMMIT. transactionSync batches the INSERT OR IGNORE
+    // writes; a throw rolls them back and the next bootstrap retries. The marker is
+    // written in the same transaction so a partial copy cannot look "done".
+    this.ctx.storage.transactionSync(() => {
+      if (legacy) this.insertLegacyState(legacy);
+      this.putSetting(LEGACY_MIGRATED_FROM_KEY, input.sleeperLeagueId);
+    });
+  }
+
+  private isLegacySourceFor(sleeperLeagueId: string): boolean {
+    const leagueId = this.getSetting("leagueId");
+    const storedSleeper = this.getSetting("sleeperLeagueId");
+    const identity = storedSleeper ?? leagueId;
+    if (!identity || identity !== sleeperLeagueId) return false;
+    // Pre-onboarding brains stored the snowflake as leagueId. Split-identity
+    // objects (internal leagueId + Sleeper id) must not export for reverse-copy.
+    return leagueId === sleeperLeagueId;
+  }
+
+  private hasHistoricalRows(): boolean {
+    const snapshot = this.ctx.storage.sql.exec("SELECT id FROM snapshots LIMIT 1").toArray();
+    if (snapshot.length > 0) return true;
+    const beat = this.ctx.storage.sql.exec("SELECT id FROM beats LIMIT 1").toArray();
+    if (beat.length > 0) return true;
+    const recap = this.ctx.storage.sql.exec("SELECT week FROM recaps LIMIT 1").toArray();
+    if (recap.length > 0) return true;
+    const bible = this.ctx.storage.sql.exec("SELECT id FROM bible LIMIT 1").toArray();
+    return bible.length > 0;
+  }
+
+  private insertLegacyState(legacy: LegacyBrainState): void {
+    for (const row of legacy.snapshots) {
+      this.ctx.storage.sql.exec(
+        "INSERT OR IGNORE INTO snapshots (id, week, payload_hash, payload, created_at) VALUES (?, ?, ?, ?, ?)",
+        row.id,
+        row.week,
+        row.payloadHash,
+        row.payload,
+        row.createdAt,
+      );
+    }
+    for (const row of legacy.beats) {
+      this.ctx.storage.sql.exec(
+        "INSERT OR IGNORE INTO beats (id, kind, copy, facts, week, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        row.id,
+        row.kind,
+        row.copy,
+        row.facts,
+        row.week,
+        row.createdAt,
+      );
+    }
+    for (const row of legacy.bible) {
+      this.ctx.storage.sql.exec(
+        "INSERT OR IGNORE INTO bible (id, entry, created_at) VALUES (?, ?, ?)",
+        row.id,
+        row.entry,
+        row.createdAt,
+      );
+    }
+    for (const row of legacy.recaps) {
+      this.ctx.storage.sql.exec(
+        "INSERT OR IGNORE INTO recaps (week, subject, body, facts, emailed_at, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        row.week,
+        row.subject,
+        row.body,
+        row.facts,
+        row.emailedAt,
+        row.createdAt,
+      );
+    }
+    if (legacy.settings.name) this.putSetting("name", legacy.settings.name);
+    if (legacy.settings.tone) this.putSetting("tone", legacy.settings.tone);
   }
 
   private putSetting(key: string, value: string): void {

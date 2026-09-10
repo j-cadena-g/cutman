@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
@@ -10,6 +10,7 @@ import {
   resolveAndAssertOutputPath,
   WRANGLER_DEPLOY_OUTPUT_PATH,
   WRANGLER_DEV_OUTPUT_PATH,
+  writeRenderedWranglerConfig,
 } from "./render-wrangler-deploy-config.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -65,6 +66,53 @@ function spawnRenderer(envOverrides = {}, outputPath) {
     env,
     encoding: "utf8",
   });
+}
+
+async function snapshotFile(filePath) {
+  try {
+    const info = await stat(filePath);
+    return {
+      exists: true,
+      mtimeMs: info.mtimeMs,
+      size: info.size,
+    };
+  } catch (error) {
+    if (error && error.code === "ENOENT") {
+      return { exists: false };
+    }
+    throw error;
+  }
+}
+
+async function snapshotAllowedOutputs() {
+  return {
+    deploy: await snapshotFile(WRANGLER_DEPLOY_OUTPUT_PATH),
+    dev: await snapshotFile(WRANGLER_DEV_OUTPUT_PATH),
+  };
+}
+
+async function withRestoredGitignoredFile(filePath, fn) {
+  let previous;
+  let existed = true;
+  try {
+    previous = await readFile(filePath);
+  } catch (error) {
+    if (error && error.code === "ENOENT") {
+      existed = false;
+    } else {
+      throw error;
+    }
+  }
+
+  try {
+    return await fn();
+  } finally {
+    if (existed) {
+      await writeFile(filePath, previous);
+    } else {
+      await rm(filePath, { force: true });
+    }
+  }
 }
 
 describe("render-wrangler-deploy-config output path", () => {
@@ -130,6 +178,62 @@ describe("render-wrangler-deploy-config output path", () => {
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /Refusing to write Wrangler config/);
     assert.doesNotMatch(result.stderr, /Missing CLOUDFLARE_ACCOUNT_ID/);
+  });
+
+  it("does not write files on a normal non-test import", async () => {
+    const before = await snapshotAllowedOutputs();
+    const env = {
+      ...process.env,
+      ...baseEnv(),
+      WRANGLER_RENDER_OUTPUT: WRANGLER_DEV_OUTPUT_PATH,
+    };
+    delete env.NODE_TEST_CONTEXT;
+
+    const result = spawnSync(
+      process.execPath,
+      [
+        "--input-type=module",
+        "-e",
+        'import "./scripts/render-wrangler-deploy-config.mjs";',
+      ],
+      {
+        cwd: repoRoot,
+        env,
+        encoding: "utf8",
+      },
+    );
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, "");
+    assert.deepEqual(await snapshotAllowedOutputs(), before);
+  });
+
+  it("writes the allowed local-dev file only when writeRenderedWranglerConfig is invoked", async () => {
+    const deployBefore = await snapshotFile(WRANGLER_DEPLOY_OUTPUT_PATH);
+
+    await withRestoredGitignoredFile(WRANGLER_DEV_OUTPUT_PATH, async () => {
+      await rm(WRANGLER_DEV_OUTPUT_PATH, { force: true });
+      await writeRenderedWranglerConfig({
+        outputPath: WRANGLER_DEV_OUTPUT_PATH,
+        env: baseEnv(),
+      });
+
+      const written = await readFile(WRANGLER_DEV_OUTPUT_PATH, "utf8");
+      assert.match(written, /"secrets"\s*:\s*\{/);
+      assert.match(
+        written,
+        new RegExp(`"PILOT_SLEEPER_LEAGUE_ID"\\s*:\\s*"${FAKE_PILOT_ID}"`),
+      );
+      await assert.rejects(
+        () =>
+          writeRenderedWranglerConfig({
+            outputPath: path.join(os.tmpdir(), ".wrangler.dev.jsonc"),
+            env: baseEnv(),
+          }),
+        /Refusing to write Wrangler config/,
+      );
+      assert.deepEqual(await snapshotFile(WRANGLER_DEPLOY_OUTPUT_PATH), deployBefore);
+    });
   });
 });
 

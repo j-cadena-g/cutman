@@ -301,13 +301,22 @@ export function renderWranglerConfig(
   return rendered;
 }
 
-async function main() {
-  const { outputPath, isDevConfig } = await resolveAndAssertOutputPath();
+export async function writeRenderedWranglerConfig({
+  outputPath: requestedOutputPath,
+  env = process.env,
+} = {}) {
+  const { outputPath, isDevConfig } = await resolveAndAssertOutputPath(
+    requestedOutputPath ?? env.WRANGLER_RENDER_OUTPUT,
+  );
   const template = await readFile(templatePath, "utf8");
   const secretsExample = isDevConfig
     ? await readFile(secretsExamplePath, "utf8")
     : "";
-  const rendered = renderWranglerConfig(template, { isDevConfig, secretsExample });
+  const rendered = renderWranglerConfig(template, {
+    isDevConfig,
+    env,
+    secretsExample,
+  });
 
   await mkdir(path.dirname(outputPath), { recursive: true });
   await writeFile(outputPath, rendered);
@@ -315,11 +324,12 @@ async function main() {
   globalThis.console.log(`Wrote ${path.relative(repoRoot, outputPath)}`);
 }
 
+async function main() {
+  await writeRenderedWranglerConfig();
+}
+
 const isCliEntrypoint =
   Boolean(process.argv[1]) &&
   path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
-const importedByTests = Boolean(process.env.NODE_TEST_CONTEXT) && !isCliEntrypoint;
 
-if (!importedByTests) {
-  await main();
-}
+if (isCliEntrypoint) await main();

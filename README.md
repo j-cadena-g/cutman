@@ -97,25 +97,31 @@ Current Worker bindings in the public `apps/web/wrangler.jsonc` template:
 | `EMAIL` | Email Service | `env.EMAIL.send` for Tuesday recaps. From-name is **Cutman** |
 | Cron | `0 * * * *` UTC | Handler uses Eastern Time: poll every 3h; recap Tuesday 9:00 |
 
-The worker applies D1 migration `0001_init.sql` (multi-league schema). Leagues are created during commissioner onboarding, not auto-seeded. Production renders require `PILOT_SLEEPER_LEAGUE_ID` so the fake placeholder from `wrangler.jsonc` cannot ship. For a CLI-managed local D1:
+The worker applies D1 migrations `0001_init.sql` (the original deployed schema) then
+`0002_sleeper_onboarding.sql` (internal league ids, sleeper accounts, verifications, and
+commissioner/member roles). Leagues are created during commissioner onboarding, not
+auto-seeded. Production renders require `PILOT_SLEEPER_LEAGUE_ID` so the fake placeholder
+from `wrangler.jsonc` cannot ship. For a CLI-managed local D1:
 
 ```bash
 pnpm run db:migrate:local
 ```
 
-If your local D1 predates the current schema (or you just want a clean slate), reset it — this
-is **local-only**: it deletes `apps/web/.wrangler/state/v3/d1` and nothing else, then reapplies
-`0001_init.sql`. It never touches remote D1.
+If your local D1 predates the current schema — including a local database that applied this
+branch's rewritten `0001` before `0002` existed — reset it. Reset is **local-only**: it
+deletes `apps/web/.wrangler/state/v3/d1` and nothing else, then reapplies `0001_init.sql` and
+`0002_sleeper_onboarding.sql`. It never touches remote D1.
 
 ```bash
 pnpm run db:reset:local
 ```
 
-An existing **remote** D1 created from the pre-onboarding `0001_init.sql` will not pick up the
-rewritten migration — Wrangler does not re-run an already-applied `0001`. `ensureSchema` is
-additive only (`CREATE TABLE/INDEX IF NOT EXISTS`), and `pnpm run db:reset:local` never touches
-remote. That remote database needs a one-time wipe/recreate (or a future `0002` migration)
-before the onboarding schema can be used there. Do not invent a destructive remote reset script.
+Remote D1 that already applied the original (legacy) `0001_init.sql` picks up
+`0002_sleeper_onboarding.sql` on the next `pnpm run deploy` / `db:migrate:remote`. No remote
+wipe is required for that legacy schema. `ensureSchema` remains additive only
+(`CREATE TABLE/INDEX IF NOT EXISTS`) and does not migrate leftover shapes at runtime.
+`pnpm run db:reset:local` never touches remote. Do not invent a destructive remote reset
+script.
 
 Generate Env types:
 

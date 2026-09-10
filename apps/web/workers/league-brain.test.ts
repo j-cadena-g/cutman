@@ -262,3 +262,277 @@ describe("LeagueBrain internal vs Sleeper identity", () => {
     ).rejects.toThrow(/not bootstrapped/i);
   });
 });
+
+describe("LeagueBrain legacy Durable Object migration", () => {
+  const LEGACY_SLEEPER_ID = "900000000000000001";
+  const INTERNAL_ID = "league_internal_migrated_1";
+  const MISMATCH_SLEEPER_NAME = "900000000000000011";
+  const MISMATCH_INTERNAL_ID = "league_internal_migrated_mismatch";
+  const OTHER_SLEEPER_ID = "900000000000000002";
+  const SNAPSHOT_CREATED_AT = 1_700_000_000_001;
+  const BEAT_CREATED_AT = 1_700_000_000_002;
+  const BIBLE_CREATED_AT = 1_700_000_000_003;
+  const RECAP_CREATED_AT = 1_700_000_000_004;
+  const RECAP_EMAILED_AT = 1_700_000_000_099;
+  const LEGACY_FACTS = JSON.stringify([
+    { kind: "trade", copy: "CeeDee changed hands", transactionId: "txn_legacy_1" },
+  ]);
+  const LEGACY_SNAPSHOT = {
+    leagueId: LEGACY_SLEEPER_ID,
+    week: 3,
+    users: fixtureUsersVerified,
+    rosters: fixtureRosters,
+    matchups: fixtureMatchupsFinal,
+    transactions: fixtureTransactions,
+  };
+
+  type BrainSql = {
+    snapshots: Array<{
+      id: number;
+      week: number;
+      payload_hash: string;
+      payload: string;
+      created_at: number;
+    }>;
+    beats: Array<{
+      id: number;
+      kind: string;
+      copy: string;
+      facts: string;
+      week: number;
+      created_at: number;
+    }>;
+    bible: Array<{ id: number; entry: string; created_at: number }>;
+    recaps: Array<{
+      week: number;
+      subject: string;
+      body: string;
+      facts: string;
+      emailed_at: number | null;
+      created_at: number;
+    }>;
+    settings: Array<{ key: string; value: string }>;
+  };
+
+  async function readBrainSql(stub: DurableObjectStub<LeagueBrain>): Promise<BrainSql> {
+    return runInDurableObject(stub, async (_instance, state) => {
+      return {
+        snapshots: state.storage.sql
+          .exec("SELECT id, week, payload_hash, payload, created_at FROM snapshots ORDER BY id")
+          .toArray() as BrainSql["snapshots"],
+        beats: state.storage.sql
+          .exec("SELECT id, kind, copy, facts, week, created_at FROM beats ORDER BY id")
+          .toArray() as BrainSql["beats"],
+        bible: state.storage.sql
+          .exec("SELECT id, entry, created_at FROM bible ORDER BY id")
+          .toArray() as BrainSql["bible"],
+        recaps: state.storage.sql
+          .exec("SELECT week, subject, body, facts, emailed_at, created_at FROM recaps ORDER BY week")
+          .toArray() as BrainSql["recaps"],
+        settings: state.storage.sql
+          .exec("SELECT key, value FROM settings ORDER BY key")
+          .toArray() as BrainSql["settings"],
+      };
+    });
+  }
+
+  async function seedLegacyBrain(name: string, identity: { leagueId: string; sleeperLeagueId: string }): Promise<DurableObjectStub<LeagueBrain>> {
+    const stub = env.LEAGUE_BRAIN.getByName(name);
+    await runInDurableObject(stub, async (instance, state) => {
+      const brain = instance as unknown as {
+        putSetting(key: string, value: string): void;
+      };
+      brain.putSetting("leagueId", identity.leagueId);
+      brain.putSetting("sleeperLeagueId", identity.sleeperLeagueId);
+      brain.putSetting("name", "Legacy League");
+      brain.putSetting("tone", "savage");
+      state.storage.sql.exec(
+        "INSERT INTO snapshots (id, week, payload_hash, payload, created_at) VALUES (?, ?, ?, ?, ?)",
+        7,
+        3,
+        "hash-legacy-snap",
+        JSON.stringify(LEGACY_SNAPSHOT),
+        SNAPSHOT_CREATED_AT,
+      );
+      state.storage.sql.exec(
+        "INSERT INTO beats (id, kind, copy, facts, week, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        4,
+        "trade",
+        "CeeDee walked so the chat could run.",
+        LEGACY_FACTS,
+        3,
+        BEAT_CREATED_AT,
+      );
+      state.storage.sql.exec(
+        "INSERT INTO bible (id, entry, created_at) VALUES (?, ?, ?)",
+        9,
+        "Week 2: the trade that split the group chat.",
+        BIBLE_CREATED_AT,
+      );
+      state.storage.sql.exec(
+        "INSERT INTO recaps (week, subject, body, facts, emailed_at, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        3,
+        "Week 3 belongs to Alex",
+        "CeeDee changed hands and the chat lost its mind.",
+        LEGACY_FACTS,
+        RECAP_EMAILED_AT,
+        RECAP_CREATED_AT,
+      );
+    });
+    return stub;
+  }
+
+  it("copies snapshot, beat, bible, recap, and settings from the Sleeper-named object into a distinct internal-named object", async () => {
+    const legacy = await seedLegacyBrain(LEGACY_SLEEPER_ID, {
+      leagueId: LEGACY_SLEEPER_ID,
+      sleeperLeagueId: LEGACY_SLEEPER_ID,
+    });
+    const next = env.LEAGUE_BRAIN.getByName(INTERNAL_ID);
+
+    await next.bootstrap({
+      leagueId: INTERNAL_ID,
+      sleeperLeagueId: LEGACY_SLEEPER_ID,
+      name: "Cutman League",
+      tone: "playful",
+    });
+    await next.bootstrap({
+      leagueId: INTERNAL_ID,
+      sleeperLeagueId: LEGACY_SLEEPER_ID,
+      name: "Cutman League",
+      tone: "playful",
+    });
+
+    const migrated = await readBrainSql(next);
+    expect(migrated.snapshots).toEqual([
+      {
+        id: 7,
+        week: 3,
+        payload_hash: "hash-legacy-snap",
+        payload: JSON.stringify(LEGACY_SNAPSHOT),
+        created_at: SNAPSHOT_CREATED_AT,
+      },
+    ]);
+    expect(migrated.beats).toEqual([
+      {
+        id: 4,
+        kind: "trade",
+        copy: "CeeDee walked so the chat could run.",
+        facts: LEGACY_FACTS,
+        week: 3,
+        created_at: BEAT_CREATED_AT,
+      },
+    ]);
+    expect(migrated.bible).toEqual([
+      {
+        id: 9,
+        entry: "Week 2: the trade that split the group chat.",
+        created_at: BIBLE_CREATED_AT,
+      },
+    ]);
+    expect(migrated.recaps).toEqual([
+      {
+        week: 3,
+        subject: "Week 3 belongs to Alex",
+        body: "CeeDee changed hands and the chat lost its mind.",
+        facts: LEGACY_FACTS,
+        emailed_at: RECAP_EMAILED_AT,
+        created_at: RECAP_CREATED_AT,
+      },
+    ]);
+    expect(migrated.settings).toEqual(
+      expect.arrayContaining([
+        { key: "leagueId", value: INTERNAL_ID },
+        { key: "sleeperLeagueId", value: LEGACY_SLEEPER_ID },
+        { key: "name", value: "Cutman League" },
+        { key: "tone", value: "playful" },
+      ]),
+    );
+
+    const dashboard = await next.getDashboard();
+    expect(dashboard.leagueId).toBe(INTERNAL_ID);
+    expect(dashboard.sleeperLeagueId).toBe(LEGACY_SLEEPER_ID);
+    expect(dashboard.name).toBe("Cutman League");
+    expect(dashboard.tone).toBe("playful");
+    expect(dashboard.week).toBe(3);
+    expect(dashboard.lastHash).toBe("hash-legacy-snap");
+    expect(dashboard.timeline).toEqual([
+      expect.objectContaining({
+        id: 4,
+        kind: "trade",
+        copy: "CeeDee walked so the chat could run.",
+        week: 3,
+        createdAt: BEAT_CREATED_AT,
+      }),
+    ]);
+    expect(dashboard.bible).toEqual([
+      expect.objectContaining({
+        id: 9,
+        entry: "Week 2: the trade that split the group chat.",
+        createdAt: BIBLE_CREATED_AT,
+      }),
+    ]);
+    expect(dashboard.recaps).toEqual([
+      expect.objectContaining({
+        week: 3,
+        subject: "Week 3 belongs to Alex",
+        body: "CeeDee changed hands and the chat lost its mind.",
+        createdAt: RECAP_CREATED_AT,
+      }),
+    ]);
+
+    const leftover = await readBrainSql(legacy);
+    expect(leftover.snapshots).toHaveLength(1);
+    expect(leftover.beats).toHaveLength(1);
+    expect(leftover.bible).toHaveLength(1);
+    expect(leftover.recaps).toEqual([
+      expect.objectContaining({ week: 3, emailed_at: RECAP_EMAILED_AT }),
+    ]);
+    expect(leftover.settings).toEqual(
+      expect.arrayContaining([
+        { key: "leagueId", value: LEGACY_SLEEPER_ID },
+        { key: "sleeperLeagueId", value: LEGACY_SLEEPER_ID },
+        { key: "name", value: "Legacy League" },
+        { key: "tone", value: "savage" },
+      ]),
+    );
+  });
+
+  it("does not import when the Sleeper-named object belongs to a different league or is empty", async () => {
+    await seedLegacyBrain(MISMATCH_SLEEPER_NAME, {
+      leagueId: "league_other_internal",
+      sleeperLeagueId: OTHER_SLEEPER_ID,
+    });
+    const mismatched = env.LEAGUE_BRAIN.getByName(MISMATCH_INTERNAL_ID);
+    await mismatched.bootstrap({
+      leagueId: MISMATCH_INTERNAL_ID,
+      sleeperLeagueId: MISMATCH_SLEEPER_NAME,
+      name: "Cutman League",
+      tone: "playful",
+    });
+
+    const ignored = await readBrainSql(mismatched);
+    expect(ignored.snapshots).toEqual([]);
+    expect(ignored.beats).toEqual([]);
+    expect(ignored.recaps).toEqual([]);
+    expect(ignored.bible).toEqual([
+      expect.objectContaining({
+        entry: "Cutman League is in the book. Tone: playful.",
+      }),
+    ]);
+    expect(await env.LEAGUE_BRAIN.getByName(MISMATCH_SLEEPER_NAME).exportLegacyState(MISMATCH_SLEEPER_NAME)).toBeNull();
+    expect(await mismatched.exportLegacyState(MISMATCH_SLEEPER_NAME)).toBeNull();
+
+    const emptyTarget = env.LEAGUE_BRAIN.getByName("league_internal_migrated_empty");
+    await emptyTarget.bootstrap({
+      leagueId: "league_internal_migrated_empty",
+      sleeperLeagueId: "900000000000000003",
+      name: "Fresh League",
+      tone: "sportscenter",
+    });
+    const empty = await readBrainSql(emptyTarget);
+    expect(empty.snapshots).toEqual([]);
+    expect(empty.beats).toEqual([]);
+    expect(empty.recaps).toEqual([]);
+    expect(empty.bible).toHaveLength(1);
+  });
+});

@@ -93,9 +93,10 @@ export const STUCK_PROVISIONING_MS = 2 * 60 * 1000;
 
 const MINUTE_MS = 60_000;
 
-// Client countdown copy for a pending commissioner challenge. `now === null` means the clock
-// has not hydrated yet (see `useClientNow`), so we render nothing rather than a flash of
-// "expired". Expiration is decided by `expiresAt <= now` — never by rounding remaining minutes
+// Client countdown copy for a pending commissioner challenge. `now === null` means no clock is
+// available yet, so we render nothing rather than a flash of "expired". The onboarding route
+// always passes a number: the serialized loader timestamp on SSR/first paint, then the client
+// clock. Expiration is decided by `expiresAt <= now` — never by rounding remaining minutes
 // down to zero while the deadline is still in the future.
 export function formatChallengeCountdown(expiresAt: number, now: number | null): string | null {
   if (now === null) return null;
@@ -151,6 +152,8 @@ export function describeOnboardingError(kind: OnboardingErrorKind): string {
     case "challenge_already_used":
       return "That verification code was already used. Request a new one if you still need to verify.";
     case "pilot_league_not_found":
+      // Used both when Sleeper has no league for the configured id and when retry-provision
+      // cannot find a D1 row for it. Copy is intentionally generic — no league name or id.
       return "Cutman couldn't read this league from Sleeper right now. Try again in a moment.";
     case "pilot_league_not_active":
       return "This league isn't open for members yet.";

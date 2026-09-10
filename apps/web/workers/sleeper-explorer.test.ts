@@ -235,6 +235,40 @@ describe("assembleStandings / assembleScoreboard", () => {
     expect(games[1]?.sides[0]?.starters[0]?.name).toBe("Jalen Hurts");
   });
 
+  it("keeps null and undefined matchup_id byes as separate single-side rosters", () => {
+    const users: SleeperLeagueUser[] = [
+      { user_id: "u-a", username: "a", display_name: "Alex", metadata: { team_name: "A" } },
+      { user_id: "u-b", username: "b", display_name: "Mina", metadata: { team_name: "B" } },
+      { user_id: "u-c", username: "c", display_name: "Devin", metadata: { team_name: "C" } },
+      { user_id: "u-d", username: "d", display_name: "Riley", metadata: { team_name: "D" } },
+      { user_id: "u-e", username: "e", display_name: "Sam", metadata: { team_name: "E" } },
+      { user_id: "u-f", username: "f", display_name: "Jules", metadata: { team_name: "F" } },
+    ];
+    const rosters: SleeperRoster[] = [
+      { roster_id: 1, owner_id: "u-a" },
+      { roster_id: 2, owner_id: "u-b" },
+      { roster_id: 3, owner_id: "u-c" },
+      { roster_id: 4, owner_id: "u-d" },
+      { roster_id: 5, owner_id: "u-e" },
+      { roster_id: 6, owner_id: "u-f" },
+    ];
+    const matchups: SleeperMatchup[] = [
+      { roster_id: 1, matchup_id: 1, points: 10, starters: ["4046"] },
+      { roster_id: 2, matchup_id: 1, points: 8, starters: ["4881"] },
+      { roster_id: 3, matchup_id: null, points: 12, starters: ["5849"] },
+      { roster_id: 4, matchup_id: null, points: 9, starters: ["4988"] },
+      { roster_id: 5, matchup_id: undefined, points: 7, starters: ["6794"] } as unknown as SleeperMatchup,
+      { roster_id: 6, matchup_id: undefined, points: 5, starters: ["4035"] } as unknown as SleeperMatchup,
+    ];
+    const games = assembleScoreboard(rosters, users, matchups, fixturePlayers);
+    expect(games).toHaveLength(5);
+    expect(games[0]?.matchupId).toBe(1);
+    expect(games[0]?.sides.map((side) => side.teamName)).toEqual(["A", "B"]);
+    const byes = games.slice(1);
+    expect(byes.every((game) => game.matchupId === null)).toBe(true);
+    expect(byes.map((game) => game.sides.map((side) => side.rosterId))).toEqual([[3], [4], [5], [6]]);
+  });
+
   it("skips Sleeper empty-slot sentinel 0 without shifting later roster positions", () => {
     const users: SleeperLeagueUser[] = [
       { user_id: "u-a", username: "a", display_name: "Alex", metadata: { team_name: "A" } },

@@ -121,6 +121,9 @@ export async function loader(args: Route.LoaderArgs) {
     step,
     isCommissioner: membership?.role === "commissioner",
     provisioningStartedAt: league?.status === "provisioning" ? league.created_at : null,
+    // Serialized into SSR HTML and reused as the first client `now`, so countdown/retry markup
+    // matches on hydrate. Not a league identifier.
+    nowMs: Date.now(),
   };
 }
 
@@ -160,7 +163,9 @@ export async function action(args: Route.ActionArgs) {
 
   if (intent === "retry-provision") {
     const league = await getLeagueBySleeperId(env.DB, deps.pilotSleeperLeagueId);
-    if (!league) return { intent, error: describeOnboardingError("not_commissioner") };
+    // Missing D1 row is "configured league not found", not a role check — `not_commissioner`
+    // would tell a non-commissioner story. Reuse `pilot_league_not_found` (generic copy, no id).
+    if (!league) return { intent, error: describeOnboardingError("pilot_league_not_found") };
     const membership = await getLeagueMember(env.DB, league.id, user.id);
     const result = await retryProvisionAndActivateLeague(provisioningDepsFromEnv(env, league.id), {
       league,
@@ -219,8 +224,10 @@ function railStepFor(step: PilotLeagueStep): 1 | 2 | 3 {
   return 3;
 }
 
-function useClientNow(intervalMs: number): number | null {
-  const [now, setNow] = useState<number | null>(null);
+// `initialNow` is the loader's serialized timestamp so SSR and the first client render match.
+// After mount, replace it with the live client clock immediately, then every `intervalMs`.
+function useClientNow(intervalMs: number, initialNow: number): number {
+  const [now, setNow] = useState(initialNow);
   useEffect(() => {
     setNow(Date.now());
     const id = window.setInterval(() => setNow(Date.now()), intervalMs);
@@ -236,14 +243,16 @@ function ChallengeLabel({
   challenge,
   expiresAt,
   attempts,
+  initialNow,
   error,
 }: {
   challenge: string;
   expiresAt: number;
   attempts: number;
+  initialNow: number;
   error?: string;
 }) {
-  const now = useClientNow(15_000);
+  const now = useClientNow(15_000, initialNow);
   const countdown = formatChallengeCountdown(expiresAt, now);
   return (
     <Card className="border-2 border-dashed border-flag/50 bg-ink/40">
@@ -289,15 +298,17 @@ function ProvisioningCard({
   leagueName,
   isCommissioner,
   startedAt,
+  initialNow,
   error,
 }: {
   leagueName: string | null;
   isCommissioner: boolean;
   startedAt: number | null;
+  initialNow: number;
   error?: string;
 }) {
-  const now = useClientNow(15_000);
-  const stuck = now !== null && isStuckProvisioning(startedAt, now);
+  const now = useClientNow(15_000, initialNow);
+  const stuck = isStuckProvisioning(startedAt, now);
 
   return (
     <Card>
@@ -322,8 +333,15 @@ function ProvisioningCard({
 }
 
 export default function Onboarding({ loaderData, actionData }: Route.ComponentProps) {
-  const { sleeperUsername, pilotLeagueName, comingSoonLeagues, step, isCommissioner, provisioningStartedAt } =
-    loaderData;
+  const {
+    sleeperUsername,
+    pilotLeagueName,
+    comingSoonLeagues,
+    step,
+    isCommissioner,
+    provisioningStartedAt,
+    nowMs,
+  } = loaderData;
   const current = railStepFor(step);
   const errorForIntent = (intent: string) =>
     actionData && "error" in actionData && actionData.intent === intent ? actionData.error : undefined;
@@ -421,6 +439,7 @@ export default function Onboarding({ loaderData, actionData }: Route.ComponentPr
             challenge={step.challenge}
             expiresAt={step.expiresAt}
             attempts={step.attempts}
+            initialNow={nowMs}
             error={errorForIntent("verify-challenge") ?? errorForIntent("request-challenge")}
           />
         ) : null}
@@ -440,6 +459,7 @@ export default function Onboarding({ loaderData, actionData }: Route.ComponentPr
             leagueName={pilotLeagueName}
             isCommissioner={isCommissioner}
             startedAt={provisioningStartedAt}
+            initialNow={nowMs}
             error={errorForIntent("retry-provision")}
           />
         ) : null}
