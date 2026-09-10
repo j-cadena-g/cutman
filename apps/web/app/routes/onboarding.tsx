@@ -218,6 +218,16 @@ function railStepFor(step: PilotLeagueStep): 1 | 2 | 3 {
   return 3;
 }
 
+function useClientNow(intervalMs: number): number | null {
+  const [now, setNow] = useState<number | null>(null);
+  useEffect(() => {
+    setNow(Date.now());
+    const id = window.setInterval(() => setNow(Date.now()), intervalMs);
+    return () => window.clearInterval(id);
+  }, [intervalMs]);
+  return now;
+}
+
 // The signature element: the commissioner challenge rendered like a detachable roster label —
 // the code up top (the part you'd "tear off" and paste into Sleeper), a perforated divider, then
 // plain instructions underneath.
@@ -232,12 +242,7 @@ function ChallengeLabel({
   attempts: number;
   error?: string;
 }) {
-  const [now, setNow] = useState<number | null>(null);
-  useEffect(() => {
-    setNow(Date.now());
-    const id = window.setInterval(() => setNow(Date.now()), 15_000);
-    return () => window.clearInterval(id);
-  }, []);
+  const now = useClientNow(15_000);
   const minutesLeft = now === null ? null : Math.max(0, Math.round((expiresAt - now) / 60000));
   return (
     <Card className="border-2 border-dashed border-flag/50 bg-ink/40">
@@ -294,12 +299,7 @@ function ProvisioningCard({
   startedAt: number | null;
   error?: string;
 }) {
-  const [now, setNow] = useState<number | null>(null);
-  useEffect(() => {
-    setNow(Date.now());
-    const id = window.setInterval(() => setNow(Date.now()), 15_000);
-    return () => window.clearInterval(id);
-  }, []);
+  const now = useClientNow(15_000);
   const stuck = now !== null && isStuckProvisioning(startedAt, now);
 
   return (

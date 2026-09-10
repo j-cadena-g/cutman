@@ -85,16 +85,33 @@ export async function action(args: Route.ActionArgs) {
     const tone = parseTone(toneRaw);
     const stub = env.LEAGUE_BRAIN.get(env.LEAGUE_BRAIN.idFromName(access.league.id));
     // Dashboard reads LeagueBrain state, so the Durable Object is updated first; D1 persistence
-    // follows. Either failure returns the typed error — do not reverse this order.
+    // follows. Read the live DO tone before mutating so a D1 failure can restore it (do not assume
+    // D1 is already in sync). A read/setTone/D1 failure, or a successful rollback, returns the
+    // typed error — do not reverse this order. If rollback also fails, tell the commissioner the
+    // live tone may be out of sync and to retry.
+    const saveError = { error: "Cutman couldn't save that tone. Try again." } as const;
+    let priorTone;
+    try {
+      priorTone = (await stub.getDashboard()).tone;
+    } catch {
+      return saveError;
+    }
     try {
       await stub.setTone(tone);
     } catch {
-      return { error: "Cutman couldn't save that tone. Try again." };
+      return saveError;
     }
     try {
       await setLeagueTone(env.DB, access.league.id, tone);
     } catch {
-      return { error: "Cutman couldn't save that tone. Try again." };
+      try {
+        await stub.setTone(priorTone);
+      } catch {
+        return {
+          error: "Cutman updated the live tone but couldn't save it. Try again so they stay in sync.",
+        };
+      }
+      return saveError;
     }
     return { ok: "tone" };
   }

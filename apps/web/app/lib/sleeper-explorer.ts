@@ -207,7 +207,9 @@ export function assembleStandings(
     };
   });
   rows.sort((left, right) => {
-    if (right.wins !== left.wins) return right.wins - left.wins;
+    const leftScore = left.wins * 2 + left.ties;
+    const rightScore = right.wins * 2 + right.ties;
+    if (rightScore !== leftScore) return rightScore - leftScore;
     if (right.pointsFor !== left.pointsFor) return right.pointsFor - left.pointsFor;
     return left.rosterId - right.rosterId;
   });

@@ -167,6 +167,49 @@ describe("assembleStandings / assembleScoreboard", () => {
     expect(standings[1]).toMatchObject({ teamName: "Purdy Please", displayName: "Alex", wins: 2 });
   });
 
+  it("ranks 5-0-2 above 5-1-0 because each tie is half a win", () => {
+    const users: SleeperLeagueUser[] = [
+      { user_id: "u-a", username: "a", display_name: "Alex", metadata: { team_name: "Tied twice" } },
+      { user_id: "u-b", username: "b", display_name: "Mina", metadata: { team_name: "One loss" } },
+    ];
+    const rosters: SleeperRoster[] = [
+      { roster_id: 1, owner_id: "u-b", settings: { wins: 5, losses: 1, ties: 0, fpts: 900 } },
+      { roster_id: 2, owner_id: "u-a", settings: { wins: 5, losses: 0, ties: 2, fpts: 100 } },
+    ];
+    const standings = assembleStandings(rosters, users);
+    expect(standings.map((row) => row.rosterId)).toEqual([2, 1]);
+    expect(standings[0]).toMatchObject({
+      teamName: "Tied twice",
+      wins: 5,
+      losses: 0,
+      ties: 2,
+      pointsFor: 100,
+    });
+    expect(standings[1]).toMatchObject({
+      teamName: "One loss",
+      wins: 5,
+      losses: 1,
+      ties: 0,
+      pointsFor: 900,
+    });
+  });
+
+  it("breaks equal record-score with pointsFor, then rosterId", () => {
+    const users: SleeperLeagueUser[] = [];
+    const rosters: SleeperRoster[] = [
+      { roster_id: 3, owner_id: null, settings: { wins: 4, losses: 1, ties: 2, fpts: 200 } },
+      { roster_id: 1, owner_id: null, settings: { wins: 5, losses: 2, ties: 0, fpts: 200 } },
+      { roster_id: 2, owner_id: null, settings: { wins: 5, losses: 2, ties: 0, fpts: 300 } },
+    ];
+    const standings = assembleStandings(rosters, users);
+    expect(standings.map((row) => row.rosterId)).toEqual([2, 1, 3]);
+    expect(standings.map((row) => ({ wins: row.wins, ties: row.ties, pointsFor: row.pointsFor }))).toEqual([
+      { wins: 5, ties: 0, pointsFor: 300 },
+      { wins: 5, ties: 0, pointsFor: 200 },
+      { wins: 4, ties: 2, pointsFor: 200 },
+    ]);
+  });
+
   it("pairs matchup rows by matchup_id and keeps byes as a single side", () => {
     const users: SleeperLeagueUser[] = [
       { user_id: "u-a", username: "a", display_name: "Alex", metadata: { team_name: "A" } },
