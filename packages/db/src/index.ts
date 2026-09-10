@@ -154,9 +154,47 @@ export async function listLeaguesForUser(db: D1Database, userId: string): Promis
   return result.results;
 }
 
-export async function listActiveLeagues(db: D1Database): Promise<LeagueRow[]> {
+export type ListActiveLeaguesOptions = {
+  /** Exclusive lower bound on `leagues.id`. Ignored when empty. */
+  afterId?: string;
+  /** When set, results are ordered by `id ASC` and truncated to this many rows. */
+  limit?: number;
+};
+
+export async function listActiveLeagues(
+  db: D1Database,
+  options?: ListActiveLeaguesOptions,
+): Promise<LeagueRow[]> {
+  const afterId = options?.afterId?.trim() ? options.afterId.trim() : undefined;
+  const limit = options?.limit;
+
+  if (afterId === undefined && limit === undefined) {
+    const result = await db
+      .prepare("SELECT * FROM leagues WHERE status = 'active' ORDER BY activated_at ASC, id ASC")
+      .all<LeagueRow>();
+    return result.results;
+  }
+
+  if (limit !== undefined && (!Number.isInteger(limit) || limit < 1)) {
+    throw new Error("listActiveLeagues limit must be a positive integer");
+  }
+
+  const clauses = ["status = 'active'"];
+  const params: unknown[] = [];
+  if (afterId !== undefined) {
+    clauses.push("id > ?");
+    params.push(afterId);
+  }
+
+  let sql = `SELECT * FROM leagues WHERE ${clauses.join(" AND ")} ORDER BY id ASC`;
+  if (limit !== undefined) {
+    sql += " LIMIT ?";
+    params.push(limit);
+  }
+
   const result = await db
-    .prepare("SELECT * FROM leagues WHERE status = 'active' ORDER BY activated_at ASC, id ASC")
+    .prepare(sql)
+    .bind(...params)
     .all<LeagueRow>();
   return result.results;
 }

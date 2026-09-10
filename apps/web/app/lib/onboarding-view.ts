@@ -91,6 +91,19 @@ export function computePilotLeagueStep(input: {
 
 export const STUCK_PROVISIONING_MS = 2 * 60 * 1000;
 
+const MINUTE_MS = 60_000;
+
+// Client countdown copy for a pending commissioner challenge. `now === null` means the clock
+// has not hydrated yet (see `useClientNow`), so we render nothing rather than a flash of
+// "expired". Expiration is decided by `expiresAt <= now` — never by rounding remaining minutes
+// down to zero while the deadline is still in the future.
+export function formatChallengeCountdown(expiresAt: number, now: number | null): string | null {
+  if (now === null) return null;
+  if (expiresAt <= now) return "This code just expired — request a new one below.";
+  const minutesLeft = Math.ceil((expiresAt - now) / MINUTE_MS);
+  return `Expires in about ${minutesLeft} minute${minutesLeft === 1 ? "" : "s"}.`;
+}
+
 export function isStuckProvisioning(
   startedAt: number | null,
   now: number,

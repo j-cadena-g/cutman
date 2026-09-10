@@ -375,6 +375,81 @@ describe("lookupExplorerUser", () => {
     const second = await lookupExplorerUser(deps, { username: "mina", clerkUserId: "clerk_1" });
     expect(second.kind).toBe("quota_exceeded");
   });
+
+  it("returns quota_exceeded for a stale negative user cache when origin quota is spent", async () => {
+    const cache = createMemoryExplorerCache();
+    const now = 1_700_000_000_000;
+    await cache.putJson("explore:user:nobody_here", {
+      fetchedAt: now - USER_TTL_MS - 1,
+      payload: null,
+    });
+    const deps = makeDeps({ cache, now: () => now, quotaPerHour: 1 });
+    const first = await lookupExplorerUser(deps, {
+      username: EXAMPLE_SLEEPER_USERNAME,
+      clerkUserId: "clerk_1",
+    });
+    expect(first.kind).toBe("ok");
+
+    const { client, calls } = countingClient();
+    const stale = await lookupExplorerUser(
+      makeDeps({ sleeper: client, cache, now: () => now, quotaPerHour: 1 }),
+      { username: "nobody_here", clerkUserId: "clerk_1" },
+    );
+    expect(stale).toEqual({ kind: "quota_exceeded" });
+    expect(calls.getUser).toBe(0);
+  });
+
+  it("returns rate_limited when a stale negative user cache meets a 429", async () => {
+    const cache = createMemoryExplorerCache();
+    let now = 1_700_000_000_000;
+    const first = await lookupExplorerUser(makeDeps({ cache, now: () => now }), {
+      username: "nobody_here",
+      clerkUserId: "clerk_1",
+    });
+    expect(first).toEqual({ kind: "not_found", username: "nobody_here" });
+
+    now += USER_TTL_MS + 1;
+    const sleeper = createFixtureClient();
+    const blocked: SleeperClient = {
+      ...sleeper,
+      async getUser() {
+        throw new SleeperRequestError("/user/nobody_here", 429);
+      },
+    };
+    const { client, calls } = countingClient(blocked);
+    const result = await lookupExplorerUser(makeDeps({ sleeper: client, cache, now: () => now }), {
+      username: "nobody_here",
+      clerkUserId: "clerk_1",
+    });
+    expect(result).toEqual({ kind: "rate_limited" });
+    expect(calls.getUser).toBe(1);
+  });
+
+  it("returns unavailable when a stale negative user cache meets an origin failure", async () => {
+    const cache = createMemoryExplorerCache();
+    let now = 1_700_000_000_000;
+    const first = await lookupExplorerUser(makeDeps({ cache, now: () => now }), {
+      username: "nobody_here",
+      clerkUserId: "clerk_1",
+    });
+    expect(first).toEqual({ kind: "not_found", username: "nobody_here" });
+
+    now += USER_TTL_MS + 1;
+    const sleeper = createFixtureClient();
+    const blocked: SleeperClient = {
+      ...sleeper,
+      async getUser() {
+        throw new Error("origin down");
+      },
+    };
+    const { client, calls } = countingClient(blocked);
+    const result = await lookupExplorerUser(makeDeps({ sleeper: client, cache, now: () => now }), {
+      username: "nobody_here",
+      clerkUserId: "clerk_1",
+    });
+    expect(result).toEqual({ kind: "unavailable" });
+    expect(calls.getUser).toBe(1);
+  });
 });
 
 describe("lookupExplorerBoard", () => {

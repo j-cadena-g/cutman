@@ -10,10 +10,16 @@ import {
 } from "@cutman/db";
 import { V1_LEAGUE_ID } from "@cutman/sleeper";
 import { easternParts, shouldAttemptTuesdayRecap, shouldPoll } from "@cutman/story";
-import { beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { getDashboardOrNull } from "../app/lib/dashboard.ts";
 import { LeagueBrain } from "./league-brain.ts";
-import { handleScheduled } from "./scheduled.ts";
+import {
+  handleScheduled,
+  MAX_SCHEDULED_LEAGUES_PER_TICK,
+  parseScheduledLeagueCursor,
+  SCHEDULED_LEAGUE_CURSOR_KEY,
+  selectScheduledLeaguePage,
+} from "./scheduled.ts";
 
 type D1Migration = { name: string; queries: string[] };
 
@@ -27,6 +33,10 @@ const POLL_NOW = new Date("2026-09-09T07:00:00.000Z");
 const RECAP_NOW = new Date("2026-09-08T13:00:00.000Z");
 // Tuesday 10:00 America/New_York — neither.
 const IDLE_NOW = new Date("2026-09-08T14:00:00.000Z");
+
+async function clearScheduledCursor(): Promise<void> {
+  await env.PLAYERS.delete(SCHEDULED_LEAGUE_CURSOR_KEY);
+}
 
 let seq = 0;
 async function seedLeague(
@@ -57,7 +67,123 @@ async function settingKeys(name: string): Promise<string[]> {
   return rows.map((row) => row.key);
 }
 
+describe("selectScheduledLeaguePage", () => {
+  it("bounds work to the named limit and marks leftover leagues deferred", () => {
+    const page = selectScheduledLeaguePage({
+      forward: [{ id: "a" }, { id: "b" }, { id: "c" }, { id: "d" }, { id: "e" }],
+      wrap: [],
+      limit: 2,
+      afterId: null,
+    });
+    expect(page.leagues.map((league) => league.id)).toEqual(["a", "b"]);
+    expect(page.nextAfterId).toBe("b");
+    expect(page.hasDeferred).toBe(true);
+  });
+
+  it("continues from the cursor in deterministic id order", () => {
+    const page = selectScheduledLeaguePage({
+      forward: [{ id: "c" }, { id: "d" }, { id: "e" }],
+      wrap: [],
+      limit: 2,
+      afterId: "b",
+    });
+    expect(page.leagues.map((league) => league.id)).toEqual(["c", "d"]);
+    expect(page.nextAfterId).toBe("d");
+    expect(page.hasDeferred).toBe(true);
+  });
+
+  it("wraps to the start to fill remaining capacity without duplicates", () => {
+    const page = selectScheduledLeaguePage({
+      forward: [{ id: "e" }],
+      wrap: [{ id: "a" }, { id: "b" }, { id: "c" }, { id: "d" }, { id: "e" }],
+      limit: 3,
+      afterId: "d",
+    });
+    expect(page.leagues.map((league) => league.id)).toEqual(["e", "a", "b"]);
+    expect(page.nextAfterId).toBe("b");
+    expect(page.hasDeferred).toBe(true);
+  });
+
+  it("rotates fairly across ticks and returns to earlier ids after a wrap", () => {
+    const limit = 2;
+    const tick1 = selectScheduledLeaguePage({
+      forward: [{ id: "a" }, { id: "b" }, { id: "c" }],
+      wrap: [],
+      limit,
+      afterId: null,
+    });
+    expect(tick1.leagues.map((league) => league.id)).toEqual(["a", "b"]);
+    expect(tick1.nextAfterId).toBe("b");
+    expect(tick1.hasDeferred).toBe(true);
+
+    const tick2 = selectScheduledLeaguePage({
+      forward: [{ id: "c" }, { id: "d" }],
+      wrap: [],
+      limit,
+      afterId: tick1.nextAfterId,
+      prefixExists: true,
+    });
+    expect(tick2.leagues.map((league) => league.id)).toEqual(["c", "d"]);
+    expect(tick2.nextAfterId).toBe("d");
+    expect(tick2.hasDeferred).toBe(true);
+
+    const tick3 = selectScheduledLeaguePage({
+      forward: [],
+      wrap: [{ id: "a" }, { id: "b" }, { id: "c" }],
+      limit,
+      afterId: tick2.nextAfterId,
+    });
+    expect(tick3.leagues.map((league) => league.id)).toEqual(["a", "b"]);
+    expect(tick3.nextAfterId).toBe("b");
+    expect(tick3.hasDeferred).toBe(true);
+  });
+
+  it("wraps without deferring when remaining unique leagues fit in the page", () => {
+    const page = selectScheduledLeaguePage({
+      forward: [{ id: "c" }],
+      wrap: [{ id: "a" }, { id: "b" }, { id: "c" }],
+      limit: 3,
+      afterId: "b",
+    });
+    expect(page.leagues.map((league) => league.id)).toEqual(["c", "a", "b"]);
+    expect(page.nextAfterId).toBe("b");
+    expect(page.hasDeferred).toBe(false);
+  });
+
+  it("processes a single pilot league in one tick without deferring", () => {
+    const page = selectScheduledLeaguePage({
+      forward: [{ id: "pilot" }],
+      wrap: [],
+      limit: MAX_SCHEDULED_LEAGUES_PER_TICK,
+      afterId: null,
+    });
+    expect(page.leagues.map((league) => league.id)).toEqual(["pilot"]);
+    expect(page.nextAfterId).toBe("pilot");
+    expect(page.hasDeferred).toBe(false);
+  });
+});
+
+describe("parseScheduledLeagueCursor", () => {
+  it("treats missing and corrupt cursor values as the start of the list", () => {
+    expect(parseScheduledLeagueCursor(null)).toBeNull();
+    expect(parseScheduledLeagueCursor("")).toBeNull();
+    expect(parseScheduledLeagueCursor("not-json")).toBeNull();
+    expect(parseScheduledLeagueCursor("[]")).toBeNull();
+    expect(parseScheduledLeagueCursor("{\"afterId\":1}")).toBeNull();
+    expect(parseScheduledLeagueCursor("{\"afterId\":\"\"}")).toBeNull();
+    expect(parseScheduledLeagueCursor("{\"afterId\":\"league_next\"}")).toBe("league_next");
+  });
+});
+
 describe("handleScheduled", () => {
+  beforeEach(async () => {
+    await clearScheduledCursor();
+  });
+
+  afterEach(async () => {
+    await clearScheduledCursor();
+  });
+
   it("uses poll/recap windows in America/New_York", () => {
     expect(shouldPoll(easternParts(POLL_NOW))).toBe(true);
     expect(shouldAttemptTuesdayRecap(easternParts(POLL_NOW))).toBe(false);
@@ -81,9 +207,10 @@ describe("handleScheduled", () => {
     const errored = await seedLeague("errored", now + 300, "error");
     const discoveredOnlySleeperId = "sleeper_discovered_only_never_inserted";
 
-    const result = await handleScheduled(env, POLL_NOW);
+    const activeCount = (await listActiveLeagues(env.DB)).length;
+    const result = await handleScheduled(env, POLL_NOW, activeCount);
 
-    expect(result.polled).toBe((await listActiveLeagues(env.DB)).length);
+    expect(result.polled).toBe(activeCount);
     expect(result.recapped).toBe(0);
 
     for (const league of [first, second]) {
@@ -106,9 +233,9 @@ describe("handleScheduled", () => {
     const now = 1_805_200_000_000;
     const league = await seedLeague("recap_active", now, "active");
 
-    const result = await handleScheduled(env, RECAP_NOW);
-
     const activeCount = (await listActiveLeagues(env.DB)).length;
+    const result = await handleScheduled(env, RECAP_NOW, activeCount);
+
     expect(result.polled).toBe(activeCount);
     expect(result.recapped).toBe(0);
     const dashboard = await env.LEAGUE_BRAIN.getByName(league.id).getDashboard();
@@ -134,9 +261,10 @@ describe("handleScheduled", () => {
     };
 
     try {
-      const first = await handleScheduled(env, RECAP_NOW);
+      const activeCount = (await listActiveLeagues(env.DB)).length;
+      const first = await handleScheduled(env, RECAP_NOW, activeCount);
       expect(first.recapped).toBe(1);
-      const second = await handleScheduled(env, RECAP_NOW);
+      const second = await handleScheduled(env, RECAP_NOW, activeCount);
       expect(second.recapped).toBe(0);
     } finally {
       LeagueBrain.prototype.attemptRecap = originalAttemptRecap;
@@ -163,8 +291,8 @@ describe("handleScheduled", () => {
     };
 
     try {
-      const result = await handleScheduled(env, POLL_NOW);
       const activeCount = (await listActiveLeagues(env.DB)).length;
+      const result = await handleScheduled(env, POLL_NOW, activeCount);
       expect(result.polled).toBe(activeCount - 1);
       expect(errors).toHaveLength(1);
       const survived = await env.LEAGUE_BRAIN.getByName(surviving.id).getDashboard();
@@ -174,6 +302,77 @@ describe("handleScheduled", () => {
     } finally {
       LeagueBrain.prototype.poll = originalPoll;
       console.error = originalError;
+    }
+  });
+
+  it("caps Durable Object work, persists a PLAYERS cursor, and warns once when leagues remain", async () => {
+    await seedLeague("cursor_a", 1_805_500_000_000, "active");
+    await seedLeague("cursor_b", 1_805_500_000_100, "active");
+    await seedLeague("cursor_c", 1_805_500_000_200, "active");
+    await env.PLAYERS.put("scheduled-test:keep", "1");
+
+    const originalPoll = LeagueBrain.prototype.poll;
+    const originalWarn = console.warn;
+    const warnings: unknown[][] = [];
+    LeagueBrain.prototype.poll = async () => ({ wroteBeat: false, hash: "test", facts: 0 });
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args);
+    };
+
+    try {
+      const first = await handleScheduled(env, POLL_NOW, 2);
+      expect(first.polled).toBe(2);
+      expect(first.recapped).toBe(0);
+
+      const raw1 = await env.PLAYERS.get(SCHEDULED_LEAGUE_CURSOR_KEY);
+      const cursor1 = parseScheduledLeagueCursor(raw1);
+      expect(cursor1).not.toBeNull();
+      expect(raw1).toBe(JSON.stringify({ afterId: cursor1 }));
+      expect(warnings).toHaveLength(1);
+      const payload = JSON.parse(String(warnings[0]?.[0])) as Record<string, unknown>;
+      expect(payload).toEqual({
+        event: "scheduled.leagues.deferred",
+        processed: 2,
+        limit: 2,
+      });
+      expect(JSON.stringify(payload).toLowerCase()).not.toContain("sleeper");
+
+      const second = await handleScheduled(env, POLL_NOW, 2);
+      expect(second.polled).toBe(2);
+      const cursor2 = parseScheduledLeagueCursor(await env.PLAYERS.get(SCHEDULED_LEAGUE_CURSOR_KEY));
+      expect(cursor2).not.toBeNull();
+      expect(cursor2).not.toBe(cursor1);
+      expect(warnings).toHaveLength(2);
+      expect(await env.PLAYERS.get("scheduled-test:keep")).toBe("1");
+    } finally {
+      LeagueBrain.prototype.poll = originalPoll;
+      console.warn = originalWarn;
+      await env.PLAYERS.delete("scheduled-test:keep");
+    }
+  });
+
+  it("ignores a corrupt PLAYERS cursor and still processes a bounded page", async () => {
+    await seedLeague("corrupt_cursor", 1_805_600_000_000, "active");
+    await env.PLAYERS.put(SCHEDULED_LEAGUE_CURSOR_KEY, "!!!corrupt");
+
+    const originalPoll = LeagueBrain.prototype.poll;
+    const originalWarn = console.warn;
+    const warnings: unknown[][] = [];
+    LeagueBrain.prototype.poll = async () => ({ wroteBeat: false, hash: "test", facts: 0 });
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args);
+    };
+
+    try {
+      const result = await handleScheduled(env, POLL_NOW, 1);
+      expect(result.polled).toBe(1);
+      expect(warnings).toHaveLength(1);
+      const stored = await env.PLAYERS.get(SCHEDULED_LEAGUE_CURSOR_KEY);
+      expect(stored).not.toBe("!!!corrupt");
+      expect(parseScheduledLeagueCursor(stored)).not.toBeNull();
+    } finally {
+      LeagueBrain.prototype.poll = originalPoll;
+      console.warn = originalWarn;
     }
   });
 });

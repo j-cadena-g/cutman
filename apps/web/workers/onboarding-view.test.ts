@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   computePilotLeagueStep,
   describeOnboardingError,
+  formatChallengeCountdown,
   isStuckProvisioning,
   type OnboardingErrorKind,
 } from "../app/lib/onboarding-view.ts";
@@ -266,6 +267,30 @@ describe("isStuckProvisioning", () => {
   });
 });
 
+describe("formatChallengeCountdown", () => {
+  const now = 1_000_000;
+
+  it("returns null until the client clock has hydrated", () => {
+    expect(formatChallengeCountdown(now + 60_000, null)).toBeNull();
+  });
+
+  it("does not claim expiry while any time remains, even under 30 seconds", () => {
+    expect(formatChallengeCountdown(now + 1, now)).toBe("Expires in about 1 minute.");
+    expect(formatChallengeCountdown(now + 29_999, now)).toBe("Expires in about 1 minute.");
+    expect(formatChallengeCountdown(now + 60_000, now)).toBe("Expires in about 1 minute.");
+  });
+
+  it("ceils remaining minutes and pluralizes after the first minute", () => {
+    expect(formatChallengeCountdown(now + 60_001, now)).toBe("Expires in about 2 minutes.");
+    expect(formatChallengeCountdown(now + 120_000, now)).toBe("Expires in about 2 minutes.");
+  });
+
+  it("shows the expired message only at or after the deadline", () => {
+    expect(formatChallengeCountdown(now, now)).toBe("This code just expired — request a new one below.");
+    expect(formatChallengeCountdown(now - 1, now)).toBe("This code just expired — request a new one below.");
+  });
+});
+
 describe("describeOnboardingError", () => {
   const allKinds: Record<OnboardingErrorKind, true> = {
     invalid_username: true,
@@ -297,6 +322,7 @@ describe("describeOnboardingError", () => {
     }
     expect(new Set(messages).size).toBe(messages.length);
     expect("banana").not.toMatch(forbiddenMarkers);
+    expect(`D1_ERROR: near "SELECT"`).toMatch(forbiddenMarkers);
   });
 
   it("gives clear expiry guidance for an expired challenge", () => {

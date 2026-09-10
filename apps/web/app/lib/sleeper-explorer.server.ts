@@ -209,7 +209,7 @@ function staleUserResult(
   season: string,
   week: number,
 ): ExplorerUserResult | null {
-  if (userCached && userCached.payload === null) return { kind: "not_found", username };
+  if (userCached?.fresh && userCached.payload === null) return { kind: "not_found", username };
   if (userCached?.payload && leaguesCached) {
     return {
       kind: "ok",

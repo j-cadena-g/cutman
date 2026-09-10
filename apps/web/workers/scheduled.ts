@@ -1,7 +1,116 @@
-import { listActiveLeagues } from "@cutman/db";
+import { listActiveLeagues, type LeagueRow } from "@cutman/db";
 import { easternParts, shouldAttemptTuesdayRecap, shouldPoll, toneOrPlayful } from "@cutman/story";
 
-export async function handleScheduled(env: Env, now = new Date()): Promise<{ polled: number; recapped: number }> {
+/** Cap Durable Object work per cron tick. Successive ticks continue from a KV cursor. */
+export const MAX_SCHEDULED_LEAGUES_PER_TICK = 10;
+
+/** Dedicated PLAYERS KV key; namespaced away from the NFL player map. */
+export const SCHEDULED_LEAGUE_CURSOR_KEY = "scheduled:active-leagues:cursor";
+
+export type ScheduledLeaguePage<T extends { id: string } = { id: string }> = {
+  leagues: T[];
+  nextAfterId: string | null;
+  hasDeferred: boolean;
+};
+
+export function parseScheduledLeagueCursor(raw: string | null): string | null {
+  if (!raw) return null;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    const afterId = (parsed as { afterId?: unknown }).afterId;
+    if (typeof afterId !== "string") return null;
+    const trimmed = afterId.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  } catch {
+    return null;
+  }
+}
+
+export function selectScheduledLeaguePage<T extends { id: string }>(input: {
+  forward: T[];
+  wrap: T[];
+  limit: number;
+  afterId: string | null;
+  prefixExists?: boolean;
+}): ScheduledLeaguePage<T> {
+  const { forward, wrap, afterId } = input;
+  const limit = input.limit;
+  if (!Number.isInteger(limit) || limit < 1) {
+    throw new Error("scheduled league page limit must be a positive integer");
+  }
+
+  const hasMoreForward = forward.length > limit;
+  const forwardTaken = forward.slice(0, limit);
+
+  if (forwardTaken.length === limit) {
+    return {
+      leagues: forwardTaken,
+      nextAfterId: forwardTaken[forwardTaken.length - 1]?.id ?? null,
+      hasDeferred: hasMoreForward || Boolean(input.prefixExists),
+    };
+  }
+
+  if (afterId === null) {
+    const last = forwardTaken[forwardTaken.length - 1];
+    return {
+      leagues: forwardTaken,
+      nextAfterId: last?.id ?? null,
+      hasDeferred: false,
+    };
+  }
+
+  const selectedIds = new Set(forwardTaken.map((league) => league.id));
+  const wrapUnique = wrap.filter((league) => !selectedIds.has(league.id));
+  const remaining = limit - forwardTaken.length;
+  const wrapTaken = wrapUnique.slice(0, remaining);
+  const leagues = [...forwardTaken, ...wrapTaken];
+  const last = leagues[leagues.length - 1];
+  return {
+    leagues,
+    nextAfterId: last?.id ?? null,
+    hasDeferred: wrapUnique.length > remaining,
+  };
+}
+
+async function loadScheduledLeaguePage(
+  db: D1Database,
+  afterId: string | null,
+  limit: number,
+): Promise<ScheduledLeaguePage<LeagueRow>> {
+  const forward = await listActiveLeagues(db, {
+    ...(afterId ? { afterId } : {}),
+    limit: limit + 1,
+  });
+  const remaining = Math.max(0, limit - Math.min(forward.length, limit));
+  let wrap: LeagueRow[] = [];
+  let prefixExists = false;
+  if (remaining > 0 && afterId) {
+    wrap = await listActiveLeagues(db, { limit: remaining + 1 });
+  } else if (remaining === 0 && afterId && forward.length <= limit) {
+    const first = await listActiveLeagues(db, { limit: 1 });
+    prefixExists = Boolean(first[0] && first[0].id <= afterId);
+  }
+  return selectScheduledLeaguePage({ forward, wrap, limit, afterId, prefixExists });
+}
+
+async function readScheduledLeagueCursor(kv: KVNamespace): Promise<string | null> {
+  return parseScheduledLeagueCursor(await kv.get(SCHEDULED_LEAGUE_CURSOR_KEY));
+}
+
+async function writeScheduledLeagueCursor(kv: KVNamespace, afterId: string | null): Promise<void> {
+  if (afterId === null) {
+    await kv.delete(SCHEDULED_LEAGUE_CURSOR_KEY);
+    return;
+  }
+  await kv.put(SCHEDULED_LEAGUE_CURSOR_KEY, JSON.stringify({ afterId }));
+}
+
+export async function handleScheduled(
+  env: Env,
+  now = new Date(),
+  maxLeagues = MAX_SCHEDULED_LEAGUES_PER_TICK,
+): Promise<{ polled: number; recapped: number }> {
   const parts = easternParts(now);
   const poll = shouldPoll(parts);
   const recap = shouldAttemptTuesdayRecap(parts);
@@ -9,12 +118,14 @@ export async function handleScheduled(env: Env, now = new Date()): Promise<{ pol
     return { polled: 0, recapped: 0 };
   }
 
-  // Process active leagues serially so a single tick never fans out unbounded Durable Object
-  // calls. Add bounded concurrency before multi-league rollout.
-  const leagues = await listActiveLeagues(env.DB);
+  // Process a bounded page of active leagues serially so a single tick never fans out
+  // unbounded Durable Object calls. The KV cursor continues fairly on the next tick.
+  const afterId = await readScheduledLeagueCursor(env.PLAYERS);
+  const page = await loadScheduledLeaguePage(env.DB, afterId, maxLeagues);
+
   let polled = 0;
   let recapped = 0;
-  for (const league of leagues) {
+  for (const league of page.leagues) {
     try {
       const stub = env.LEAGUE_BRAIN.get(env.LEAGUE_BRAIN.idFromName(league.id));
       await stub.bootstrap({
@@ -35,5 +146,18 @@ export async function handleScheduled(env: Env, now = new Date()): Promise<{ pol
       console.error(`scheduled tick failed for league ${league.id}`, error);
     }
   }
+
+  await writeScheduledLeagueCursor(env.PLAYERS, page.nextAfterId);
+
+  if (page.hasDeferred) {
+    console.warn(
+      JSON.stringify({
+        event: "scheduled.leagues.deferred",
+        processed: page.leagues.length,
+        limit: maxLeagues,
+      }),
+    );
+  }
+
   return { polled, recapped };
 }

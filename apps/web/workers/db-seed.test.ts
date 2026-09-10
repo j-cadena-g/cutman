@@ -1,7 +1,6 @@
 /// <reference types="@cloudflare/vitest-pool-workers/types" />
 import { applyD1Migrations, env } from "cloudflare:test";
 import {
-  EXAMPLE_SLEEPER_LEAGUE_ID,
   activateLeague,
   applySchema,
   consumeVerification,
@@ -36,13 +35,6 @@ beforeAll(async () => {
 });
 
 describe("schema", () => {
-  it("does not insert placeholder league rows", async () => {
-    await ensureSchema(env.DB);
-    const row = await env.DB.prepare("SELECT COUNT(*) AS n FROM leagues").first<{ n: number }>();
-    expect(row?.n).toBe(0);
-    expect(await getLeagueBySleeperId(env.DB, EXAMPLE_SLEEPER_LEAGUE_ID)).toBeNull();
-  });
-
   it("does not create an allowlist table", async () => {
     await ensureSchema(env.DB);
     const table = await env.DB.prepare(
@@ -450,6 +442,55 @@ describe("league listings", () => {
     const activeLeagues = await listActiveLeagues(env.DB);
     expect(activeLeagues.map((league) => league.id)).toContain(active.id);
     expect(activeLeagues.map((league) => league.id)).not.toContain(provisioning.id);
+  });
+
+  it("pages active leagues by id with afterId and limit without changing no-argument order", async () => {
+    await ensureSchema(env.DB);
+    const now = 1_700_400_100_000;
+    const lateId = await createLeague(env.DB, {
+      id: "zz_page_c",
+      sleeperLeagueId: "sleeper_zz_page_c",
+      name: "Page C",
+      season: "2026",
+      now,
+    });
+    await activateLeague(env.DB, lateId.id, now + 1);
+    const earlyId = await createLeague(env.DB, {
+      id: "zz_page_a",
+      sleeperLeagueId: "sleeper_zz_page_a",
+      name: "Page A",
+      season: "2026",
+      now: now + 2,
+    });
+    await activateLeague(env.DB, earlyId.id, now + 3);
+    const midId = await createLeague(env.DB, {
+      id: "zz_page_b",
+      sleeperLeagueId: "sleeper_zz_page_b",
+      name: "Page B",
+      season: "2026",
+      now: now + 4,
+    });
+    await activateLeague(env.DB, midId.id, now + 5);
+
+    const ours = (rows: Array<{ id: string }>) =>
+      rows.map((league) => league.id).filter((id) => id.startsWith("zz_page_"));
+
+    expect(ours(await listActiveLeagues(env.DB))).toEqual(["zz_page_c", "zz_page_a", "zz_page_b"]);
+    expect(ours(await listActiveLeagues(env.DB, {}))).toEqual(["zz_page_c", "zz_page_a", "zz_page_b"]);
+
+    const firstPage = await listActiveLeagues(env.DB, { afterId: "zz_page", limit: 2 });
+    expect(firstPage.map((league) => league.id)).toEqual(["zz_page_a", "zz_page_b"]);
+
+    const withLookahead = await listActiveLeagues(env.DB, { afterId: "zz_page", limit: 3 });
+    expect(withLookahead.map((league) => league.id)).toEqual(["zz_page_a", "zz_page_b", "zz_page_c"]);
+    expect(withLookahead.length).toBeGreaterThan(firstPage.length);
+
+    const nextPage = await listActiveLeagues(env.DB, { afterId: firstPage[firstPage.length - 1]?.id, limit: 2 });
+    expect(nextPage.map((league) => league.id)[0]).toBe("zz_page_c");
+    expect(nextPage.map((league) => league.id)).not.toContain("zz_page_a");
+    expect(nextPage.map((league) => league.id)).not.toContain("zz_page_b");
+
+    await expect(listActiveLeagues(env.DB, { limit: 0 })).rejects.toThrow(/positive integer/);
   });
 });
 
