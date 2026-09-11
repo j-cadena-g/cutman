@@ -58,7 +58,11 @@ export function createMemoryExplorerCache(store = new Map<string, string>()): Ex
     async getJson<T>(key: string): Promise<T | null> {
       const raw = store.get(key);
       if (!raw) return null;
-      return JSON.parse(raw) as T;
+      try {
+        return JSON.parse(raw) as T;
+      } catch {
+        return null;
+      }
     },
     async putJson(key: string, value: unknown, _options?: { expirationTtl?: number }): Promise<void> {
       store.set(key, JSON.stringify(value));

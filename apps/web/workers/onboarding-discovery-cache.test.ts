@@ -14,6 +14,7 @@ import {
   onboardingDiscoveryKvExpirationTtlSeconds,
   onboardingDiscoveryRefreshRequested,
   parseRequestSearchParams,
+  shouldStripOnboardingRefreshQuery,
   type OnboardingDiscoveryCacheDeps,
 } from "../app/lib/onboarding-discovery-cache.server.ts";
 import type { DiscoverLeaguesResult, DiscoveredLeague } from "../app/lib/onboarding.server.ts";
@@ -203,6 +204,15 @@ describe("parseRequestSearchParams / onboardingDiscoveryRefreshRequested", () =>
   it("treats a malformed URL as no refresh instead of throwing", () => {
     expect(onboardingDiscoveryRefreshRequested({ url: "http://[invalid" })).toBe(false);
     expect(parseRequestSearchParams("http://[invalid").toString()).toBe("");
+  });
+});
+
+describe("shouldStripOnboardingRefreshQuery", () => {
+  it("strips only when refresh was requested and the loader is staying on onboarding", () => {
+    expect(shouldStripOnboardingRefreshQuery({ refresh: true, redirectingToLeague: false })).toBe(true);
+    expect(shouldStripOnboardingRefreshQuery({ refresh: true, redirectingToLeague: true })).toBe(false);
+    expect(shouldStripOnboardingRefreshQuery({ refresh: false, redirectingToLeague: false })).toBe(false);
+    expect(shouldStripOnboardingRefreshQuery({ refresh: false, redirectingToLeague: true })).toBe(false);
   });
 });
 
@@ -569,6 +579,57 @@ describe("forced refresh origin quota", () => {
         pendingVerification: null,
       }),
     ).toEqual({ kind: "discovery_unavailable" });
+  });
+
+  it("charges 1 on a forced refresh then later default loads (redirected GET / form revalidation) do not consume again", async () => {
+    const recorded = recordingCache();
+    const store = new Map<string, ExplorerOriginQuotaRow>();
+    const quota = createMemoryExplorerOriginQuota(store);
+    const origin = countingRefreshOrigin(quota, CLERK_A);
+
+    const first = countingDiscover(SUCCESS);
+    const refreshResult = await loadCachedOnboardingDiscovery(
+      makeDeps({
+        cache: recorded.cache,
+        discover: first.discover,
+        tryConsumeRefreshOrigin: origin.tryConsumeRefreshOrigin,
+      }),
+      { clerkUserId: CLERK_A, sleeperUserId: SLEEPER_A, refresh: true },
+    );
+    expect(refreshResult).toEqual(SUCCESS);
+    expect(first.calls.n).toBe(1);
+    expect(origin.calls.n).toBe(1);
+    expect(memoryUsed(store, CLERK_A, FIXED_NOW)).toBe(1);
+
+    // Loader then strips `?refresh=1` via shouldStripOnboardingRefreshQuery. The redirected GET
+    // to `/onboarding` and a later connect/join form revalidation both run this default path.
+    const second = countingDiscover(REFRESHED_SUCCESS);
+    const redirectedGet = await loadCachedOnboardingDiscovery(
+      makeDeps({
+        cache: recorded.cache,
+        discover: second.discover,
+        tryConsumeRefreshOrigin: origin.tryConsumeRefreshOrigin,
+      }),
+      { clerkUserId: CLERK_A, sleeperUserId: SLEEPER_A },
+    );
+    expect(redirectedGet).toEqual(SUCCESS);
+    expect(second.calls.n).toBe(0);
+    expect(origin.calls.n).toBe(1);
+    expect(memoryUsed(store, CLERK_A, FIXED_NOW)).toBe(1);
+
+    const third = countingDiscover(REFRESHED_SUCCESS);
+    const formRevalidation = await loadCachedOnboardingDiscovery(
+      makeDeps({
+        cache: recorded.cache,
+        discover: third.discover,
+        tryConsumeRefreshOrigin: origin.tryConsumeRefreshOrigin,
+      }),
+      { clerkUserId: CLERK_A, sleeperUserId: SLEEPER_A },
+    );
+    expect(formRevalidation).toEqual(SUCCESS);
+    expect(third.calls.n).toBe(0);
+    expect(origin.calls.n).toBe(1);
+    expect(memoryUsed(store, CLERK_A, FIXED_NOW)).toBe(1);
   });
 
   it("runs discover and consumes 1 when a refresh has remaining origin quota", async () => {

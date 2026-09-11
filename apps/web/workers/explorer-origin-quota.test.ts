@@ -226,6 +226,14 @@ describe("explorer origin quota contract", () => {
 });
 
 describe("d1 explorer origin quota metadata and concurrency", () => {
+  it("rejects a first charge above the limit with meta.changes === 0", async () => {
+    const clerkUserId = `meta_first_${crypto.randomUUID()}`;
+    const rejected = await runConsumeSql({ clerkUserId, charge: 6, now: FIXED_NOW, limit: 5 });
+    expect(rejected.changes).toBe(0);
+    expect(await usedOnD1(clerkUserId, FIXED_NOW)).toBe(0);
+    expect(await rowCountOnD1(clerkUserId)).toBe(0);
+  });
+
   it("accepts from meta.changes === 1 and ignores rows_written as the success signal", async () => {
     const clerkUserId = `meta_${crypto.randomUUID()}`;
     const accepted = await runConsumeSql({ clerkUserId, charge: 2, now: FIXED_NOW, limit: 3 });

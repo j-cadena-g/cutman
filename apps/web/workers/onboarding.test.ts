@@ -1488,7 +1488,7 @@ describe("verifyCommissionerChallenge", () => {
       pilotSleeperLeagueId,
       sleeperUserId: "sleeper_cas_used",
       username: "commish_cas_used",
-      teamName: `Team ${"placeholder"}`,
+      teamName: "Team placeholder",
       isOwner: true,
       requestNow,
     });

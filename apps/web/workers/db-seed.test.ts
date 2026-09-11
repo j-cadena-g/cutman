@@ -490,10 +490,10 @@ describe("league listings", () => {
     expect(ours(await listActiveLeagues(env.DB, {}))).toEqual(["zz_page_c", "zz_page_a", "zz_page_b"]);
 
     const firstPage = await listActiveLeagues(env.DB, { afterId: "zz_page", limit: 2 });
-    expect(firstPage.map((league) => league.id)).toEqual(["zz_page_a", "zz_page_b"]);
+    expect(ours(firstPage)).toEqual(["zz_page_a", "zz_page_b"]);
 
     const withLookahead = await listActiveLeagues(env.DB, { afterId: "zz_page", limit: 3 });
-    expect(withLookahead.map((league) => league.id)).toEqual(["zz_page_a", "zz_page_b", "zz_page_c"]);
+    expect(ours(withLookahead)).toEqual(["zz_page_a", "zz_page_b", "zz_page_c"]);
     expect(withLookahead.length).toBeGreaterThan(firstPage.length);
 
     const nextPage = await listActiveLeagues(env.DB, { afterId: firstPage[firstPage.length - 1]?.id, limit: 2 });

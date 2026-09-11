@@ -585,6 +585,226 @@ describe("handleScheduled", () => {
     }
   });
 
+  it("continues polling when recap backlog enrollment throws during the Tuesday recap window", async () => {
+    const now = 1_805_052_000_000;
+    const league = await seedLeague("enroll_throw_recap", now, "active");
+    await setCursorBeforeLeague(league.id);
+
+    const polledIds: string[] = [];
+    const originalPoll = LeagueBrain.prototype.poll;
+    const originalError = console.error;
+    const errors: unknown[][] = [];
+    LeagueBrain.prototype.poll = async function (this: LeagueBrain) {
+      const dashboard = await this.getDashboard();
+      polledIds.push(dashboard.leagueId);
+      return { wroteBeat: false, hash: "test", facts: 0 };
+    };
+    console.error = (...args: unknown[]) => {
+      errors.push(args);
+    };
+
+    const originalPrepare = env.DB.prepare.bind(env.DB);
+    let enrollIntercepts = 0;
+    const wrappedDb = new Proxy(env.DB, {
+      get(target, prop, receiver) {
+        if (prop === "prepare") {
+          return (query: string) => {
+            const statement = originalPrepare(query);
+            if (
+              !query.includes("INSERT INTO recap_attempt_backlog") ||
+              !query.includes("ON CONFLICT")
+            ) {
+              return statement;
+            }
+            return overridePreparedBindRun(statement, async () => {
+              enrollIntercepts += 1;
+              throw new Error("enroll boom");
+            });
+          };
+        }
+        const value = Reflect.get(target, prop, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const scheduledEnv = new Proxy(env, {
+      get(target, prop, receiver) {
+        if (prop === "DB") return wrappedDb;
+        return Reflect.get(target, prop, receiver);
+      },
+    }) as Env;
+
+    try {
+      const result = await handleScheduled(scheduledEnv, RECAP_NOW, 1);
+      expect(enrollIntercepts).toBe(1);
+      expect(result.polled).toBe(1);
+      expect(result.recapped).toBe(0);
+      expect(polledIds).toContain(league.id);
+      expect(errors).toHaveLength(1);
+      const payload = JSON.parse(String(errors[0]?.[0])) as Record<string, unknown>;
+      expect(payload).toEqual({ event: "scheduled.league.failed", reason: "error" });
+      const serialized = JSON.stringify(errors);
+      expect(serialized).not.toContain(league.id);
+      expect(serialized).not.toContain("enroll boom");
+      expect(await recapEnrollmentState()).toBeNull();
+      expect(await backlogCount(RECAP_WEEK_KEY)).toBe(0);
+      expect(await scheduledCursorValue()).toBe(JSON.stringify({ afterId: league.id }));
+    } finally {
+      LeagueBrain.prototype.poll = originalPoll;
+      console.error = originalError;
+    }
+  });
+
+  it("continues the tick when recap backlog enrollment throws on the idle continue-enrollment path", async () => {
+    const now = 1_805_053_000_000;
+    const league = await seedLeague("enroll_throw_idle", now, "active");
+    await putAppState(
+      SCHEDULED_RECAP_ENROLLMENT_KEY,
+      JSON.stringify({ weekKey: RECAP_WEEK_KEY, afterId: null, complete: false }),
+    );
+
+    const polledIds: string[] = [];
+    const originalPoll = LeagueBrain.prototype.poll;
+    const originalError = console.error;
+    const errors: unknown[][] = [];
+    LeagueBrain.prototype.poll = async function (this: LeagueBrain) {
+      const dashboard = await this.getDashboard();
+      polledIds.push(dashboard.leagueId);
+      return { wroteBeat: false, hash: "test", facts: 0 };
+    };
+    console.error = (...args: unknown[]) => {
+      errors.push(args);
+    };
+
+    const originalPrepare = env.DB.prepare.bind(env.DB);
+    let enrollIntercepts = 0;
+    const wrappedDb = new Proxy(env.DB, {
+      get(target, prop, receiver) {
+        if (prop === "prepare") {
+          return (query: string) => {
+            const statement = originalPrepare(query);
+            if (
+              !query.includes("INSERT INTO recap_attempt_backlog") ||
+              !query.includes("ON CONFLICT")
+            ) {
+              return statement;
+            }
+            return overridePreparedBindRun(statement, async () => {
+              enrollIntercepts += 1;
+              throw new Error("enroll boom");
+            });
+          };
+        }
+        const value = Reflect.get(target, prop, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const scheduledEnv = new Proxy(env, {
+      get(target, prop, receiver) {
+        if (prop === "DB") return wrappedDb;
+        return Reflect.get(target, prop, receiver);
+      },
+    }) as Env;
+
+    try {
+      const result = await handleScheduled(scheduledEnv, IDLE_NOW, 1);
+      expect(enrollIntercepts).toBe(1);
+      expect(result).toEqual({ polled: 0, recapped: 0 });
+      expect(polledIds).toHaveLength(0);
+      expect(errors).toHaveLength(1);
+      const payload = JSON.parse(String(errors[0]?.[0])) as Record<string, unknown>;
+      expect(payload).toEqual({ event: "scheduled.league.failed", reason: "error" });
+      const serialized = JSON.stringify(errors);
+      expect(serialized).not.toContain(league.id);
+      expect(serialized).not.toContain("enroll boom");
+      expect(await recapEnrollmentState()).toEqual({
+        weekKey: RECAP_WEEK_KEY,
+        afterId: null,
+        complete: false,
+      });
+      expect(await backlogCount(RECAP_WEEK_KEY)).toBe(0);
+    } finally {
+      LeagueBrain.prototype.poll = originalPoll;
+      console.error = originalError;
+    }
+  });
+
+  it("continues polling when recap backlog enrollment throws on the poll-hour continue-enrollment path", async () => {
+    const now = 1_805_054_000_000;
+    const league = await seedLeague("enroll_throw_poll", now, "active");
+    await setCursorBeforeLeague(league.id);
+    await putAppState(
+      SCHEDULED_RECAP_ENROLLMENT_KEY,
+      JSON.stringify({ weekKey: RECAP_WEEK_KEY, afterId: null, complete: false }),
+    );
+
+    const polledIds: string[] = [];
+    const originalPoll = LeagueBrain.prototype.poll;
+    const originalError = console.error;
+    const errors: unknown[][] = [];
+    LeagueBrain.prototype.poll = async function (this: LeagueBrain) {
+      const dashboard = await this.getDashboard();
+      polledIds.push(dashboard.leagueId);
+      return { wroteBeat: false, hash: "test", facts: 0 };
+    };
+    console.error = (...args: unknown[]) => {
+      errors.push(args);
+    };
+
+    const originalPrepare = env.DB.prepare.bind(env.DB);
+    let enrollIntercepts = 0;
+    const wrappedDb = new Proxy(env.DB, {
+      get(target, prop, receiver) {
+        if (prop === "prepare") {
+          return (query: string) => {
+            const statement = originalPrepare(query);
+            if (
+              !query.includes("INSERT INTO recap_attempt_backlog") ||
+              !query.includes("ON CONFLICT")
+            ) {
+              return statement;
+            }
+            return overridePreparedBindRun(statement, async () => {
+              enrollIntercepts += 1;
+              throw new Error("enroll boom");
+            });
+          };
+        }
+        const value = Reflect.get(target, prop, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const scheduledEnv = new Proxy(env, {
+      get(target, prop, receiver) {
+        if (prop === "DB") return wrappedDb;
+        return Reflect.get(target, prop, receiver);
+      },
+    }) as Env;
+
+    try {
+      const result = await handleScheduled(scheduledEnv, POLL_NOW, 1);
+      expect(enrollIntercepts).toBe(1);
+      expect(result.polled).toBe(1);
+      expect(result.recapped).toBe(0);
+      expect(polledIds).toContain(league.id);
+      expect(errors).toHaveLength(1);
+      const payload = JSON.parse(String(errors[0]?.[0])) as Record<string, unknown>;
+      expect(payload).toEqual({ event: "scheduled.league.failed", reason: "error" });
+      const serialized = JSON.stringify(errors);
+      expect(serialized).not.toContain(league.id);
+      expect(serialized).not.toContain("enroll boom");
+      expect(await recapEnrollmentState()).toEqual({
+        weekKey: RECAP_WEEK_KEY,
+        afterId: null,
+        complete: false,
+      });
+      expect(await backlogCount(RECAP_WEEK_KEY)).toBe(0);
+      expect(await scheduledCursorValue()).toBe(JSON.stringify({ afterId: league.id }));
+    } finally {
+      LeagueBrain.prototype.poll = originalPoll;
+      console.error = originalError;
+    }
+  });
+
   it("polls every active league by internal id and ignores leftover env names, V1-named DOs, pending, error, and discovered-only leagues", async () => {
     const now = 1_805_100_000_000;
     const first = await seedLeague("active_a", now, "active");

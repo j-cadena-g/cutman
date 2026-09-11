@@ -10,6 +10,7 @@ import { d1ExplorerOriginQuota } from "~/lib/explorer-origin-quota.server";
 import {
   loadCachedOnboardingDiscovery,
   onboardingDiscoveryRefreshRequested,
+  shouldStripOnboardingRefreshQuery,
 } from "~/lib/onboarding-discovery-cache.server";
 import {
   connectSleeperAccount,
@@ -46,7 +47,8 @@ import type { Route } from "./+types/onboarding";
 // `/onboarding`: connect one Sleeper account, discover current-season leagues, then either the
 // pilot league's commissioner challenge or (once active) joining as a member. Every other
 // discovered league stays visible but disabled ("Coming soon"). Successful discovery is reused
-// from EXPLORER_CACHE until TTL or an explicit `?refresh=1`. Verify and join stay in
+// from EXPLORER_CACHE until TTL or an explicit `?refresh=1` (which then redirects to
+// `/onboarding` so the query cannot stick). Verify and join stay in
 // app/lib/onboarding.server.ts; after a successful verify (and on commissioner retry) this
 // route calls app/lib/provisioning.server.ts to bootstrap LeagueBrain and activate the league.
 function onboardingDepsFromEnv(env: Env): OnboardingDeps {
@@ -124,8 +126,15 @@ export async function loader(args: Route.LoaderArgs) {
   const league = await getLeagueBySleeperId(env.DB, deps.pilotSleeperLeagueId);
   const membership = league ? await getLeagueMember(env.DB, league.id, user.id) : null;
 
-  if (membership && league && league.status === "active") {
+  // Active members leave onboarding entirely. Only after that check, strip `?refresh=1` so the
+  // query cannot stick: a reload or connect/join form revalidation of `/onboarding` must not
+  // charge explorer origin quota again. Discovery (and tryConsumeRefreshOrigin) already ran above.
+  const redirectingToLeague = Boolean(membership && league && league.status === "active");
+  if (redirectingToLeague && league) {
     throw redirect(`/leagues/${league.id}`);
+  }
+  if (shouldStripOnboardingRefreshQuery({ refresh, redirectingToLeague })) {
+    throw redirect("/onboarding");
   }
 
   const verification = await findPendingVerification(env.DB, {

@@ -537,10 +537,18 @@ export async function handleScheduled(
       enrollment = { weekKey, afterId: null, complete: false };
     }
     if (!enrollment.complete) {
-      enrollment = await enrollRecapBacklogPage(env.DB, weekKey, nowMs, maxLeagues, enrollment);
+      try {
+        enrollment = await enrollRecapBacklogPage(env.DB, weekKey, nowMs, maxLeagues, enrollment);
+      } catch (error) {
+        logScheduledLeagueFailure(error);
+      }
     }
   } else if (enrollment?.weekKey === weekKey && !enrollment.complete) {
-    enrollment = await enrollRecapBacklogPage(env.DB, weekKey, nowMs, maxLeagues, enrollment);
+    try {
+      enrollment = await enrollRecapBacklogPage(env.DB, weekKey, nowMs, maxLeagues, enrollment);
+    } catch (error) {
+      logScheduledLeagueFailure(error);
+    }
   }
 
   const enrollmentForWeek = enrollment?.weekKey === weekKey ? enrollment : null;

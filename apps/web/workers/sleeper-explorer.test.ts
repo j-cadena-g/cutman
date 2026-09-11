@@ -1575,6 +1575,17 @@ describe("story dashboard isolation", () => {
   });
 });
 
+describe("createMemoryExplorerCache", () => {
+  it("returns null for invalid JSON without throwing", async () => {
+    const store = new Map<string, string>();
+    const cache = createMemoryExplorerCache(store);
+    await cache.putJson("good", { ok: true });
+    store.set("bad", "{not-json");
+    expect(await cache.getJson("good")).toEqual({ ok: true });
+    await expect(cache.getJson("bad")).resolves.toBeNull();
+  });
+});
+
 describe("explorerDepsFromEnv KV isolation", () => {
   it("writes explorer cache to EXPLORER_CACHE and the player map to PLAYERS", async () => {
     const deps = explorerDepsFromEnv(env);

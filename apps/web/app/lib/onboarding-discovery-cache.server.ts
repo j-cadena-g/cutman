@@ -61,6 +61,16 @@ export function onboardingDiscoveryRefreshRequested(request: { url: string }): b
   return value === "1" || value === "true";
 }
 
+// After a forced `?refresh=1` load has already consumed quota and run discovery, strip the query
+// so a reload or form POST revalidation cannot charge again. Active members still redirect to
+// `/leagues/:id` first — do not replace that with `/onboarding`.
+export function shouldStripOnboardingRefreshQuery(input: {
+  refresh: boolean;
+  redirectingToLeague: boolean;
+}): boolean {
+  return input.refresh && !input.redirectingToLeague;
+}
+
 function discoveryTtlMs(deps: OnboardingDiscoveryCacheDeps): number {
   const ttlMs = deps.ttlMs ?? ONBOARDING_DISCOVERY_TTL_MS;
   return Number.isFinite(ttlMs) && ttlMs > 0 ? ttlMs : ONBOARDING_DISCOVERY_TTL_MS;

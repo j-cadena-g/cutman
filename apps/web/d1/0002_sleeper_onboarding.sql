@@ -10,11 +10,16 @@
 --   provisioning_started_at NULL (legacy rows were already active; they never re-provision)
 --   every membership is role 'member' regardless of lm.is_owner (commissioner
 --   authority only follows successful league_verifications). recap_email_opt_in copied
---   sleeper_accounts: one row per user. Membership identity is the sleeper_user_id from
---   that user's most recently enabled league (leagues.enabled_at DESC). Ties break on
---   sleeper_league_id ASC, then sleeper_user_id ASC — not lexical MIN(sleeper_user_id).
---   Duplicate sleeper_user_id conflicts: INSERT OR IGNORE keeps the first selected
---   sleeper_accounts row and discards conflicting legacy links.
+--   sleeper_accounts: one row per Clerk user, and one Clerk user per sleeper_user_id.
+--   Membership identity is the sleeper_user_id from that user's most recently enabled
+--   league (leagues.enabled_at DESC). Ties break on sleeper_league_id ASC, then
+--   sleeper_user_id ASC — not lexical MIN(sleeper_user_id).
+--   Those per-user winners are then ranked PARTITION BY sleeper_user_id so a shared
+--   Sleeper id maps to one Clerk user. Prefer the candidate whose LOWER(TRIM(users.email))
+--   equals LOWER(TRIM(allowlist.clerk_email)); null clerk_email is not matched.
+--   Remaining ties: enabled_at DESC, sleeper_league_id ASC, user_id ASC (deterministic;
+--   repeated SELECT executions pick the same Clerk user). INSERT OR IGNORE is a safety
+--   net for leftover unique sleeper_user_id collisions, not the selection rule.
 --   Then allowlist rows whose LOWER(TRIM(clerk_email)) matches LOWER(TRIM(users.email));
 --   null clerk_email is not matched. username/display_name from allowlist.sleeper_username,
 --   else 'legacy_' || sleeper_user_id
@@ -109,25 +114,49 @@ INNER JOIN leagues AS l ON l.sleeper_league_id = lm.sleeper_league_id;
 
 INSERT OR IGNORE INTO sleeper_accounts (user_id, sleeper_user_id, username, display_name, updated_at)
 SELECT
-  ranked.user_id,
-  ranked.sleeper_user_id,
-  COALESCE(NULLIF(a.sleeper_username, ''), 'legacy_' || ranked.sleeper_user_id),
-  COALESCE(NULLIF(a.sleeper_username, ''), 'legacy_' || ranked.sleeper_user_id),
-  COALESCE(a.created_at, u.created_at)
+  preferred.user_id,
+  preferred.sleeper_user_id,
+  COALESCE(NULLIF(preferred.sleeper_username, ''), 'legacy_' || preferred.sleeper_user_id),
+  COALESCE(NULLIF(preferred.sleeper_username, ''), 'legacy_' || preferred.sleeper_user_id),
+  COALESCE(preferred.allowlist_created_at, preferred.user_created_at)
 FROM (
   SELECT
-    lm.user_id AS user_id,
-    lm.sleeper_user_id AS sleeper_user_id,
+    per_user.user_id,
+    per_user.sleeper_user_id,
+    a.sleeper_username AS sleeper_username,
+    a.created_at AS allowlist_created_at,
+    u.created_at AS user_created_at,
     ROW_NUMBER() OVER (
-      PARTITION BY lm.user_id
-      ORDER BY l.enabled_at DESC, l.sleeper_league_id ASC, lm.sleeper_user_id ASC
-    ) AS rn
-  FROM league_members AS lm
-  INNER JOIN leagues AS l ON l.sleeper_league_id = lm.sleeper_league_id
-) AS ranked
-INNER JOIN users AS u ON u.id = ranked.user_id
-LEFT JOIN allowlist AS a ON a.sleeper_user_id = ranked.sleeper_user_id
-WHERE ranked.rn = 1;
+      PARTITION BY per_user.sleeper_user_id
+      ORDER BY
+        CASE
+          WHEN a.clerk_email IS NOT NULL
+            AND LOWER(TRIM(u.email)) = LOWER(TRIM(a.clerk_email))
+          THEN 0
+          ELSE 1
+        END ASC,
+        per_user.enabled_at DESC,
+        per_user.sleeper_league_id ASC,
+        per_user.user_id ASC
+    ) AS sleeper_rn
+  FROM (
+    SELECT
+      lm.user_id AS user_id,
+      lm.sleeper_user_id AS sleeper_user_id,
+      l.enabled_at AS enabled_at,
+      l.sleeper_league_id AS sleeper_league_id,
+      ROW_NUMBER() OVER (
+        PARTITION BY lm.user_id
+        ORDER BY l.enabled_at DESC, l.sleeper_league_id ASC, lm.sleeper_user_id ASC
+      ) AS rn
+    FROM league_members AS lm
+    INNER JOIN leagues AS l ON l.sleeper_league_id = lm.sleeper_league_id
+  ) AS per_user
+  INNER JOIN users AS u ON u.id = per_user.user_id
+  LEFT JOIN allowlist AS a ON a.sleeper_user_id = per_user.sleeper_user_id
+  WHERE per_user.rn = 1
+) AS preferred
+WHERE preferred.sleeper_rn = 1;
 
 INSERT OR IGNORE INTO sleeper_accounts (user_id, sleeper_user_id, username, display_name, updated_at)
 SELECT
