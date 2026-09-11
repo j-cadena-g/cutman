@@ -1957,12 +1957,14 @@ describe("LeagueBrain persistTone", () => {
         expect((await brain.getDashboard()).tone).toBe("savage");
 
         const newer = brain.persistTone("sportscenter");
-        await Promise.race([
-          secondWriteStarted.then(() => {
-            throw new Error("newer persist reached D1 while the older write was still in flight");
-          }),
-          new Promise((resolve) => setTimeout(resolve, 50)),
-        ]);
+        let secondReachedD1 = false;
+        void secondWriteStarted.then(() => {
+          secondReachedD1 = true;
+        });
+        // Drain queued microtasks so an unsynchronized persist would have entered D1.
+        // The older write is still gated, so the newer persist must not reach D1 yet.
+        for (let i = 0; i < 50; i += 1) await Promise.resolve();
+        expect(secondReachedD1).toBe(false);
         expect(toneWrites).toBe(1);
         expect((await brain.getDashboard()).tone).toBe("savage");
 

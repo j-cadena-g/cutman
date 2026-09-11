@@ -1,6 +1,6 @@
 -- D1 holds Clerk identity, linked Sleeper accounts, leagues, per-league membership / recap opt-in,
 -- strongly consistent app_state (scheduled active-league cursor), the Tuesday recap attempt backlog,
--- and per-Clerk-user explorer origin quota (one current-hour row per user).
+-- and per-Clerk-user explorer origin quota (one current-hour row per user; stale rows are swept hourly).
 -- LeagueBrain DO holds bible, timeline, snapshot, and recaps (one DO per league id).
 -- Schema is multi-league. Leagues are created during onboarding, not auto-seeded.
 -- LeagueBrain Durable Objects are keyed by internal leagues.id.
@@ -89,6 +89,7 @@ CREATE INDEX IF NOT EXISTS recap_attempt_backlog_pending_week_idx
   ON recap_attempt_backlog (week_key, league_id)
   WHERE status = 'pending';
 
+-- one latest row per user; stale hour_key rows are swept
 CREATE TABLE IF NOT EXISTS explorer_origin_quota (
   clerk_user_id TEXT NOT NULL CHECK (clerk_user_id != ''),
   hour_key INTEGER NOT NULL CHECK (hour_key >= 0),

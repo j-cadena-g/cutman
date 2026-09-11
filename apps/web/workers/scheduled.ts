@@ -7,6 +7,11 @@ import {
   type RecapAttemptResult,
   type RecapStatus,
 } from "@cutman/story";
+import {
+  EXPLORER_ORIGIN_QUOTA_STALE_RETENTION_HOURS,
+  EXPLORER_ORIGIN_QUOTA_STALE_SWEEP_LIMIT,
+  sweepStaleExplorerOriginQuota,
+} from "../app/lib/explorer-origin-quota.server.ts";
 
 /** Cap Durable Object work per cron tick. Successive ticks continue from a D1 cursor. */
 export const MAX_SCHEDULED_LEAGUES_PER_TICK = 10;
@@ -17,11 +22,22 @@ export const MAX_RECAP_ATTEMPTS = 3;
 /** Dedicated app_state key for fair active-league rotation. */
 export const SCHEDULED_LEAGUE_CURSOR_KEY = "scheduled:active-leagues:cursor";
 
+/** Dedicated app_state key for bounded Tuesday recap backlog enrollment. */
+export const SCHEDULED_RECAP_ENROLLMENT_KEY = "scheduled:recap-enrollment";
+
 export type ScheduledLeaguePage<T extends { id: string } = { id: string }> = {
   leagues: T[];
   nextAfterId: string | null;
   hasDeferred: boolean;
 };
+
+export type RecapEnrollmentState = {
+  weekKey: string;
+  afterId: string | null;
+  complete: boolean;
+};
+
+export type ScheduledFailureReason = "error" | "unknown";
 
 export function parseScheduledLeagueCursor(raw: string | null): string | null {
   if (!raw) return null;
@@ -35,6 +51,37 @@ export function parseScheduledLeagueCursor(raw: string | null): string | null {
   } catch {
     return null;
   }
+}
+
+export function parseRecapEnrollmentState(raw: string | null): RecapEnrollmentState | null {
+  if (!raw) return null;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    const weekKey = (parsed as { weekKey?: unknown }).weekKey;
+    if (typeof weekKey !== "string") return null;
+    const trimmedWeek = weekKey.trim();
+    if (trimmedWeek.length === 0) return null;
+    const complete = (parsed as { complete?: unknown }).complete;
+    if (typeof complete !== "boolean") return null;
+    const afterIdRaw = (parsed as { afterId?: unknown }).afterId;
+    let afterId: string | null = null;
+    if (afterIdRaw === null || afterIdRaw === undefined) {
+      afterId = null;
+    } else if (typeof afterIdRaw === "string") {
+      const trimmed = afterIdRaw.trim();
+      afterId = trimmed.length > 0 ? trimmed : null;
+    } else {
+      return null;
+    }
+    return { weekKey: trimmedWeek, afterId, complete };
+  } catch {
+    return null;
+  }
+}
+
+export function scheduledFailureReason(error: unknown): ScheduledFailureReason {
+  return error instanceof Error ? "error" : "unknown";
 }
 
 /** America/New_York calendar date of the Tuesday that opened the current recap week. */
@@ -140,6 +187,15 @@ function recapAttemptIsTerminal(reason: RecapAttemptReason): boolean {
   }
 }
 
+function logScheduledLeagueFailure(error: unknown): void {
+  console.error(
+    JSON.stringify({
+      event: "scheduled.league.failed",
+      reason: scheduledFailureReason(error),
+    }),
+  );
+}
+
 async function loadScheduledLeaguePage(
   db: D1Database,
   afterId: string | null,
@@ -156,6 +212,58 @@ async function loadScheduledLeaguePage(
     wrap = await listActiveLeagues(db, { limit: remaining + 1 });
   } else if (remaining === 0 && afterId && forward.length <= limit) {
     const first = await listActiveLeagues(db, { limit: 1 });
+    prefixExists = Boolean(first[0] && first[0].id <= afterId);
+  }
+  return selectScheduledLeaguePage({ forward, wrap, limit, afterId, prefixExists });
+}
+
+async function listUnenrolledActiveLeagues(
+  db: D1Database,
+  weekKey: string,
+  afterId: string | null,
+  limit: number,
+): Promise<LeagueRow[]> {
+  if (!Number.isInteger(limit) || limit < 1) {
+    throw new Error("unenrolled recap enrollment limit must be a positive integer");
+  }
+  const clauses = ["leagues.status = 'active'"];
+  const params: unknown[] = [];
+  if (afterId) {
+    clauses.push("leagues.id > ?");
+    params.push(afterId);
+  }
+  clauses.push(`NOT EXISTS (
+    SELECT 1 FROM recap_attempt_backlog
+    WHERE recap_attempt_backlog.league_id = leagues.id
+      AND recap_attempt_backlog.week_key = ?
+  )`);
+  params.push(weekKey, limit);
+  const result = await db
+    .prepare(
+      `SELECT leagues.* FROM leagues
+       WHERE ${clauses.join(" AND ")}
+       ORDER BY leagues.id ASC
+       LIMIT ?`,
+    )
+    .bind(...params)
+    .all<LeagueRow>();
+  return result.results;
+}
+
+async function loadUnenrolledRecapPage(
+  db: D1Database,
+  weekKey: string,
+  afterId: string | null,
+  limit: number,
+): Promise<ScheduledLeaguePage<LeagueRow>> {
+  const forward = await listUnenrolledActiveLeagues(db, weekKey, afterId, limit + 1);
+  const remaining = Math.max(0, limit - Math.min(forward.length, limit));
+  let wrap: LeagueRow[] = [];
+  let prefixExists = false;
+  if (remaining > 0 && afterId) {
+    wrap = await listUnenrolledActiveLeagues(db, weekKey, null, remaining + 1);
+  } else if (remaining === 0 && afterId && forward.length <= limit) {
+    const first = await listUnenrolledActiveLeagues(db, weekKey, null, 1);
     prefixExists = Boolean(first[0] && first[0].id <= afterId);
   }
   return selectScheduledLeaguePage({ forward, wrap, limit, afterId, prefixExists });
@@ -188,21 +296,91 @@ async function writeScheduledLeagueCursor(
     .run();
 }
 
+async function readRecapEnrollmentState(db: D1Database): Promise<RecapEnrollmentState | null> {
+  const row = await db
+    .prepare("SELECT value FROM app_state WHERE key = ?")
+    .bind(SCHEDULED_RECAP_ENROLLMENT_KEY)
+    .first<{ value: string }>();
+  return parseRecapEnrollmentState(row?.value ?? null);
+}
+
+async function writeRecapEnrollmentState(
+  db: D1Database,
+  state: RecapEnrollmentState,
+  now: number,
+): Promise<void> {
+  await db
+    .prepare(
+      `INSERT INTO app_state (key, value, updated_at)
+       VALUES (?, ?, ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+    )
+    .bind(
+      SCHEDULED_RECAP_ENROLLMENT_KEY,
+      JSON.stringify({
+        weekKey: state.weekKey,
+        afterId: state.afterId,
+        complete: state.complete,
+      }),
+      now,
+    )
+    .run();
+}
+
 async function deleteStaleRecapAttempts(db: D1Database, weekKey: string): Promise<void> {
   await db.prepare("DELETE FROM recap_attempt_backlog WHERE week_key != ?").bind(weekKey).run();
 }
 
-async function enqueueActiveRecapAttempts(db: D1Database, weekKey: string, now: number): Promise<void> {
-  await db
-    .prepare(
-      `INSERT INTO recap_attempt_backlog (league_id, week_key, status, attempts, last_error, created_at, updated_at)
-       SELECT id, ?, 'pending', 0, NULL, ?, ?
-       FROM leagues
-       WHERE status = 'active'
-       ON CONFLICT(league_id, week_key) DO NOTHING`,
-    )
-    .bind(weekKey, now, now)
-    .run();
+/** Stay under D1's bound-parameter cap while still inserting at most the current page. */
+const ENROLL_INSERT_CHUNK = 20;
+
+async function enqueueRecapAttemptsForLeagues(
+  db: D1Database,
+  weekKey: string,
+  now: number,
+  leagueIds: string[],
+): Promise<void> {
+  for (let offset = 0; offset < leagueIds.length; offset += ENROLL_INSERT_CHUNK) {
+    const chunk = leagueIds.slice(offset, offset + ENROLL_INSERT_CHUNK);
+    const placeholders = chunk.map(() => "?").join(", ");
+    await db
+      .prepare(
+        `INSERT INTO recap_attempt_backlog (league_id, week_key, status, attempts, last_error, created_at, updated_at)
+         SELECT id, ?, 'pending', 0, NULL, ?, ?
+         FROM leagues
+         WHERE status = 'active' AND id IN (${placeholders})
+         ON CONFLICT(league_id, week_key) DO NOTHING`,
+      )
+      .bind(weekKey, now, now, ...chunk)
+      .run();
+  }
+}
+
+async function enrollRecapBacklogPage(
+  db: D1Database,
+  weekKey: string,
+  now: number,
+  maxLeagues: number,
+  existing: RecapEnrollmentState | null,
+): Promise<RecapEnrollmentState> {
+  if (existing?.weekKey === weekKey && existing.complete) {
+    return existing;
+  }
+  const afterId = existing?.weekKey === weekKey ? existing.afterId : null;
+  const page = await loadUnenrolledRecapPage(db, weekKey, afterId, maxLeagues);
+  await enqueueRecapAttemptsForLeagues(
+    db,
+    weekKey,
+    now,
+    page.leagues.map((league) => league.id),
+  );
+  const next: RecapEnrollmentState = {
+    weekKey,
+    afterId: page.nextAfterId,
+    complete: !page.hasDeferred,
+  };
+  await writeRecapEnrollmentState(db, next, now);
+  return next;
 }
 
 async function listPendingRecapLeagues(db: D1Database, weekKey: string, limit: number): Promise<LeagueRow[]> {
@@ -220,6 +398,22 @@ async function listPendingRecapLeagues(db: D1Database, weekKey: string, limit: n
     .bind(weekKey, MAX_RECAP_ATTEMPTS, limit)
     .all<LeagueRow>();
   return result.results;
+}
+
+async function hasPendingRecapAttempts(db: D1Database, weekKey: string): Promise<boolean> {
+  const row = await db
+    .prepare(
+      `SELECT 1 AS ok FROM recap_attempt_backlog
+       INNER JOIN leagues ON leagues.id = recap_attempt_backlog.league_id
+       WHERE recap_attempt_backlog.week_key = ?
+         AND recap_attempt_backlog.status = 'pending'
+         AND recap_attempt_backlog.attempts < ?
+         AND leagues.status = 'active'
+       LIMIT 1`,
+    )
+    .bind(weekKey, MAX_RECAP_ATTEMPTS)
+    .first<{ ok: number }>();
+  return row !== null;
 }
 
 async function pendingRecapIds(
@@ -279,13 +473,40 @@ export async function handleScheduled(
   const recapWindow = shouldAttemptTuesdayRecap(parts);
   const weekKey = easternRecapWeekKey(now);
   const nowMs = now.getTime();
+  await sweepStaleExplorerOriginQuota(env.DB, {
+    now: nowMs,
+    retentionHours: EXPLORER_ORIGIN_QUOTA_STALE_RETENTION_HOURS,
+    limit: EXPLORER_ORIGIN_QUOTA_STALE_SWEEP_LIMIT,
+  });
 
+  let enrollment = await readRecapEnrollmentState(env.DB);
   if (recapWindow) {
-    await deleteStaleRecapAttempts(env.DB, weekKey);
-    await enqueueActiveRecapAttempts(env.DB, weekKey, nowMs);
+    if (enrollment?.weekKey !== weekKey) {
+      await deleteStaleRecapAttempts(env.DB, weekKey);
+      enrollment = { weekKey, afterId: null, complete: false };
+    }
+    if (!enrollment.complete) {
+      enrollment = await enrollRecapBacklogPage(env.DB, weekKey, nowMs, maxLeagues, enrollment);
+    }
+  } else if (enrollment?.weekKey === weekKey && !enrollment.complete) {
+    enrollment = await enrollRecapBacklogPage(env.DB, weekKey, nowMs, maxLeagues, enrollment);
   }
 
-  const pending = recapWindow ? [] : await listPendingRecapLeagues(env.DB, weekKey, maxLeagues);
+  const enrollmentForWeek = enrollment?.weekKey === weekKey ? enrollment : null;
+
+  let pending: LeagueRow[] = [];
+  if (!recapWindow) {
+    if (!poll && !enrollmentForWeek) {
+      return { polled: 0, recapped: 0 };
+    }
+    if (!poll && enrollmentForWeek?.complete) {
+      if (!(await hasPendingRecapAttempts(env.DB, weekKey))) {
+        return { polled: 0, recapped: 0 };
+      }
+    }
+    pending = await listPendingRecapLeagues(env.DB, weekKey, maxLeagues);
+  }
+
   const drainBacklog = pending.length > 0;
   if (!poll && !recapWindow && !drainBacklog) {
     return { polled: 0, recapped: 0 };
@@ -338,7 +559,7 @@ export async function handleScheduled(
         });
       }
     } catch (error) {
-      console.error(`scheduled tick failed for league ${league.id}`, error);
+      logScheduledLeagueFailure(error);
       if (shouldRecap) {
         await settleRecapAttempt(env.DB, {
           leagueId: league.id,

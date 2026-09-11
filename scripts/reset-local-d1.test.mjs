@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { access, lstat, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { access, lstat, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
@@ -10,6 +10,7 @@ import {
   assertCanonicalResolvedPath,
   assertExpectedLocalD1Path,
   assertLocalD1PathHasNoSymlinks,
+  isCliEntrypoint,
   isSameRealPath,
   resetLocalD1,
   resetLocalD1MatchingExpected,
@@ -45,6 +46,23 @@ const SYMLINK_CASES = [
   { name: "v3", linkIndex: 3 },
   { name: "d1", linkIndex: 4 },
 ];
+
+/**
+ * Suffix under the symlink target where the D1 sentinel must live.
+ * chain = [webDir, ...LOCAL_D1_SEGMENTS]; `linkIndex` selects which entry is the link.
+ * - Leaf (`d1`): the target *is* that directory, so there is no extra suffix.
+ * - Replaced ancestor: skip that entry and keep the D1 segments under the target.
+ */
+function remainingSegmentsUnderLinkTarget(linkIndex) {
+  const replacedSegmentIndex = linkIndex - 1;
+  if (replacedSegmentIndex < 0) {
+    return LOCAL_D1_SEGMENTS;
+  }
+  if (replacedSegmentIndex === LOCAL_D1_SEGMENTS.length - 1) {
+    return [];
+  }
+  return LOCAL_D1_SEGMENTS.slice(replacedSegmentIndex + 1);
+}
 
 describe("reset-local-d1 path guards", () => {
   it("walks up LOCAL_D1_SEGMENTS.length parents to reach the web dir", () => {
@@ -97,7 +115,7 @@ describe("reset-local-d1 path guards", () => {
     it(`rejects a symbolic link at ${name} before rm`, async () => {
       await withTempRoot(async ({ root, webDir, localD1Dir }) => {
         const target = path.join(root, "link-target");
-        const remaining = LOCAL_D1_SEGMENTS.slice(linkIndex);
+        const remaining = remainingSegmentsUnderLinkTarget(linkIndex);
         const keepPath = await writeSentinel(path.join(target, ...remaining));
         const chain = [
           webDir,
@@ -108,6 +126,16 @@ describe("reset-local-d1 path guards", () => {
         const linkPath = chain[linkIndex];
         await mkdir(path.dirname(linkPath), { recursive: true });
         await symlink(target, linkPath);
+
+        const linkRealPath = await realpath(linkPath);
+        const keepRealPath = await realpath(keepPath);
+        const relativeKeep = path.relative(linkRealPath, keepRealPath);
+        assert.ok(
+          relativeKeep.length > 0 &&
+            !relativeKeep.startsWith("..") &&
+            !path.isAbsolute(relativeKeep),
+          `sentinel ${keepRealPath} is not under link target ${linkRealPath}`,
+        );
 
         await assert.rejects(
           () => resetLocalD1MatchingExpected(localD1Dir, localD1Dir),
@@ -199,21 +227,58 @@ describe("reset-local-d1 CLI entrypoint", () => {
     assert.equal(result.stdout, "");
   });
 
-  it("matches this module when argv points at a symlink to the script", async () => {
-    const dir = await mkdtemp(path.join(os.tmpdir(), "cutman-reset-d1-cli-link-"));
-    const linkPath = path.join(dir, "reset-local-d1.mjs");
-    try {
-      await symlink(scriptPath, linkPath);
-      assert.equal(await isSameRealPath(linkPath, scriptPath), true);
-    } finally {
-      await rm(dir, { recursive: true, force: true });
-    }
-  });
-
   it("treats a missing argv path as not this module", async () => {
     assert.equal(
       await isSameRealPath("/this/path/does/not/exist.mjs", scriptPath),
       false,
     );
+  });
+
+  it("treats an absent argv path as a safe non-entrypoint", async () => {
+    assert.equal(await isCliEntrypoint("", scriptPath), false);
+    assert.equal(await isCliEntrypoint(undefined, scriptPath), false);
+  });
+
+  it("fails loudly when argv is present but unresolvable", async () => {
+    await assert.rejects(
+      () => isCliEntrypoint("/this/path/does/not/exist.mjs", scriptPath),
+      { code: "ENOENT" },
+    );
+
+    const result = spawnSync(
+      process.execPath,
+      [
+        "--input-type=module",
+        "-e",
+        'process.argv[1] = "/this/path/does/not/exist.mjs"; await import("./scripts/reset-local-d1.mjs");',
+      ],
+      {
+        cwd: repoRoot,
+        env: process.env,
+        encoding: "utf8",
+      },
+    );
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /ENOENT/);
+  });
+
+  it("treats a valid path to this module as the CLI entrypoint", async () => {
+    assert.equal(await isCliEntrypoint(scriptPath, scriptPath), true);
+    assert.equal(
+      await isCliEntrypoint(path.join(repoRoot, "package.json"), scriptPath),
+      false,
+    );
+  });
+
+  it("treats a symlink to this module as the CLI entrypoint", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "cutman-reset-d1-cli-link-"));
+    const linkPath = path.join(dir, "reset-local-d1.mjs");
+    try {
+      await symlink(scriptPath, linkPath);
+      assert.equal(await isSameRealPath(linkPath, scriptPath), true);
+      assert.equal(await isCliEntrypoint(linkPath, scriptPath), true);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });

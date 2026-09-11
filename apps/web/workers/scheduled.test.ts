@@ -12,15 +12,23 @@ import { V1_LEAGUE_ID } from "@cutman/sleeper";
 import { easternParts, shouldAttemptTuesdayRecap, shouldPoll } from "@cutman/story";
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { getDashboardOrNull } from "../app/lib/dashboard.ts";
+import {
+  EXPLORER_ORIGIN_QUOTA_STALE_RETENTION_HOURS,
+  explorerOriginQuotaHourKey,
+} from "../app/lib/explorer-origin-quota.server.ts";
 import { LeagueBrain } from "./league-brain.ts";
 import {
   easternRecapWeekKey,
   handleScheduled,
   MAX_RECAP_ATTEMPTS,
   MAX_SCHEDULED_LEAGUES_PER_TICK,
+  parseRecapEnrollmentState,
   parseScheduledLeagueCursor,
   SCHEDULED_LEAGUE_CURSOR_KEY,
+  SCHEDULED_RECAP_ENROLLMENT_KEY,
+  scheduledFailureReason,
   selectScheduledLeaguePage,
+  type RecapEnrollmentState,
 } from "./scheduled.ts";
 
 type D1Migration = { name: string; queries: string[] };
@@ -44,8 +52,28 @@ async function clearScheduledCursor(): Promise<void> {
   await env.DB.prepare("DELETE FROM app_state WHERE key = ?").bind(SCHEDULED_LEAGUE_CURSOR_KEY).run();
 }
 
+async function clearRecapEnrollment(): Promise<void> {
+  await env.DB.prepare("DELETE FROM app_state WHERE key = ?").bind(SCHEDULED_RECAP_ENROLLMENT_KEY).run();
+}
+
 async function clearRecapBacklog(): Promise<void> {
   await env.DB.prepare("DELETE FROM recap_attempt_backlog").run();
+}
+
+async function recapEnrollmentState(): Promise<RecapEnrollmentState | null> {
+  const row = await env.DB
+    .prepare("SELECT value FROM app_state WHERE key = ?")
+    .bind(SCHEDULED_RECAP_ENROLLMENT_KEY)
+    .first<{ value: string }>();
+  return parseRecapEnrollmentState(row?.value ?? null);
+}
+
+async function backlogCount(weekKey: string): Promise<number> {
+  const row = await env.DB
+    .prepare("SELECT COUNT(*) AS n FROM recap_attempt_backlog WHERE week_key = ?")
+    .bind(weekKey)
+    .first<{ n: number }>();
+  return row?.n ?? 0;
 }
 
 async function backlogRows(
@@ -83,8 +111,27 @@ async function pendingBelowCapCount(weekKey: string, leagueIds?: string[]): Prom
   return row?.n ?? 0;
 }
 
-function drainTickBudget(pending: number, limit: number): number {
-  return Math.ceil((Math.max(pending, 1) * MAX_RECAP_ATTEMPTS) / limit) + 4;
+function drainTickBudget(leagueCount: number, limit: number): number {
+  const n = Math.max(leagueCount, 1);
+  const enrollTicks = Math.ceil(n / limit);
+  const attemptTicks = Math.ceil((n * MAX_RECAP_ATTEMPTS) / limit);
+  return enrollTicks + attemptTicks + 8;
+}
+
+async function drainUntilBacklogDone(
+  weekKey: string,
+  leagueIds: string[],
+  limit: number,
+  now: Date,
+): Promise<void> {
+  const maxTicks = drainTickBudget((await listActiveLeagues(env.DB)).length, limit);
+  for (let ticks = 0; ticks < maxTicks; ticks += 1) {
+    const rows = await backlogRows(weekKey, leagueIds);
+    if (rows.length === leagueIds.length && rows.every((row) => row.status === "done")) {
+      return;
+    }
+    await handleScheduled(env, now, limit);
+  }
 }
 
 async function scheduledCursorValue(): Promise<string | null> {
@@ -243,14 +290,50 @@ describe("parseScheduledLeagueCursor", () => {
   });
 });
 
+describe("scheduledFailureReason", () => {
+  it("maps Error to error and anything else to unknown", () => {
+    expect(scheduledFailureReason(new Error("secret detail"))).toBe("error");
+    expect(scheduledFailureReason("secret detail")).toBe("unknown");
+    expect(scheduledFailureReason(null)).toBe("unknown");
+    expect(scheduledFailureReason({ message: "secret detail" })).toBe("unknown");
+  });
+});
+
+describe("parseRecapEnrollmentState", () => {
+  it("treats missing and corrupt enrollment values as unset", () => {
+    expect(parseRecapEnrollmentState(null)).toBeNull();
+    expect(parseRecapEnrollmentState("")).toBeNull();
+    expect(parseRecapEnrollmentState("not-json")).toBeNull();
+    expect(parseRecapEnrollmentState("[]")).toBeNull();
+    expect(parseRecapEnrollmentState("{\"weekKey\":1,\"complete\":false}")).toBeNull();
+    expect(parseRecapEnrollmentState("{\"weekKey\":\"\",\"complete\":false}")).toBeNull();
+    expect(parseRecapEnrollmentState("{\"weekKey\":\"2026-09-08\",\"complete\":\"yes\"}")).toBeNull();
+    expect(parseRecapEnrollmentState("{\"weekKey\":\"2026-09-08\",\"complete\":false,\"afterId\":1}")).toBeNull();
+    expect(parseRecapEnrollmentState("{\"weekKey\":\"2026-09-08\",\"complete\":false}")).toEqual({
+      weekKey: "2026-09-08",
+      afterId: null,
+      complete: false,
+    });
+    expect(
+      parseRecapEnrollmentState("{\"weekKey\":\"2026-09-08\",\"afterId\":\"league_next\",\"complete\":true}"),
+    ).toEqual({
+      weekKey: "2026-09-08",
+      afterId: "league_next",
+      complete: true,
+    });
+  });
+});
+
 describe("handleScheduled", () => {
   beforeEach(async () => {
     await clearScheduledCursor();
+    await clearRecapEnrollment();
     await clearRecapBacklog();
   });
 
   afterEach(async () => {
     await clearScheduledCursor();
+    await clearRecapEnrollment();
     await clearRecapBacklog();
   });
 
@@ -267,6 +350,36 @@ describe("handleScheduled", () => {
     await seedLeague("idle_active", 1_805_000_000_000, "active");
     const result = await handleScheduled(env, IDLE_NOW);
     expect(result).toEqual({ polled: 0, recapped: 0 });
+  });
+
+  it("sweeps stale explorer origin quota rows on idle hours and keeps the current hour", async () => {
+    const nowMs = IDLE_NOW.getTime();
+    const currentHour = explorerOriginQuotaHourKey(nowMs);
+    const staleUser = `sched_stale_${crypto.randomUUID()}`;
+    const freshUser = `sched_fresh_${crypto.randomUUID()}`;
+    await env.DB.prepare(
+      "INSERT INTO explorer_origin_quota (clerk_user_id, hour_key, used) VALUES (?, ?, 1)",
+    )
+      .bind(staleUser, currentHour - EXPLORER_ORIGIN_QUOTA_STALE_RETENTION_HOURS - 1)
+      .run();
+    await env.DB.prepare(
+      "INSERT INTO explorer_origin_quota (clerk_user_id, hour_key, used) VALUES (?, ?, 2)",
+    )
+      .bind(freshUser, currentHour)
+      .run();
+
+    const result = await handleScheduled(env, IDLE_NOW);
+    expect(result).toEqual({ polled: 0, recapped: 0 });
+    expect(
+      await env.DB.prepare("SELECT clerk_user_id FROM explorer_origin_quota WHERE clerk_user_id = ?")
+        .bind(staleUser)
+        .first(),
+    ).toBeNull();
+    expect(
+      await env.DB.prepare("SELECT hour_key, used FROM explorer_origin_quota WHERE clerk_user_id = ?")
+        .bind(freshUser)
+        .first<{ hour_key: number; used: number }>(),
+    ).toEqual({ hour_key: currentHour, used: 2 });
   });
 
   it("polls every active league by internal id and ignores leftover env names, V1-named DOs, pending, error, and discovered-only leagues", async () => {
@@ -374,10 +487,48 @@ describe("handleScheduled", () => {
       const result = await handleScheduled(env, POLL_NOW, activeCount);
       expect(result.polled).toBe(activeCount - 1);
       expect(errors).toHaveLength(1);
+      const payload = JSON.parse(String(errors[0]?.[0])) as Record<string, unknown>;
+      expect(payload).toEqual({ event: "scheduled.league.failed", reason: "error" });
+      const serialized = JSON.stringify(errors);
+      expect(serialized).not.toContain(failing.id);
+      expect(serialized).not.toContain(failing.sleeper_league_id);
+      expect(serialized).not.toContain("boom from failing league");
       const survived = await env.LEAGUE_BRAIN.getByName(surviving.id).getDashboard();
       expect(survived.leagueId).toBe(surviving.id);
       expect(survived.week).not.toBeNull();
       expect(await getDashboardOrNull(env.LEAGUE_BRAIN.getByName(failing.id))).not.toBeNull();
+    } finally {
+      LeagueBrain.prototype.poll = originalPoll;
+      console.error = originalError;
+    }
+  });
+
+  it("logs a bounded error reason without the thrown payload or league ids", async () => {
+    const now = 1_805_350_000_000;
+    const failing = await seedLeague("failing_unknown", now, "active");
+
+    const originalPoll = LeagueBrain.prototype.poll;
+    const originalError = console.error;
+    const errors: unknown[][] = [];
+    LeagueBrain.prototype.poll = async () => {
+      throw "string boom with secret";
+    };
+    console.error = (...args: unknown[]) => {
+      errors.push(args);
+    };
+
+    try {
+      const result = await handleScheduled(env, POLL_NOW, 1);
+      expect(result.polled).toBe(0);
+      expect(errors.length).toBeGreaterThanOrEqual(1);
+      const payload = JSON.parse(String(errors[0]?.[0])) as Record<string, unknown>;
+      expect(payload.event).toBe("scheduled.league.failed");
+      expect(payload.reason === "error" || payload.reason === "unknown").toBe(true);
+      const serialized = JSON.stringify(errors);
+      expect(serialized).not.toContain(failing.id);
+      expect(serialized).not.toContain(failing.sleeper_league_id);
+      expect(serialized).not.toContain("string boom");
+      expect(serialized).not.toContain("secret");
     } finally {
       LeagueBrain.prototype.poll = originalPoll;
       console.error = originalError;
@@ -477,11 +628,13 @@ describe("easternRecapWeekKey", () => {
 describe("handleScheduled recap backlog", () => {
   beforeEach(async () => {
     await clearScheduledCursor();
+    await clearRecapEnrollment();
     await clearRecapBacklog();
   });
 
   afterEach(async () => {
     await clearScheduledCursor();
+    await clearRecapEnrollment();
     await clearRecapBacklog();
   });
 
@@ -519,12 +672,16 @@ describe("handleScheduled recap backlog", () => {
       expect(published.size).toBeLessThan(oursIds.size);
 
       const oursLeagueIds = ours.map((league) => league.id);
+      const enrolledAfterFirst = await backlogCount(RECAP_WEEK_KEY);
+      expect(enrolledAfterFirst).toBeGreaterThan(0);
+      expect(enrolledAfterFirst).toBeLessThanOrEqual(limit);
       const rowsAfterFirst = await backlogRows(RECAP_WEEK_KEY, oursLeagueIds);
-      expect(rowsAfterFirst).toHaveLength(3);
-      expect(rowsAfterFirst.some((row) => row.status === "pending")).toBe(true);
+      expect(rowsAfterFirst.length).toBeLessThanOrEqual(limit);
+      expect(rowsAfterFirst.length).toBeLessThan(oursIds.size);
 
       let recappedTotal = first.recapped;
-      const maxTicks = drainTickBudget(await pendingBelowCapCount(RECAP_WEEK_KEY), limit);
+      const activeCount = (await listActiveLeagues(env.DB)).length;
+      const maxTicks = drainTickBudget(activeCount, limit);
       let ticks = 1;
       while (published.size < oursIds.size && ticks < maxTicks) {
         const later = await handleScheduled(env, IDLE_NOW, limit);
@@ -580,13 +737,7 @@ describe("handleScheduled recap backlog", () => {
       expect(first.recapped).toBe(0);
       const targetIds = [blank.id, already.id];
       const attempted = () => recapCalls.filter((id) => targetIds.includes(id));
-      const maxTicks = drainTickBudget(await pendingBelowCapCount(RECAP_WEEK_KEY), limit);
-      let ticks = 1;
-      while ((await pendingBelowCapCount(RECAP_WEEK_KEY, targetIds)) > 0 && ticks < maxTicks) {
-        const later = await handleScheduled(env, IDLE_NOW, limit);
-        expect(later.recapped).toBe(0);
-        ticks += 1;
-      }
+      await drainUntilBacklogDone(RECAP_WEEK_KEY, targetIds, limit, IDLE_NOW);
 
       expect(new Set(attempted()).size).toBe(2);
       expect(attempted()).toHaveLength(2);
@@ -645,17 +796,20 @@ describe("handleScheduled recap backlog", () => {
       expect(first.recapped).toBe(0);
 
       const attempted = () => recapCalls.filter((id) => targetIds.includes(id));
-      const maxTicks = drainTickBudget(await pendingBelowCapCount(RECAP_WEEK_KEY), limit);
-      let ticks = 1;
-      while ((await pendingBelowCapCount(RECAP_WEEK_KEY, targetIds)) > 0 && ticks < maxTicks) {
-        const later = await handleScheduled(env, IDLE_NOW, limit);
-        expect(later.recapped).toBe(0);
-        ticks += 1;
-      }
+      await drainUntilBacklogDone(RECAP_WEEK_KEY, targetIds, limit, IDLE_NOW);
 
       expect(new Set(attempted()).size).toBe(3);
       expect(attempted()).toHaveLength(MAX_RECAP_ATTEMPTS * 3);
       expect(errors.length).toBeGreaterThanOrEqual(1);
+      for (const entry of errors) {
+        const payload = JSON.parse(String(entry[0])) as Record<string, unknown>;
+        expect(payload).toEqual({ event: "scheduled.league.failed", reason: "error" });
+      }
+      const errorSerialized = JSON.stringify(errors);
+      expect(errorSerialized).not.toContain(failing.id);
+      expect(errorSerialized).not.toContain(failing.sleeper_league_id);
+      expect(errorSerialized).not.toContain("recap boom");
+      expect(errorSerialized).not.toContain("secret detail");
 
       const rows = await backlogRows(RECAP_WEEK_KEY, targetIds);
       expect(rows.find((row) => row.league_id === notFinal.id)).toMatchObject({
@@ -723,7 +877,7 @@ describe("handleScheduled recap backlog", () => {
 
       weekFinal = true;
       const limit = 2;
-      const maxTicks = drainTickBudget(await pendingBelowCapCount(RECAP_WEEK_KEY), limit);
+      const maxTicks = drainTickBudget((await listActiveLeagues(env.DB)).length, limit);
       let recappedTotal = 0;
       for (let ticks = 0; ticks < maxTicks && (await pendingBelowCapCount(RECAP_WEEK_KEY, [league.id])) > 0; ticks += 1) {
         const later = await handleScheduled(env, IDLE_NOW, limit);
@@ -905,16 +1059,219 @@ describe("handleScheduled recap backlog", () => {
     };
 
     try {
-      const limit = 2;
-      await handleScheduled(env, RECAP_NOW, limit);
+      const activeCount = (await listActiveLeagues(env.DB)).length;
+      await handleScheduled(env, RECAP_NOW, activeCount);
       expect(await backlogRows(RECAP_WEEK_KEY, [league.id])).toHaveLength(1);
+      const enrollBefore = await recapEnrollmentState();
+      expect(enrollBefore?.weekKey).toBe(RECAP_WEEK_KEY);
+      expect(enrollBefore?.complete).toBe(true);
 
-      await handleScheduled(env, NEXT_RECAP_NOW, limit);
+      await handleScheduled(env, NEXT_RECAP_NOW, 2);
       expect(await backlogRows(RECAP_WEEK_KEY, [league.id])).toEqual([]);
+      const enrollAfter = await recapEnrollmentState();
+      expect(enrollAfter?.weekKey).toBe(NEXT_RECAP_WEEK_KEY);
+      expect(await backlogCount(NEXT_RECAP_WEEK_KEY)).toBeLessThanOrEqual(2);
+      const maxTicks = drainTickBudget((await listActiveLeagues(env.DB)).length, 2);
+      for (let ticks = 1; ticks < maxTicks && (await backlogRows(NEXT_RECAP_WEEK_KEY, [league.id])).length === 0; ticks += 1) {
+        await handleScheduled(env, new Date("2026-09-15T14:00:00.000Z"), 2);
+      }
       const [newRow] = await backlogRows(NEXT_RECAP_WEEK_KEY, [league.id]);
       expect(newRow).toBeDefined();
       expect(["pending", "done"]).toContain(newRow?.status);
     } finally {
+      LeagueBrain.prototype.attemptRecap = originalAttemptRecap;
+    }
+  });
+
+  it("enrolls at most maxLeagues per tick and continues until every active league is covered", async () => {
+    const now = 1_805_900_000_000;
+    const ours = [
+      await seedLeague("enroll_cont_a", now, "active"),
+      await seedLeague("enroll_cont_b", now + 1, "active"),
+      await seedLeague("enroll_cont_c", now + 2, "active"),
+      await seedLeague("enroll_cont_d", now + 3, "active"),
+      await seedLeague("enroll_cont_e", now + 4, "active"),
+    ];
+    const oursIds = new Set(ours.map((league) => league.id));
+    const allActive = await listActiveLeagues(env.DB, { limit: 10_000 });
+    expect(allActive.length).toBeGreaterThan(2);
+
+    const originalPoll = LeagueBrain.prototype.poll;
+    const originalAttemptRecap = LeagueBrain.prototype.attemptRecap;
+    const polledIds: string[] = [];
+    LeagueBrain.prototype.poll = async function (this: LeagueBrain) {
+      const dashboard = await this.getDashboard();
+      polledIds.push(dashboard.leagueId);
+      return { wroteBeat: false, hash: "test", facts: 0 };
+    };
+    LeagueBrain.prototype.attemptRecap = async () => ({ status: "skipped_already" });
+
+    try {
+      const limit = 2;
+      polledIds.length = 0;
+      const first = await handleScheduled(env, RECAP_NOW, limit);
+      expect(first.polled).toBeLessThanOrEqual(limit);
+      expect(polledIds).toHaveLength(first.polled);
+      expect(await backlogCount(RECAP_WEEK_KEY)).toBe(limit);
+      const firstEnrolled = (
+        await env.DB
+          .prepare(
+            `SELECT league_id FROM recap_attempt_backlog WHERE week_key = ? ORDER BY league_id`,
+          )
+          .bind(RECAP_WEEK_KEY)
+          .all<{ league_id: string }>()
+      ).results.map((row) => row.league_id);
+      expect(firstEnrolled).toEqual(allActive.slice(0, limit).map((league) => league.id));
+      expect((await recapEnrollmentState())?.complete).toBe(false);
+
+      polledIds.length = 0;
+      const second = await handleScheduled(env, IDLE_NOW, limit);
+      expect(polledIds.length).toBeLessThanOrEqual(limit);
+      expect(second.polled).toBeLessThanOrEqual(limit);
+      expect(await backlogCount(RECAP_WEEK_KEY)).toBe(Math.min(allActive.length, limit * 2));
+
+      const activeCount = allActive.length;
+      const maxTicks = drainTickBudget(activeCount, limit);
+      let ticks = 2;
+      while (!(await recapEnrollmentState())?.complete && ticks < maxTicks) {
+        polledIds.length = 0;
+        const later = await handleScheduled(env, IDLE_NOW, limit);
+        expect(later.polled).toBeLessThanOrEqual(limit);
+        expect(polledIds.length).toBeLessThanOrEqual(limit);
+        ticks += 1;
+      }
+
+      const enroll = await recapEnrollmentState();
+      expect(enroll?.complete).toBe(true);
+      expect(enroll?.weekKey).toBe(RECAP_WEEK_KEY);
+      expect(await backlogCount(RECAP_WEEK_KEY)).toBe(activeCount);
+      const allRows = await env.DB
+        .prepare(`SELECT league_id FROM recap_attempt_backlog WHERE week_key = ?`)
+        .bind(RECAP_WEEK_KEY)
+        .all<{ league_id: string }>();
+      expect(new Set(allRows.results.map((row) => row.league_id)).size).toBe(allRows.results.length);
+      for (const id of oursIds) {
+        expect(allRows.results.some((row) => row.league_id === id)).toBe(true);
+      }
+      const lastActive = allActive[allActive.length - 1];
+      expect(lastActive).toBeDefined();
+      expect(await backlogRows(RECAP_WEEK_KEY, [lastActive?.id ?? ""])).toHaveLength(1);
+    } finally {
+      LeagueBrain.prototype.poll = originalPoll;
+      LeagueBrain.prototype.attemptRecap = originalAttemptRecap;
+    }
+  });
+
+  it("wraps enrollment so prefix leagues are not starved when the cursor starts at the end", async () => {
+    const now = 1_805_910_000_000;
+    await seedLeague("enroll_wrap_a", now, "active");
+    await seedLeague("enroll_wrap_b", now + 1, "active");
+    await seedLeague("enroll_wrap_c", now + 2, "active");
+    const allActive = await listActiveLeagues(env.DB, { limit: 10_000 });
+    const last = allActive[allActive.length - 1];
+    if (!last) throw new Error("expected active leagues");
+    await putAppState(
+      SCHEDULED_RECAP_ENROLLMENT_KEY,
+      JSON.stringify({ weekKey: RECAP_WEEK_KEY, afterId: last.id, complete: false }),
+    );
+
+    const originalPoll = LeagueBrain.prototype.poll;
+    const originalAttemptRecap = LeagueBrain.prototype.attemptRecap;
+    const polledIds: string[] = [];
+    LeagueBrain.prototype.poll = async function (this: LeagueBrain) {
+      const dashboard = await this.getDashboard();
+      polledIds.push(dashboard.leagueId);
+      return { wroteBeat: false, hash: "test", facts: 0 };
+    };
+    LeagueBrain.prototype.attemptRecap = async () => ({ status: "skipped_already" });
+
+    try {
+      const limit = 2;
+      await handleScheduled(env, IDLE_NOW, limit);
+      expect(polledIds.length).toBeLessThanOrEqual(limit);
+      const enrolled = (
+        await env.DB
+          .prepare(
+            `SELECT league_id FROM recap_attempt_backlog WHERE week_key = ? ORDER BY league_id`,
+          )
+          .bind(RECAP_WEEK_KEY)
+          .all<{ league_id: string }>()
+      ).results.map((row) => row.league_id);
+      expect(enrolled).toEqual(allActive.slice(0, limit).map((league) => league.id));
+      expect(enrolled).not.toContain(last.id);
+    } finally {
+      LeagueBrain.prototype.poll = originalPoll;
+      LeagueBrain.prototype.attemptRecap = originalAttemptRecap;
+    }
+  });
+
+  it("does not move the regular poll cursor while idle enrollment continues", async () => {
+    const now = 1_805_920_000_000;
+    await seedLeague("enroll_cursor_a", now, "active");
+    await seedLeague("enroll_cursor_b", now + 1, "active");
+    await seedLeague("enroll_cursor_c", now + 2, "active");
+    await seedLeague("enroll_cursor_d", now + 3, "active");
+    await seedLeague("enroll_cursor_e", now + 4, "active");
+    const cursorBefore = JSON.stringify({ afterId: "cursor_must_not_move" });
+    await putAppState(SCHEDULED_LEAGUE_CURSOR_KEY, cursorBefore);
+
+    const originalPoll = LeagueBrain.prototype.poll;
+    const originalAttemptRecap = LeagueBrain.prototype.attemptRecap;
+    LeagueBrain.prototype.poll = async () => ({ wroteBeat: false, hash: "test", facts: 0 });
+    LeagueBrain.prototype.attemptRecap = async () => ({ status: "skipped_already" });
+
+    try {
+      const limit = 2;
+      await handleScheduled(env, RECAP_NOW, limit);
+      const pollAfterRecap = await scheduledCursorValue();
+      const enrollAfterRecap = await recapEnrollmentState();
+      expect(enrollAfterRecap?.complete).toBe(false);
+      expect(enrollAfterRecap?.afterId).toBeTruthy();
+      expect(pollAfterRecap).not.toBe(cursorBefore);
+
+      await handleScheduled(env, IDLE_NOW, limit);
+      expect(await scheduledCursorValue()).toBe(pollAfterRecap);
+      const enrollAfterIdle = await recapEnrollmentState();
+      expect(enrollAfterIdle?.afterId).not.toBe(enrollAfterRecap?.afterId);
+      expect(enrollAfterIdle?.weekKey).toBe(RECAP_WEEK_KEY);
+    } finally {
+      LeagueBrain.prototype.poll = originalPoll;
+      LeagueBrain.prototype.attemptRecap = originalAttemptRecap;
+    }
+  });
+
+  it("returns empty on idle ticks once enrollment is complete and no pending remain", async () => {
+    const now = 1_805_930_000_000;
+    await seedLeague("enroll_idle_empty", now, "active");
+
+    const originalPoll = LeagueBrain.prototype.poll;
+    const originalAttemptRecap = LeagueBrain.prototype.attemptRecap;
+    const recapCalls: string[] = [];
+    LeagueBrain.prototype.poll = async () => ({ wroteBeat: false, hash: "test", facts: 0 });
+    LeagueBrain.prototype.attemptRecap = async function (this: LeagueBrain) {
+      const dashboard = await this.getDashboard();
+      recapCalls.push(dashboard.leagueId);
+      return { status: "skipped_already" };
+    };
+
+    try {
+      const activeCount = (await listActiveLeagues(env.DB)).length;
+      await handleScheduled(env, RECAP_NOW, activeCount);
+      expect((await recapEnrollmentState())?.complete).toBe(true);
+
+      const maxTicks = drainTickBudget(activeCount, 2);
+      for (let ticks = 0; ticks < maxTicks && (await pendingBelowCapCount(RECAP_WEEK_KEY)) > 0; ticks += 1) {
+        await handleScheduled(env, IDLE_NOW, 2);
+      }
+
+      recapCalls.length = 0;
+      const extra = await handleScheduled(env, IDLE_NOW, 2);
+      expect(extra).toEqual({ polled: 0, recapped: 0 });
+      expect(recapCalls).toEqual([]);
+      expect((await recapEnrollmentState())?.complete).toBe(true);
+      expect(await pendingBelowCapCount(RECAP_WEEK_KEY)).toBe(0);
+    } finally {
+      LeagueBrain.prototype.poll = originalPoll;
       LeagueBrain.prototype.attemptRecap = originalAttemptRecap;
     }
   });

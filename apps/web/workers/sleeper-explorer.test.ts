@@ -35,8 +35,11 @@ import {
   explorerDepsFromEnv,
   lookupExplorerBoard,
   lookupExplorerUser,
+  resolveExplorerUserLeagues,
   type ExplorerCache,
   type ExplorerDeps,
+  type ExplorerUserLeaguesDecision,
+  type ExplorerUserLeaguesDecisionInput,
 } from "../app/lib/sleeper-explorer.server.ts";
 import {
   assembleExplorerBoard,
@@ -200,6 +203,120 @@ async function seedStaleUserFreshLeagues(
     payload: leagues,
   });
 }
+
+function leaguesCacheRead(payload: SleeperLeague[], fresh: boolean) {
+  return { payload, fetchedAt: FIXED_NOW, fresh };
+}
+
+describe("resolveExplorerUserLeagues", () => {
+  const cases: Array<{
+    name: string;
+    input: ExplorerUserLeaguesDecisionInput;
+    expected: ExplorerUserLeaguesDecision;
+  }> = [
+    {
+      name: "reuses a fresh same-user leagues cache without an extra quota charge",
+      input: {
+        user: HANDLE_SWAP_USER_A,
+        cachedUserId: HANDLE_SWAP_USER_A.user_id,
+        leagues: undefined,
+        leaguesCached: leaguesCacheRead(HANDLE_SWAP_LEAGUES_A, true),
+        leaguesCachedUserId: HANDLE_SWAP_USER_A.user_id,
+        resolvedUserLeaguesCached: leaguesCacheRead(HANDLE_SWAP_LEAGUES_A, true),
+        expectLeaguesOrigin: false,
+      },
+      expected: {
+        leagues: HANDLE_SWAP_LEAGUES_A,
+        leaguesCached: leaguesCacheRead(HANDLE_SWAP_LEAGUES_A, true),
+        leaguesCachedUserId: HANDLE_SWAP_USER_A.user_id,
+        needsExtraQuota: false,
+        denyStaleFallback: false,
+      },
+    },
+    {
+      name: "remaps a stale username to a new id and charges extra when that cache is not fresh",
+      input: {
+        user: HANDLE_SWAP_USER_B,
+        cachedUserId: HANDLE_SWAP_USER_A.user_id,
+        leagues: undefined,
+        leaguesCached: leaguesCacheRead(HANDLE_SWAP_LEAGUES_A, true),
+        leaguesCachedUserId: HANDLE_SWAP_USER_A.user_id,
+        resolvedUserLeaguesCached: leaguesCacheRead(HANDLE_SWAP_LEAGUES_B, false),
+        expectLeaguesOrigin: false,
+      },
+      expected: {
+        leagues: undefined,
+        leaguesCached: leaguesCacheRead(HANDLE_SWAP_LEAGUES_B, false),
+        leaguesCachedUserId: HANDLE_SWAP_USER_B.user_id,
+        needsExtraQuota: true,
+        denyStaleFallback: true,
+      },
+    },
+    {
+      name: "remaps a stale username onto a fresh cache for the new user id",
+      input: {
+        user: HANDLE_SWAP_USER_B,
+        cachedUserId: HANDLE_SWAP_USER_A.user_id,
+        leagues: undefined,
+        leaguesCached: leaguesCacheRead(HANDLE_SWAP_LEAGUES_A, true),
+        leaguesCachedUserId: HANDLE_SWAP_USER_A.user_id,
+        resolvedUserLeaguesCached: leaguesCacheRead(HANDLE_SWAP_LEAGUES_B, true),
+        expectLeaguesOrigin: false,
+      },
+      expected: {
+        leagues: HANDLE_SWAP_LEAGUES_B,
+        leaguesCached: leaguesCacheRead(HANDLE_SWAP_LEAGUES_B, true),
+        leaguesCachedUserId: HANDLE_SWAP_USER_B.user_id,
+        needsExtraQuota: false,
+        denyStaleFallback: true,
+      },
+    },
+    {
+      name: "loads leagues for a newly resolved user id without an extra quota charge",
+      input: {
+        user: HANDLE_SWAP_USER_A,
+        cachedUserId: undefined,
+        leagues: undefined,
+        leaguesCached: null,
+        leaguesCachedUserId: undefined,
+        resolvedUserLeaguesCached: null,
+        expectLeaguesOrigin: true,
+      },
+      expected: {
+        leagues: undefined,
+        leaguesCached: null,
+        leaguesCachedUserId: HANDLE_SWAP_USER_A.user_id,
+        needsExtraQuota: false,
+        denyStaleFallback: false,
+      },
+    },
+    {
+      name: "allows stale fallback for the same user when extra quota is not needed",
+      input: {
+        user: HANDLE_SWAP_USER_A,
+        cachedUserId: HANDLE_SWAP_USER_A.user_id,
+        leagues: undefined,
+        leaguesCached: leaguesCacheRead(HANDLE_SWAP_LEAGUES_A, false),
+        leaguesCachedUserId: HANDLE_SWAP_USER_A.user_id,
+        resolvedUserLeaguesCached: leaguesCacheRead(HANDLE_SWAP_LEAGUES_A, false),
+        expectLeaguesOrigin: true,
+      },
+      expected: {
+        leagues: undefined,
+        leaguesCached: leaguesCacheRead(HANDLE_SWAP_LEAGUES_A, false),
+        leaguesCachedUserId: HANDLE_SWAP_USER_A.user_id,
+        needsExtraQuota: false,
+        denyStaleFallback: false,
+      },
+    },
+  ];
+
+  for (const { name, input, expected } of cases) {
+    it(name, () => {
+      expect(resolveExplorerUserLeagues(input)).toEqual(expected);
+    });
+  }
+});
 
 describe("isValidExplorerUsername", () => {
   it("accepts 1–32 lowercase letters, digits, underscores, and hyphens", () => {

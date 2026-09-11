@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { SCHEMA_SQL } from "./ensure.ts";
+import { SCHEMA_SQL, SCHEMA_STATEMENTS } from "./ensure.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const d1Dir = join(here, "../../../apps/web/d1");
@@ -81,11 +81,31 @@ describe("SCHEMA_SQL", () => {
     expect(statements("-- whole line\nSELECT 1 -- inline\n; -- trailing")).toEqual(["SELECT 1"]);
   });
 
-  it("contains no -- SQL comments because ensureSchema splits on semicolons without stripping them", () => {
-    expect(SCHEMA_SQL).not.toMatch(/--/);
+  it("is derived by joining SCHEMA_STATEMENTS and never split on semicolons to apply", () => {
+    expect(SCHEMA_SQL).toBe(`${SCHEMA_STATEMENTS.join(";\n\n")};\n`);
+    expect(SCHEMA_STATEMENTS.length).toBeGreaterThan(0);
+    for (const statement of SCHEMA_STATEMENTS) {
+      const applied = statement.replace(/--.*$/gm, "").trim();
+      expect(applied).toMatch(/^CREATE (TABLE|UNIQUE INDEX|INDEX) IF NOT EXISTS\b/i);
+      expect(applied).not.toMatch(/\bDROP\b/i);
+      expect(applied).not.toMatch(/\bALTER\b/i);
+    }
     expect(SCHEMA_SQL).not.toMatch(/\bALTER\b/i);
     expect(SCHEMA_SQL).toMatch(/provisioning_started_at INTEGER\s*(?:,|\))/);
     expect(SCHEMA_SQL).not.toMatch(/provisioning_started_at INTEGER NOT NULL/);
+  });
+
+  it("keeps a statement with a semicolon in a SQL comment as one SCHEMA_STATEMENTS entry", () => {
+    const quota = SCHEMA_STATEMENTS.find((statement) =>
+      /CREATE TABLE IF NOT EXISTS explorer_origin_quota\b/i.test(statement),
+    );
+    expect(quota).toMatch(/--[^\n]*;/);
+    expect(quota?.split(";").length).toBeGreaterThan(1);
+    const naive = SCHEMA_SQL.split(";")
+      .map((part) => part.trim())
+      .filter((part) => part.length > 0);
+    expect(naive.length).toBeGreaterThan(SCHEMA_STATEMENTS.length);
+    expect(SCHEMA_STATEMENTS.filter((statement) => statement.includes("explorer_origin_quota"))).toHaveLength(1);
   });
 
   it("matches schema.sql after stripping comments", () => {

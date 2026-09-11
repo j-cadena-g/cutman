@@ -4,11 +4,16 @@ import { EXAMPLE_SLEEPER_USERNAME, createFixtureClient } from "@cutman/sleeper";
 import { beforeAll, describe, expect, it } from "vitest";
 import {
   EXPLORER_ORIGIN_QUOTA_CONSUME_SQL,
+  EXPLORER_ORIGIN_QUOTA_STALE_RETENTION_HOURS,
+  EXPLORER_ORIGIN_QUOTA_STALE_SWEEP_LIMIT,
   EXPLORER_QUOTA_HOUR_MS,
   createMemoryExplorerOriginQuota,
   d1ExplorerOriginQuota,
   d1ExplorerOriginQuotaAccepted,
+  explorerOriginQuotaConsumeBinds,
   explorerOriginQuotaHourKey,
+  explorerOriginQuotaStaleCutoffHourKey,
+  sweepStaleExplorerOriginQuota,
   type ExplorerOriginQuota,
   type ExplorerOriginQuotaRow,
 } from "../app/lib/explorer-origin-quota.server.ts";
@@ -60,17 +65,27 @@ async function runConsumeSql(input: {
   limit: number;
 }): Promise<{ changes: number | undefined; rowsWritten: number | undefined }> {
   const result = await env.DB.prepare(EXPLORER_ORIGIN_QUOTA_CONSUME_SQL)
-    .bind(
-      input.clerkUserId,
-      explorerOriginQuotaHourKey(input.now),
-      input.charge,
-      input.charge,
-      input.limit,
-      input.limit,
-      input.limit,
-    )
+    .bind(...explorerOriginQuotaConsumeBinds(input))
     .run();
   return { changes: result.meta.changes, rowsWritten: result.meta.rows_written };
+}
+
+async function insertQuotaRow(clerkUserId: string, hourKey: number, used = 1): Promise<void> {
+  await env.DB.prepare(
+    "INSERT INTO explorer_origin_quota (clerk_user_id, hour_key, used) VALUES (?, ?, ?)",
+  )
+    .bind(clerkUserId, hourKey, used)
+    .run();
+}
+
+async function countQuotaRows(clerkUserIds: string[]): Promise<number> {
+  const placeholders = clerkUserIds.map(() => "?").join(", ");
+  const row = await env.DB.prepare(
+    `SELECT COUNT(*) AS n FROM explorer_origin_quota WHERE clerk_user_id IN (${placeholders})`,
+  )
+    .bind(...clerkUserIds)
+    .first<{ n: number }>();
+  return row?.n ?? -1;
 }
 
 function makeUserDeps(overrides: Partial<ExplorerDeps> = {}): ExplorerDeps {
@@ -263,7 +278,6 @@ describe("d1 explorer origin quota metadata and concurrency", () => {
     expect(await rowCountOnD1(clerkUserId)).toBe(1);
   });
 });
-
 describe("explorer lookups against the quota abstraction", () => {
   it("returns quota_exceeded for one Clerk user without blocking another in the same hour", async () => {
     const originQuota = createMemoryExplorerOriginQuota();
@@ -330,5 +344,78 @@ describe("explorer lookups against the quota abstraction", () => {
     expect(results.filter((result) => result.kind === "quota_exceeded").length).toBe(18);
     expect(await usedOnD1(clerkUserId, FIXED_NOW)).toBe(4);
     expect(await rowCountOnD1(clerkUserId)).toBe(1);
+  });
+});
+describe("explorer origin quota consume binds", () => {
+  it("emits the seven-placeholder tuple in consume SQL order", () => {
+    expect(
+      explorerOriginQuotaConsumeBinds({
+        clerkUserId: USER_A,
+        charge: 2,
+        now: FIXED_NOW,
+        limit: 5,
+      }),
+    ).toEqual([USER_A, explorerOriginQuotaHourKey(FIXED_NOW), 2, 2, 5, 5, 5]);
+  });
+});
+
+describe("stale explorer origin quota sweep", () => {
+  it("deletes rows older than the 24h retention and keeps the current hour", async () => {
+    const staleUser = `stale_${crypto.randomUUID()}`;
+    const edgeUser = `edge_${crypto.randomUUID()}`;
+    const freshUser = `fresh_${crypto.randomUUID()}`;
+    const currentHour = explorerOriginQuotaHourKey(FIXED_NOW);
+    const cutoff = explorerOriginQuotaStaleCutoffHourKey(FIXED_NOW);
+    expect(cutoff).toBe(currentHour - EXPLORER_ORIGIN_QUOTA_STALE_RETENTION_HOURS);
+    await insertQuotaRow(staleUser, cutoff - 1);
+    await insertQuotaRow(edgeUser, cutoff);
+    await insertQuotaRow(freshUser, currentHour, 3);
+
+    expect(await sweepStaleExplorerOriginQuota(env.DB, { now: FIXED_NOW })).toBeGreaterThanOrEqual(1);
+    expect(await quotaRowOnD1(staleUser)).toBeNull();
+    expect(await quotaRowOnD1(edgeUser)).toEqual({ hour_key: cutoff, used: 1 });
+    expect(await quotaRowOnD1(freshUser)).toEqual({ hour_key: currentHour, used: 3 });
+  });
+
+  it("bounds deletions per call and leaves remaining stale rows for a later tick", async () => {
+    await sweepStaleExplorerOriginQuota(env.DB, {
+      now: FIXED_NOW,
+      limit: EXPLORER_ORIGIN_QUOTA_STALE_SWEEP_LIMIT,
+    });
+    const staleHour = explorerOriginQuotaStaleCutoffHourKey(FIXED_NOW) - 1;
+    const ids = [crypto.randomUUID(), crypto.randomUUID(), crypto.randomUUID()].map(
+      (id) => `sweep_${id}`,
+    );
+    for (const id of ids) {
+      await insertQuotaRow(id, staleHour);
+    }
+    expect(await countQuotaRows(ids)).toBe(3);
+    expect(await sweepStaleExplorerOriginQuota(env.DB, { now: FIXED_NOW, limit: 2 })).toBe(2);
+    expect(await countQuotaRows(ids)).toBe(1);
+    expect(await sweepStaleExplorerOriginQuota(env.DB, { now: FIXED_NOW, limit: 2 })).toBe(1);
+    expect(await countQuotaRows(ids)).toBe(0);
+  });
+
+  it("does not weaken atomic consume for a current-hour row", async () => {
+    const quota = d1ExplorerOriginQuota(env.DB);
+    const clerkUserId = `keep_${crypto.randomUUID()}`;
+    expect(await quota.tryConsume({ clerkUserId, charge: 1, now: FIXED_NOW, limit: 2 })).toBe(true);
+    expect(await sweepStaleExplorerOriginQuota(env.DB, { now: FIXED_NOW })).toBeGreaterThanOrEqual(0);
+    expect(await quota.tryConsume({ clerkUserId, charge: 1, now: FIXED_NOW, limit: 2 })).toBe(true);
+    expect(await quota.tryConsume({ clerkUserId, charge: 1, now: FIXED_NOW, limit: 2 })).toBe(false);
+    expect(await usedOnD1(clerkUserId, FIXED_NOW)).toBe(2);
+    expect(await rowCountOnD1(clerkUserId)).toBe(1);
+  });
+
+  it("returns 0 for invalid now, retention, or limit without deleting current-hour rows", async () => {
+    const clerkUserId = `invalid_sweep_${crypto.randomUUID()}`;
+    await insertQuotaRow(clerkUserId, explorerOriginQuotaHourKey(FIXED_NOW), 4);
+    expect(await sweepStaleExplorerOriginQuota(env.DB, { now: Number.NaN })).toBe(0);
+    expect(await sweepStaleExplorerOriginQuota(env.DB, { now: FIXED_NOW, retentionHours: 0 })).toBe(0);
+    expect(await sweepStaleExplorerOriginQuota(env.DB, { now: FIXED_NOW, limit: 0 })).toBe(0);
+    expect(await quotaRowOnD1(clerkUserId)).toEqual({
+      hour_key: explorerOriginQuotaHourKey(FIXED_NOW),
+      used: 4,
+    });
   });
 });

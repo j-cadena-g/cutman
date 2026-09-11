@@ -121,10 +121,16 @@ export async function isSameRealPath(leftPath, rightPath) {
   }
 }
 
-const isCliEntrypoint =
-  Boolean(process.argv[1]) &&
-  (await isSameRealPath(process.argv[1], fileURLToPath(import.meta.url)));
+/**
+ * Absent argv is a safe non-entrypoint (imports, `node -e`). A present path that
+ * cannot be resolved fails loudly instead of skipping `main()`.
+ */
+export async function isCliEntrypoint(argvPath, modulePath) {
+  if (!argvPath) return false;
+  await realpath(argvPath);
+  return isSameRealPath(argvPath, modulePath);
+}
 
-if (isCliEntrypoint) {
+if (await isCliEntrypoint(process.argv[1], fileURLToPath(import.meta.url))) {
   await main();
 }

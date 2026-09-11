@@ -38,6 +38,8 @@ const ALLOWED_OUTPUT_PATHS = Object.freeze([
 
 const USE_SLEEPER_FIXTURES_ERROR =
   'Invalid USE_SLEEPER_FIXTURES; expected "true" or "false".';
+const USE_SLEEPER_FIXTURES_DEPLOY_ERROR =
+  'USE_SLEEPER_FIXTURES must be "false" for the deploy config.';
 
 const requiredValues = {
   CLOUDFLARE_ACCOUNT_ID: {
@@ -307,6 +309,14 @@ function resolveUseSleeperFixtures(env) {
   throw new Error(USE_SLEEPER_FIXTURES_ERROR);
 }
 
+function resolveUseSleeperFixturesForConfig(isDevConfig, env) {
+  const value = resolveUseSleeperFixtures(env);
+  if (!isDevConfig && value === "true") {
+    throw new Error(USE_SLEEPER_FIXTURES_DEPLOY_ERROR);
+  }
+  return value;
+}
+
 function usesSleeperFixtures(env) {
   return resolveUseSleeperFixtures(env) === "true";
 }
@@ -373,7 +383,7 @@ export function renderWranglerConfig(
     APP_ENV:
       env.APP_ENV?.trim() ||
       (isDevConfig ? "development" : "production"),
-    USE_SLEEPER_FIXTURES: resolveUseSleeperFixtures(env),
+    USE_SLEEPER_FIXTURES: resolveUseSleeperFixturesForConfig(isDevConfig, env),
     PILOT_SLEEPER_LEAGUE_ID: resolvePilotSleeperLeagueId(isDevConfig, env),
   };
   if (

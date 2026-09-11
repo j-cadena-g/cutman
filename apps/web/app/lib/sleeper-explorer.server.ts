@@ -146,6 +146,53 @@ function plannedUserOriginCharge(
   };
 }
 
+export type ExplorerUserLeaguesDecisionInput = {
+  user: Pick<SleeperUser, "user_id">;
+  cachedUserId: string | undefined;
+  leagues: SleeperLeague[] | undefined;
+  leaguesCached: CacheRead<SleeperLeague[]> | null;
+  leaguesCachedUserId: string | undefined;
+  /** Leagues cache already loaded for `user.user_id` when ownership must switch. */
+  resolvedUserLeaguesCached: CacheRead<SleeperLeague[]> | null;
+  expectLeaguesOrigin: boolean;
+};
+
+export type ExplorerUserLeaguesDecision = {
+  leagues: SleeperLeague[] | undefined;
+  leaguesCached: CacheRead<SleeperLeague[]> | null;
+  leaguesCachedUserId: string;
+  needsExtraQuota: boolean;
+  denyStaleFallback: boolean;
+};
+
+/**
+ * After the live Sleeper user is known, decide which leagues cache this lookup owns
+ * and whether a second origin charge is required before fetching leagues.
+ */
+export function resolveExplorerUserLeagues(
+  input: ExplorerUserLeaguesDecisionInput,
+): ExplorerUserLeaguesDecision {
+  const denyStaleFallback = Boolean(input.cachedUserId && input.user.user_id !== input.cachedUserId);
+  let leagues = input.leagues;
+  let leaguesCached = input.leaguesCached;
+
+  if (input.leaguesCachedUserId !== input.user.user_id) {
+    leagues = undefined;
+    leaguesCached = input.resolvedUserLeaguesCached;
+    if (leaguesCached?.fresh) leagues = leaguesCached.payload;
+  } else if (leagues === undefined && leaguesCached?.fresh) {
+    leagues = leaguesCached.payload;
+  }
+
+  return {
+    leagues,
+    leaguesCached,
+    leaguesCachedUserId: input.user.user_id,
+    needsExtraQuota: leagues === undefined && !input.expectLeaguesOrigin,
+    denyStaleFallback,
+  };
+}
+
 export type ExplorerUserResult =
   | {
       kind: "ok";
@@ -299,22 +346,30 @@ export async function lookupExplorerUser(
     }
     if (!user) return { kind: "not_found", username };
 
-    if (leaguesCachedUserId !== user.user_id) {
-      // Username remapped. Leave the previous id's leagues cache intact — it is still
-      // valid for that user — and load/fetch leagues for the new id only.
-      leagues = undefined;
-      leaguesCachedUserId = user.user_id;
-      leaguesCached = await readCache<SleeperLeague[]>(deps, leaguesKey(user.user_id, season), LEAGUES_TTL_MS);
-      if (leaguesCached?.fresh) leagues = leaguesCached.payload;
-    } else if (leagues === undefined && leaguesCached?.fresh) {
-      leagues = leaguesCached.payload;
-    }
+    // Username remapped: leave the previous id's leagues cache intact and load the
+    // cache for the resolved id only. A first-time user id is the same ownership switch.
+    const resolvedUserLeaguesCached =
+      leaguesCachedUserId === user.user_id
+        ? leaguesCached
+        : await readCache<SleeperLeague[]>(deps, leaguesKey(user.user_id, season), LEAGUES_TTL_MS);
+    const resolved = resolveExplorerUserLeagues({
+      user,
+      cachedUserId,
+      leagues,
+      leaguesCached,
+      leaguesCachedUserId,
+      resolvedUserLeaguesCached,
+      expectLeaguesOrigin,
+    });
+    leagues = resolved.leagues;
+    leaguesCached = resolved.leaguesCached;
+    leaguesCachedUserId = resolved.leaguesCachedUserId;
 
     if (leagues === undefined) {
-      if (!expectLeaguesOrigin) {
+      if (resolved.needsExtraQuota) {
         const extraAllowed = await tryConsumeQuota(deps, input.clerkUserId, 1);
         if (!extraAllowed) {
-          if (cachedUserId && user.user_id !== cachedUserId) return { kind: "quota_exceeded" };
+          if (resolved.denyStaleFallback) return { kind: "quota_exceeded" };
           return staleUserResult(username, userCached, leaguesCached, season, week) ?? { kind: "quota_exceeded" };
         }
       }

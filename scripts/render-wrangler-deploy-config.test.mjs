@@ -142,6 +142,9 @@ async function withTempAllowedOutputs(fn) {
   }
 }
 
+const USE_SLEEPER_FIXTURES_DEPLOY_ERROR =
+  'USE_SLEEPER_FIXTURES must be "false" for the deploy config.';
+
 function assertInvalidUseSleeperFixtures(envValue) {
   assert.throws(
     () => renderProduction(baseEnv({ USE_SLEEPER_FIXTURES: envValue })),
@@ -150,6 +153,19 @@ function assertInvalidUseSleeperFixtures(envValue) {
         error.message,
         'Invalid USE_SLEEPER_FIXTURES; expected "true" or "false".',
       );
+      return true;
+    },
+  );
+}
+
+function assertRejectedDeployFixtures(env) {
+  assert.throws(
+    () => renderProduction(env),
+    (error) => {
+      assert.equal(error.message, USE_SLEEPER_FIXTURES_DEPLOY_ERROR);
+      assert.doesNotMatch(error.message, new RegExp(FAKE_PILOT_ID));
+      assert.doesNotMatch(error.message, new RegExp(FAKE_PLAYERS_KV_ID));
+      assert.doesNotMatch(error.message, /aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/);
       return true;
     },
   );
@@ -587,27 +603,53 @@ describe("render-wrangler-deploy-config", () => {
     );
   });
 
-  it("rejects production fixture-mode when PILOT_SLEEPER_LEAGUE_ID is omitted", () => {
-    assert.throws(
-      () =>
-        renderProduction(
-          baseEnv({ USE_SLEEPER_FIXTURES: "true", PILOT_SLEEPER_LEAGUE_ID: "" }),
-        ),
-      /PILOT_SLEEPER_LEAGUE_ID/,
+  it("rejects USE_SLEEPER_FIXTURES=true on production render without echoing secrets", () => {
+    assertRejectedDeployFixtures(baseEnv({ USE_SLEEPER_FIXTURES: "true" }));
+    assertRejectedDeployFixtures(
+      baseEnv({ USE_SLEEPER_FIXTURES: " true ", PILOT_SLEEPER_LEAGUE_ID: "" }),
+    );
+    assertRejectedDeployFixtures(
+      baseEnv({
+        USE_SLEEPER_FIXTURES: "true",
+        PILOT_SLEEPER_LEAGUE_ID: PLACEHOLDER_PILOT_ID,
+      }),
     );
   });
 
-  it("rejects production fixture-mode when PILOT_SLEEPER_LEAGUE_ID is the placeholder", () => {
-    assert.throws(
-      () =>
-        renderProduction(
-          baseEnv({
-            USE_SLEEPER_FIXTURES: "true",
-            PILOT_SLEEPER_LEAGUE_ID: PLACEHOLDER_PILOT_ID,
+  it("rejects USE_SLEEPER_FIXTURES=true for deploy output before writing", async () => {
+    await withTempAllowedOutputs(async ({ dir, allowedOutputs }) => {
+      const before = await snapshotAllowedOutputs();
+      await assert.rejects(
+        () =>
+          writeRenderedWranglerConfigForAllowedPaths({
+            outputPath: allowedOutputs.production,
+            env: baseEnv({ USE_SLEEPER_FIXTURES: "true" }),
+            allowedOutputs,
+            symlinkRoot: dir,
           }),
-        ),
-      /PILOT_SLEEPER_LEAGUE_ID.*placeholder/s,
+        (error) => {
+          assert.equal(error.message, USE_SLEEPER_FIXTURES_DEPLOY_ERROR);
+          assert.doesNotMatch(error.message, new RegExp(FAKE_PILOT_ID));
+          return true;
+        },
+      );
+      await assert.rejects(() => readFile(allowedOutputs.production));
+      await assert.rejects(() => readFile(allowedOutputs.dev));
+      assert.deepEqual(await snapshotAllowedOutputs(), before);
+    });
+  });
+
+  it("rejects USE_SLEEPER_FIXTURES=true on the deploy CLI path before writing", async () => {
+    const before = await snapshotAllowedOutputs();
+    const result = spawnRenderer(
+      baseEnv({ USE_SLEEPER_FIXTURES: "true" }),
+      WRANGLER_DEPLOY_OUTPUT_PATH,
     );
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /USE_SLEEPER_FIXTURES must be "false" for the deploy config/);
+    assert.doesNotMatch(result.stderr, /CLOUDFLARE_ACCOUNT_ID/);
+    assert.doesNotMatch(result.stderr, new RegExp(FAKE_PILOT_ID));
+    assert.deepEqual(await snapshotAllowedOutputs(), before);
   });
 
   it("rejects an all-zero PILOT_SLEEPER_LEAGUE_ID on production render", () => {
@@ -701,8 +743,12 @@ describe("render-wrangler-deploy-config", () => {
 
   it("trims surrounding whitespace on explicit true and false", () => {
     assert.match(
-      renderProduction(baseEnv({ USE_SLEEPER_FIXTURES: " true " })),
+      renderDev(baseEnv({ USE_SLEEPER_FIXTURES: " true " })),
       useSleeperFixturesPattern("true"),
+    );
+    assert.match(
+      renderProduction(baseEnv({ USE_SLEEPER_FIXTURES: " false " })),
+      useSleeperFixturesPattern("false"),
     );
     assert.match(
       renderDev(baseEnv({ USE_SLEEPER_FIXTURES: "\tfalse\n" })),
