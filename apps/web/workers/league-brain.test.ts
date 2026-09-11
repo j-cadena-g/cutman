@@ -4,6 +4,7 @@ import {
   activateLeague,
   createLeague,
   ensureSchema,
+  getLeague,
   listRecapRecipients,
   setRecapOptIn,
   upsertLeagueMember,
@@ -769,6 +770,79 @@ describe("LeagueBrain legacy Durable Object migration", () => {
     ]);
   });
 
+  it("skips the Sleeper-named source RPC and marks complete for a non-legacy internal id", async () => {
+    const sleeperId = "900000000000000072";
+    const freshId = "660e8400-e29b-41d4-a716-446655440001";
+    await seedLegacyBrain(sleeperId, {
+      leagueId: sleeperId,
+      sleeperLeagueId: sleeperId,
+    });
+    const next = env.LEAGUE_BRAIN.getByName(freshId);
+    await instrumentLegacyExport(next);
+    await next.bootstrap({
+      leagueId: freshId,
+      sleeperLeagueId: sleeperId,
+      name: "Cutman League",
+      tone: "playful",
+    });
+
+    expect(await legacyExportCallCount(next)).toBe(0);
+    const ignored = await readBrainSql(next);
+    expect(ignored.snapshots).toEqual([]);
+    expect(ignored.beats).toEqual([]);
+    expect(ignored.recaps).toEqual([]);
+    expect(ignored.bible).toEqual([
+      expect.objectContaining({
+        entry: "Cutman League is in the book. Tone: playful.",
+      }),
+    ]);
+    expect(ignored.settings).toEqual(
+      expect.arrayContaining([
+        { key: "leagueId", value: freshId },
+        { key: "sleeperLeagueId", value: sleeperId },
+        { key: "legacyMigratedFrom", value: sleeperId },
+      ]),
+    );
+    expect(ignored.settings.some((row) => row.key === "legacyImportPending")).toBe(false);
+    expect(ignored.settings.some((row) => row.key === "legacyImportFailureCount")).toBe(false);
+  });
+
+  it("still exports from the Sleeper-named source into the mapped legacy destination", async () => {
+    const sleeperId = "900000000000000073";
+    const mappedId = `legacy_${sleeperId}`;
+    await seedLegacyBrain(sleeperId, {
+      leagueId: sleeperId,
+      sleeperLeagueId: sleeperId,
+    });
+    const next = env.LEAGUE_BRAIN.getByName(mappedId);
+    await instrumentLegacyExport(next);
+    await next.bootstrap({
+      leagueId: mappedId,
+      sleeperLeagueId: sleeperId,
+      name: "Cutman League",
+      tone: "playful",
+    });
+
+    expect(await legacyExportCallCount(next)).toBe(1);
+    const migrated = await readBrainSql(next);
+    expect(migrated.snapshots).toHaveLength(1);
+    expect(migrated.beats).toHaveLength(1);
+    expect(migrated.bible).toEqual([
+      expect.objectContaining({
+        entry: "Week 2: the trade that split the group chat.",
+      }),
+    ]);
+    expect(migrated.recaps).toHaveLength(1);
+    expect(migrated.settings).toEqual(
+      expect.arrayContaining([
+        { key: "leagueId", value: mappedId },
+        { key: "sleeperLeagueId", value: sleeperId },
+        { key: "legacyMigratedFrom", value: sleeperId },
+      ]),
+    );
+    expect(migrated.settings.some((row) => row.key === "legacyImportPending")).toBe(false);
+  });
+
   it("logs unknown reason when the rejected export is not an Error", async () => {
     const sleeperId = "900000000000000081";
     const internalId = `legacy_${sleeperId}`;
@@ -1496,5 +1570,212 @@ describe("LeagueBrain legacy Durable Object migration", () => {
         { key: "legacyMigratedFrom", value: sleeperId },
       ]),
     );
+  });
+});
+
+describe("LeagueBrain persistTone", () => {
+  type ToneBrain = {
+    env: Env;
+    persistTone: LeagueBrain["persistTone"];
+    putSetting(key: string, value: string): void;
+    getDashboard: LeagueBrain["getDashboard"];
+  };
+
+  async function bootLeague(
+    name: string,
+    leagueId: string,
+  ): Promise<{ stub: DurableObjectStub<LeagueBrain>; leagueId: string }> {
+    await ensureSchema(env.DB);
+    const league = await createLeague(env.DB, {
+      id: leagueId,
+      sleeperLeagueId: `sleeper-${leagueId}`,
+      name: "Tone League",
+      season: "2026",
+      now: Date.now(),
+    });
+    await activateLeague(env.DB, league.id, Date.now() + 1);
+    const stub = env.LEAGUE_BRAIN.getByName(name);
+    await stub.bootstrap({
+      leagueId: league.id,
+      sleeperLeagueId: league.sleeper_league_id,
+      name: league.name,
+      tone: "playful",
+    });
+    return { stub, leagueId: league.id };
+  }
+
+  function interceptToneUpdates(db: D1Database, onToneUpdate: () => Promise<void>): D1Database {
+    return new Proxy(db, {
+      get(target, prop, receiver) {
+        if (prop === "prepare") {
+          return (query: string) => {
+            const stmt = target.prepare(query);
+            if (!query.includes("UPDATE leagues SET tone")) return stmt;
+            return new Proxy(stmt, {
+              get(stmtTarget, stmtProp, stmtReceiver) {
+                if (stmtProp === "bind") {
+                  return (...args: unknown[]) => {
+                    const bound = (stmtTarget as D1PreparedStatement).bind(...args);
+                    return new Proxy(bound, {
+                      get(boundTarget, boundProp, boundReceiver) {
+                        if (boundProp === "run") {
+                          return async () => {
+                            await onToneUpdate();
+                            return (boundTarget as D1PreparedStatement).run();
+                          };
+                        }
+                        const value = Reflect.get(boundTarget, boundProp, boundReceiver);
+                        return typeof value === "function" ? value.bind(boundTarget) : value;
+                      },
+                    });
+                  };
+                }
+                const value = Reflect.get(stmtTarget, stmtProp, stmtReceiver);
+                return typeof value === "function" ? value.bind(stmtTarget) : value;
+              },
+            });
+          };
+        }
+        const value = Reflect.get(target, prop, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+  }
+
+  async function withInterceptedToneDb<T>(
+    stub: DurableObjectStub<LeagueBrain>,
+    onToneUpdate: () => Promise<void>,
+    fn: (brain: ToneBrain) => Promise<T>,
+  ): Promise<T> {
+    return runInDurableObject(stub, async (instance) => {
+      const brain = instance as unknown as ToneBrain;
+      const originalDb = brain.env.DB;
+      brain.env.DB = interceptToneUpdates(originalDb, onToneUpdate);
+      try {
+        return await fn(brain);
+      } finally {
+        brain.env.DB = originalDb;
+      }
+    });
+  }
+
+  it("writes the Durable Object setting and D1 together", async () => {
+    const { stub, leagueId } = await bootLeague("tone-persist-ok", "lg_tone_persist_ok");
+    await expect(stub.persistTone("savage")).resolves.toEqual({ ok: true });
+    expect((await stub.getDashboard()).tone).toBe("savage");
+    expect((await getLeague(env.DB, leagueId))?.tone).toBe("savage");
+  });
+
+  it("restores the prior Durable Object tone when D1 fails", async () => {
+    const { stub, leagueId } = await bootLeague("tone-persist-rollback", "lg_tone_persist_rollback");
+    const result = await withInterceptedToneDb(
+      stub,
+      async () => {
+        throw new Error("simulated d1 tone write failure");
+      },
+      (brain) => brain.persistTone("savage"),
+    );
+    expect(result).toEqual({ ok: false, error: "save" });
+    expect((await stub.getDashboard()).tone).toBe("playful");
+    expect((await getLeague(env.DB, leagueId))?.tone).toBe("playful");
+  });
+
+  it("returns desync when D1 fails and restoring the prior tone also fails", async () => {
+    const { stub, leagueId } = await bootLeague("tone-persist-desync", "lg_tone_persist_desync");
+    const result = await withInterceptedToneDb(
+      stub,
+      async () => {
+        throw new Error("simulated d1 tone write failure");
+      },
+      async (brain) => {
+        const originalPut = brain.putSetting.bind(brain);
+        brain.putSetting = (key, value) => {
+          if (key === "tone" && value === "playful") throw new Error("simulated storage rollback failure");
+          originalPut(key, value);
+        };
+        return brain.persistTone("savage");
+      },
+    );
+    expect(result).toEqual({ ok: false, error: "desync" });
+    expect((await stub.getDashboard()).tone).toBe("savage");
+    expect((await getLeague(env.DB, leagueId))?.tone).toBe("playful");
+  });
+
+  it("returns save when the object is not bootstrapped", async () => {
+    const stub = env.LEAGUE_BRAIN.getByName("tone-persist-unbootstrapped");
+    await expect(stub.persistTone("savage")).resolves.toEqual({ ok: false, error: "save" });
+  });
+
+  it("releases the mutation lock after a D1 failure so a later persist can succeed", async () => {
+    const { stub, leagueId } = await bootLeague("tone-persist-lock-release", "lg_tone_persist_lock_release");
+    const first = await withInterceptedToneDb(
+      stub,
+      async () => {
+        throw new Error("simulated d1 tone write failure");
+      },
+      (brain) => brain.persistTone("savage"),
+    );
+    expect(first).toEqual({ ok: false, error: "save" });
+    await expect(stub.persistTone("sportscenter")).resolves.toEqual({ ok: true });
+    expect((await stub.getDashboard()).tone).toBe("sportscenter");
+    expect((await getLeague(env.DB, leagueId))?.tone).toBe("sportscenter");
+  });
+
+  it("serializes overlapping persists so a failed older write cannot clobber a newer success", async () => {
+    const { stub, leagueId } = await bootLeague("tone-persist-race", "lg_tone_persist_race");
+    let toneWrites = 0;
+    let releaseFirstWrite!: () => void;
+    let resolveFirstWriteStarted!: () => void;
+    const firstWriteStarted = new Promise<void>((resolve) => {
+      resolveFirstWriteStarted = resolve;
+    });
+    const firstWriteGate = new Promise<void>((resolve) => {
+      releaseFirstWrite = resolve;
+    });
+    let resolveSecondWriteStarted!: () => void;
+    const secondWriteStarted = new Promise<void>((resolve) => {
+      resolveSecondWriteStarted = resolve;
+    });
+
+    const outcome = await withInterceptedToneDb(
+      stub,
+      async () => {
+        toneWrites += 1;
+        if (toneWrites === 1) {
+          resolveFirstWriteStarted();
+          await firstWriteGate;
+          throw new Error("simulated d1 tone write failure");
+        }
+        resolveSecondWriteStarted();
+      },
+      async (brain) => {
+        const older = brain.persistTone("savage");
+        await firstWriteStarted;
+        // Dashboard reads must not wait on the D1 write. If they shared the mutation
+        // lock, this would deadlock until firstWriteGate is released.
+        expect((await brain.getDashboard()).tone).toBe("savage");
+
+        const newer = brain.persistTone("sportscenter");
+        await Promise.race([
+          secondWriteStarted.then(() => {
+            throw new Error("newer persist reached D1 while the older write was still in flight");
+          }),
+          new Promise((resolve) => setTimeout(resolve, 50)),
+        ]);
+        expect(toneWrites).toBe(1);
+        expect((await brain.getDashboard()).tone).toBe("savage");
+
+        releaseFirstWrite();
+        return Promise.all([older, newer]);
+      },
+    );
+
+    expect(outcome).toEqual([
+      { ok: false, error: "save" },
+      { ok: true },
+    ]);
+    expect(toneWrites).toBe(2);
+    expect((await stub.getDashboard()).tone).toBe("sportscenter");
+    expect((await getLeague(env.DB, leagueId))?.tone).toBe("sportscenter");
   });
 });

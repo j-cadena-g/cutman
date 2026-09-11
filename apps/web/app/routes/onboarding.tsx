@@ -7,6 +7,10 @@ import {
 import { useEffect, useState } from "react";
 import { Form, Link, redirect } from "react-router";
 import {
+  loadCachedOnboardingDiscovery,
+  onboardingDiscoveryRefreshRequested,
+} from "~/lib/onboarding-discovery-cache.server";
+import {
   connectSleeperAccount,
   createChallengeCode,
   discoverLeagues,
@@ -23,6 +27,7 @@ import {
   provisioningStartedAtFromLeague,
   type PilotLeagueStep,
 } from "~/lib/onboarding-view";
+import { kvExplorerCache } from "~/lib/sleeper-explorer.server";
 import { provisionAndActivateLeague, provisioningDepsFromEnv, retryProvisionAndActivateLeague } from "~/lib/provisioning.server";
 import { BrandNav } from "~/components/brand-nav";
 import { Badge } from "~/components/ui/badge";
@@ -38,7 +43,8 @@ import type { Route } from "./+types/onboarding";
 
 // `/onboarding`: connect one Sleeper account, discover current-season leagues, then either the
 // pilot league's commissioner challenge or (once active) joining as a member. Every other
-// discovered league stays visible but disabled ("Coming soon"). Verify and join stay in
+// discovered league stays visible but disabled ("Coming soon"). Successful discovery is reused
+// from EXPLORER_CACHE until TTL or an explicit `?refresh=1`. Verify and join stay in
 // app/lib/onboarding.server.ts; after a successful verify (and on commissioner retry) this
 // route calls app/lib/provisioning.server.ts to bootstrap LeagueBrain and activate the league.
 function onboardingDepsFromEnv(env: Env): OnboardingDeps {
@@ -52,10 +58,13 @@ function onboardingDepsFromEnv(env: Env): OnboardingDeps {
   };
 }
 
+const ONBOARDING_REFRESH_HREF = "/onboarding?refresh=1";
+
 export async function loader(args: Route.LoaderArgs) {
   const env = cloudflareEnv(args.context);
   const user = await requireUser(args);
   const deps = onboardingDepsFromEnv(env);
+  const refresh = onboardingDiscoveryRefreshRequested(args.request);
 
   const sleeperAccount = await getSleeperAccountByUserId(env.DB, user.id);
 
@@ -64,7 +73,20 @@ export async function loader(args: Route.LoaderArgs) {
   let discoveryFailed = false;
   if (sleeperAccount) {
     try {
-      const discovery = await discoverLeagues(deps, { clerkUserId: user.id });
+      // Default loads reuse a bounded EXPLORER_CACHE entry keyed by this Clerk user + Sleeper
+      // account. `?refresh=1` bypasses that entry and replaces it on the next typed success.
+      const discovery = await loadCachedOnboardingDiscovery(
+        {
+          cache: kvExplorerCache(env.EXPLORER_CACHE),
+          now: deps.now,
+          discover: () => discoverLeagues(deps, { clerkUserId: user.id }),
+        },
+        {
+          clerkUserId: user.id,
+          sleeperUserId: sleeperAccount.sleeper_user_id,
+          refresh,
+        },
+      );
       if (discovery.ok) {
         const found = discovery.leagues.find((league) => league.classification === "pilot");
         pilotEntry = found ? { name: found.name, isOwner: found.isOwner } : null;
@@ -73,13 +95,13 @@ export async function loader(args: Route.LoaderArgs) {
           .map((league) => ({ sleeperLeagueId: league.sleeperLeagueId, name: league.name, season: league.season }));
       } else {
         // Typed failure (today: account vanished between the loader read and discovery).
-        // Do not treat this as "confirmed not a member".
+        // Do not treat this as "confirmed not a member". Not cached.
         discoveryFailed = true;
       }
     } catch (error) {
       // Sleeper's API (or the network path to it) failed. Never let this reach the root error
       // boundary as an uncaught 500 — render a typed, retryable "could not reach Sleeper" state
-      // instead (see computePilotLeagueStep's "discovery_unavailable").
+      // instead (see computePilotLeagueStep's "discovery_unavailable"). Failures are not cached.
       console.error("onboarding: sleeper discovery failed", error);
       discoveryFailed = true;
     }
@@ -391,7 +413,10 @@ export default function Onboarding({ loaderData, actionData }: Route.ComponentPr
 
         {step.kind !== "connect_sleeper_account" && sleeperUsername ? (
           <p className="text-sm text-muted">
-            Connected as <span className="text-cream">{sleeperUsername}</span> on Sleeper.
+            Connected as <span className="text-cream">{sleeperUsername}</span> on Sleeper.{" "}
+            <Link to={ONBOARDING_REFRESH_HREF} className="text-flag underline-offset-4 hover:underline">
+              Refresh leagues
+            </Link>
           </p>
         ) : null}
 
@@ -405,7 +430,7 @@ export default function Onboarding({ loaderData, actionData }: Route.ComponentPr
             </CardDescription>
             <div className="mt-5">
               <Button asChild variant="secondary">
-                <Link to="/onboarding">Try again</Link>
+                <Link to={ONBOARDING_REFRESH_HREF}>Try again</Link>
               </Button>
             </div>
           </Card>
@@ -416,6 +441,11 @@ export default function Onboarding({ loaderData, actionData }: Route.ComponentPr
             <Badge>Not in this league</Badge>
             <CardTitle className="mt-3">That Sleeper account isn't in this league</CardTitle>
             <CardDescription>{describeOnboardingError("not_a_pilot_league_member")}</CardDescription>
+            <div className="mt-5">
+              <Button asChild variant="secondary">
+                <Link to={ONBOARDING_REFRESH_HREF}>Refresh leagues</Link>
+              </Button>
+            </div>
           </Card>
         ) : null}
 

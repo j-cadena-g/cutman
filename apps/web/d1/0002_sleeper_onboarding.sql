@@ -8,7 +8,8 @@
 --   leagues.id = 'legacy_' || sleeper_league_id (stable, distinct from Sleeper snowflakes)
 --   enabled leagues -> status 'active', created_at/activated_at from enabled_at,
 --   provisioning_started_at NULL (legacy rows were already active; they never re-provision)
---   is_owner = 1 -> commissioner, else member. recap_email_opt_in copied
+--   every membership is role 'member' regardless of lm.is_owner (commissioner
+--   authority only follows successful league_verifications). recap_email_opt_in copied
 --   sleeper_accounts: one row per user. Membership identity is the sleeper_user_id from
 --   that user's most recently enabled league (leagues.enabled_at DESC). Ties break on
 --   sleeper_league_id ASC, then sleeper_user_id ASC — not lexical MIN(sleeper_user_id).
@@ -100,7 +101,7 @@ INSERT INTO _cutman_0002_league_members (
 SELECT
   'legacy_' || lm.sleeper_league_id,
   lm.user_id,
-  CASE WHEN lm.is_owner = 1 THEN 'commissioner' ELSE 'member' END,
+  'member',
   lm.recap_email_opt_in,
   l.enabled_at
 FROM league_members AS lm

@@ -1,6 +1,6 @@
 import { Show, SignOutButton, UserButton } from "@clerk/react-router";
-import { setLeagueTone, setRecapOptIn } from "@cutman/db";
-import { isTone, parseTone, toneBlurb, toneLabel, toneOrPlayful, TONES, type Tone } from "@cutman/story";
+import { setRecapOptIn } from "@cutman/db";
+import { isTone, parseTone, toneBlurb, toneLabel, toneOrPlayful, TONES } from "@cutman/story";
 import { Form, redirect } from "react-router";
 import { resolveLeagueAccess } from "~/lib/access.server";
 import { BrandNav } from "~/components/brand-nav";
@@ -84,36 +84,27 @@ export async function action(args: Route.ActionArgs) {
     if (!isTone(toneRaw)) return { error: "Pick a real tone." };
     const tone = parseTone(toneRaw);
     const stub = env.LEAGUE_BRAIN.get(env.LEAGUE_BRAIN.idFromName(access.league.id));
-    // Dashboard reads LeagueBrain state, so the Durable Object is updated first; D1 persistence
-    // follows. Read the live DO tone before mutating so a D1 failure can restore it (do not assume
-    // D1 is already in sync). A read/setTone/D1 failure, or a successful rollback, returns the
-    // typed error — do not reverse this order. If rollback also fails, tell the commissioner the
-    // live tone may be out of sync and to retry.
+    // LeagueBrain serializes tone mutations for this league so a failed older D1 write
+    // cannot roll back a newer success. Dashboard reads stay on getDashboard (not this RPC).
     const saveError = { error: "Cutman couldn't save that tone. Try again." } as const;
-    let priorTone: Tone;
     try {
-      priorTone = (await stub.getDashboard()).tone;
-    } catch {
-      return saveError;
-    }
-    try {
-      await stub.setTone(tone);
-    } catch {
-      return saveError;
-    }
-    try {
-      await setLeagueTone(env.DB, access.league.id, tone);
-    } catch {
-      try {
-        await stub.setTone(priorTone);
-      } catch {
-        return {
-          error: "Cutman updated the live tone but couldn't save it. Try again so they stay in sync.",
-        };
+      const result = await stub.persistTone(tone);
+      if (result.ok) return { ok: "tone" };
+      switch (result.error) {
+        case "save":
+          return saveError;
+        case "desync":
+          return {
+            error: "Cutman updated the live tone but couldn't save it. Try again so they stay in sync.",
+          };
+        default: {
+          const _exhaustive: never = result.error;
+          return _exhaustive;
+        }
       }
+    } catch {
       return saveError;
     }
-    return { ok: "tone" };
   }
 
   if (intent === "optin") {

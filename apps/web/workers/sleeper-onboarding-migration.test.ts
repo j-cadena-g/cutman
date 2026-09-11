@@ -253,7 +253,7 @@ describe("0002 sleeper onboarding migration", () => {
       {
         league_id: "legacy_sleeper_league_aaa",
         user_id: "user_commish",
-        role: "commissioner",
+        role: "member",
         recap_email_opt_in: 1,
         created_at: 5_000,
       },
@@ -286,6 +286,8 @@ describe("0002 sleeper onboarding migration", () => {
         created_at: 6_000,
       },
     ]);
+    expect(members.results.every((member) => member.role === "member")).toBe(true);
+    expect(members.results.some((member) => member.role === "commissioner")).toBe(false);
 
     const accounts = await env.DB.prepare(
       "SELECT user_id, sleeper_user_id, username, display_name, updated_at FROM sleeper_accounts ORDER BY user_id",

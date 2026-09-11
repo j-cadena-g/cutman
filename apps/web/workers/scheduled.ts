@@ -11,6 +11,9 @@ import {
 /** Cap Durable Object work per cron tick. Successive ticks continue from a D1 cursor. */
 export const MAX_SCHEDULED_LEAGUES_PER_TICK = 10;
 
+/** Max recap attempts per league per week before the backlog row is done/exhausted. */
+export const MAX_RECAP_ATTEMPTS = 3;
+
 /** Dedicated app_state key for fair active-league rotation. */
 export const SCHEDULED_LEAGUE_CURSOR_KEY = "scheduled:active-leagues:cursor";
 
@@ -120,6 +123,23 @@ function recapAttemptReason(result: RecapAttemptResult): RecapAttemptReason {
   }
 }
 
+function recapAttemptIsTerminal(reason: RecapAttemptReason): boolean {
+  switch (reason) {
+    case "published":
+    case "skipped_already":
+    case "blank":
+      return true;
+    case "skipped_not_final":
+    case "model_error":
+    case "thrown":
+      return false;
+    default: {
+      const _exhaustive: never = reason;
+      return _exhaustive;
+    }
+  }
+}
+
 async function loadScheduledLeaguePage(
   db: D1Database,
   afterId: string | null,
@@ -192,11 +212,12 @@ async function listPendingRecapLeagues(db: D1Database, weekKey: string, limit: n
        INNER JOIN leagues ON leagues.id = recap_attempt_backlog.league_id
        WHERE recap_attempt_backlog.week_key = ?
          AND recap_attempt_backlog.status = 'pending'
+         AND recap_attempt_backlog.attempts < ?
          AND leagues.status = 'active'
        ORDER BY recap_attempt_backlog.league_id ASC
        LIMIT ?`,
     )
-    .bind(weekKey, limit)
+    .bind(weekKey, MAX_RECAP_ATTEMPTS, limit)
     .all<LeagueRow>();
   return result.results;
 }
@@ -211,9 +232,9 @@ async function pendingRecapIds(
   const result = await db
     .prepare(
       `SELECT league_id FROM recap_attempt_backlog
-       WHERE week_key = ? AND status = 'pending' AND league_id IN (${placeholders})`,
+       WHERE week_key = ? AND status = 'pending' AND attempts < ? AND league_id IN (${placeholders})`,
     )
-    .bind(weekKey, ...leagueIds)
+    .bind(weekKey, MAX_RECAP_ATTEMPTS, ...leagueIds)
     .all<{ league_id: string }>();
   return new Set(result.results.map((row) => row.league_id));
 }
@@ -223,13 +244,28 @@ async function settleRecapAttempt(
   input: { leagueId: string; weekKey: string; reason: RecapAttemptReason; now: number },
 ): Promise<void> {
   const lastError = input.reason === "published" ? null : input.reason;
+  const terminal = recapAttemptIsTerminal(input.reason) ? 1 : 0;
   await db
     .prepare(
       `UPDATE recap_attempt_backlog
-       SET status = 'done', attempts = attempts + 1, last_error = ?, updated_at = ?
-       WHERE league_id = ? AND week_key = ? AND status = 'pending'`,
+       SET status = CASE
+             WHEN ? = 1 OR (attempts + 1) >= ? THEN 'done'
+             ELSE 'pending'
+           END,
+           attempts = attempts + 1,
+           last_error = ?,
+           updated_at = ?
+       WHERE league_id = ? AND week_key = ? AND status = 'pending' AND attempts < ?`,
     )
-    .bind(lastError, input.now, input.leagueId, input.weekKey)
+    .bind(
+      terminal,
+      MAX_RECAP_ATTEMPTS,
+      lastError,
+      input.now,
+      input.leagueId,
+      input.weekKey,
+      MAX_RECAP_ATTEMPTS,
+    )
     .run();
 }
 

@@ -1,32 +1,7 @@
 /// <reference types="@cloudflare/vitest-pool-workers/types" />
 import { applyD1Migrations, env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
-
-type D1Migration = { name: string; queries: string[] };
-
-function migrationNamed(fragment: string): D1Migration[] {
-  const found = (env as Env & { TEST_MIGRATIONS: D1Migration[] }).TEST_MIGRATIONS.filter((migration) =>
-    migration.name.includes(fragment),
-  );
-  if (found.length !== 1) {
-    throw new Error(
-      `expected exactly one migration matching ${fragment}, got ${found.map((m) => m.name).join(",") || "(none)"}`,
-    );
-  }
-  return found;
-}
-
-async function userTables(): Promise<string[]> {
-  const result = await env.DB.prepare(
-    `SELECT name FROM sqlite_master
-     WHERE type = 'table'
-       AND name NOT LIKE 'sqlite_%'
-       AND name NOT LIKE '_cf_%'
-       AND name != 'd1_migrations'
-     ORDER BY name`,
-  ).all<{ name: string }>();
-  return result.results.map((row) => row.name);
-}
+import { migrationNamed, userTables } from "./d1-migration-test-helpers.ts";
 
 describe("0003 recap attempt backlog migration", () => {
   it("adds recap_attempt_backlog without dropping 0002 rows", async () => {

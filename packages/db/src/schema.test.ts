@@ -194,6 +194,24 @@ describe("SCHEMA_SQL", () => {
     );
     expect(migrationStatements).toContainEqual(
       [
+        "INSERT INTO _cutman_0002_league_members (",
+        "  league_id, user_id, role, recap_email_opt_in, created_at",
+        ")",
+        "SELECT",
+        "  'legacy_' || lm.sleeper_league_id,",
+        "  lm.user_id,",
+        "  'member',",
+        "  lm.recap_email_opt_in,",
+        "  l.enabled_at",
+        "FROM league_members AS lm",
+        "INNER JOIN leagues AS l ON l.sleeper_league_id = lm.sleeper_league_id",
+      ].join("\n"),
+    );
+    expect(onboarding).not.toMatch(/CASE WHEN lm\.is_owner/);
+    expect(onboarding).not.toMatch(/THEN 'commissioner'/);
+
+    expect(migrationStatements).toContainEqual(
+      [
         "INSERT INTO leagues (",
         "  id, sleeper_league_id, name, season, status, tone, created_at, activated_at, provisioning_error, provisioning_started_at",
         ")",

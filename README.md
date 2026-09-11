@@ -98,13 +98,16 @@ Current Worker bindings in the public `apps/web/wrangler.jsonc` template:
 | `EMAIL` | Email Service | `env.EMAIL.send` for Tuesday recaps. From-name is **Cutman** |
 | Cron | `0 * * * *` UTC | Handler uses Eastern Time: poll every 3h; recap Tuesday 9:00 |
 
-The worker applies D1 migrations `0001_init.sql` (the original deployed schema) then
-`0002_sleeper_onboarding.sql` (internal league ids, sleeper accounts, verifications, and
-commissioner/member roles), then `0003_recap_attempt_backlog.sql` (per-league/per-week
-Tuesday recap attempt backlog), then `0004_explorer_origin_quota.sql` (one current-hour explorer origin
-quota row per Clerk user). Leagues are created during commissioner onboarding, not
-auto-seeded. Production renders require `PILOT_SLEEPER_LEAGUE_ID` so the fake placeholder
-from `wrangler.jsonc` cannot ship. For a CLI-managed local D1:
+The deployment workflow applies numbered D1 migrations: `0001_init.sql` (the original
+deployed schema), then `0002_sleeper_onboarding.sql` (internal league ids, sleeper
+accounts, verifications, and commissioner/member roles), then
+`0003_recap_attempt_backlog.sql` (per-league/per-week Tuesday recap attempt backlog), then
+`0004_explorer_origin_quota.sql` (one current-hour explorer origin quota row per Clerk
+user). Runtime `ensureSchema` only creates missing tables and indexes
+(`CREATE TABLE/INDEX IF NOT EXISTS`); it does not apply numbered migrations. Leagues are
+created during commissioner onboarding, not auto-seeded. Production renders require
+`PILOT_SLEEPER_LEAGUE_ID` so the fake placeholder from `wrangler.jsonc` cannot ship. For a
+CLI-managed local D1:
 
 ```bash
 pnpm run db:migrate:local
@@ -124,8 +127,9 @@ Remote D1 that already applied the original (legacy) `0001_init.sql` picks up
 `0002_sleeper_onboarding.sql`, `0003_recap_attempt_backlog.sql`, and
 `0004_explorer_origin_quota.sql` on the next
 `pnpm run deploy` / `db:migrate:remote`. No remote wipe is required for that
-legacy schema. `ensureSchema` remains additive only
-(`CREATE TABLE/INDEX IF NOT EXISTS`) and does not migrate leftover shapes at runtime.
+legacy schema. Runtime `ensureSchema` only creates missing tables and indexes
+(`CREATE TABLE/INDEX IF NOT EXISTS`); it does not apply numbered migrations or migrate
+leftover shapes.
 `pnpm run db:reset:local` never touches remote. Do not invent a destructive remote reset
 script.
 

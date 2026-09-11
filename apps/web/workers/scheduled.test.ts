@@ -16,6 +16,7 @@ import { LeagueBrain } from "./league-brain.ts";
 import {
   easternRecapWeekKey,
   handleScheduled,
+  MAX_RECAP_ATTEMPTS,
   MAX_SCHEDULED_LEAGUES_PER_TICK,
   parseScheduledLeagueCursor,
   SCHEDULED_LEAGUE_CURSOR_KEY,
@@ -60,6 +61,30 @@ async function backlogRows(
     .bind(weekKey, ...leagueIds)
     .all<{ league_id: string; status: string; attempts: number; last_error: string | null }>();
   return result.results;
+}
+
+async function pendingBelowCapCount(weekKey: string, leagueIds?: string[]): Promise<number> {
+  if (leagueIds && leagueIds.length > 0) {
+    const placeholders = leagueIds.map(() => "?").join(", ");
+    const row = await env.DB.prepare(
+      `SELECT COUNT(*) AS n FROM recap_attempt_backlog
+       WHERE week_key = ? AND status = 'pending' AND attempts < ? AND league_id IN (${placeholders})`,
+    )
+      .bind(weekKey, MAX_RECAP_ATTEMPTS, ...leagueIds)
+      .first<{ n: number }>();
+    return row?.n ?? 0;
+  }
+  const row = await env.DB.prepare(
+    `SELECT COUNT(*) AS n FROM recap_attempt_backlog
+     WHERE week_key = ? AND status = 'pending' AND attempts < ?`,
+  )
+    .bind(weekKey, MAX_RECAP_ATTEMPTS)
+    .first<{ n: number }>();
+  return row?.n ?? 0;
+}
+
+function drainTickBudget(pending: number, limit: number): number {
+  return Math.ceil((Math.max(pending, 1) * MAX_RECAP_ATTEMPTS) / limit) + 4;
 }
 
 async function scheduledCursorValue(): Promise<string | null> {
@@ -493,20 +518,13 @@ describe("handleScheduled recap backlog", () => {
       expect(first.recapped).toBe(Math.min(published.size, limit));
       expect(published.size).toBeLessThan(oursIds.size);
 
-      const rowsAfterFirst = await backlogRows(
-        RECAP_WEEK_KEY,
-        ours.map((league) => league.id),
-      );
+      const oursLeagueIds = ours.map((league) => league.id);
+      const rowsAfterFirst = await backlogRows(RECAP_WEEK_KEY, oursLeagueIds);
       expect(rowsAfterFirst).toHaveLength(3);
       expect(rowsAfterFirst.some((row) => row.status === "pending")).toBe(true);
 
       let recappedTotal = first.recapped;
-      const pendingAfterFirst = await env.DB.prepare(
-        "SELECT COUNT(*) AS n FROM recap_attempt_backlog WHERE week_key = ? AND status = 'pending'",
-      )
-        .bind(RECAP_WEEK_KEY)
-        .first<{ n: number }>();
-      const maxTicks = Math.ceil((pendingAfterFirst?.n ?? oursIds.size) / limit) + 2;
+      const maxTicks = drainTickBudget(await pendingBelowCapCount(RECAP_WEEK_KEY), limit);
       let ticks = 1;
       while (published.size < oursIds.size && ticks < maxTicks) {
         const later = await handleScheduled(env, IDLE_NOW, limit);
@@ -519,20 +537,13 @@ describe("handleScheduled recap backlog", () => {
         expect(recapCalls.filter((call) => call === id)).toHaveLength(1);
       }
 
-      const rowsAfterDrain = await backlogRows(
-        RECAP_WEEK_KEY,
-        ours.map((league) => league.id),
-      );
+      const rowsAfterDrain = await backlogRows(RECAP_WEEK_KEY, oursLeagueIds);
       expect(rowsAfterDrain.every((row) => row.status === "done")).toBe(true);
       expect(rowsAfterDrain.every((row) => row.attempts === 1)).toBe(true);
+      expect(rowsAfterDrain.every((row) => row.last_error === null)).toBe(true);
 
       while (ticks < maxTicks + 20) {
-        const leftover = await env.DB.prepare(
-          "SELECT COUNT(*) AS n FROM recap_attempt_backlog WHERE week_key = ? AND status = 'pending'",
-        )
-          .bind(RECAP_WEEK_KEY)
-          .first<{ n: number }>();
-        if ((leftover?.n ?? 0) === 0) break;
+        if ((await pendingBelowCapCount(RECAP_WEEK_KEY)) === 0) break;
         const later = await handleScheduled(env, IDLE_NOW, limit);
         expect(later.recapped).toBe(0);
         ticks += 1;
@@ -548,11 +559,62 @@ describe("handleScheduled recap backlog", () => {
     }
   });
 
-  it("settles throw, model_error, and blank after one attempt with safe reason codes", async () => {
+  it("settles blank and skipped_already as done after one attempt with safe reason codes", async () => {
     const now = 1_805_810_000_000;
-    const failing = await seedLeague("backlog_throw", now, "active");
-    const modelError = await seedLeague("backlog_model_error", now + 1, "active");
-    const blank = await seedLeague("backlog_blank", now + 2, "active");
+    const blank = await seedLeague("backlog_blank", now, "active");
+    const already = await seedLeague("backlog_skipped_already", now + 1, "active");
+    const recapCalls: string[] = [];
+
+    const originalAttemptRecap = LeagueBrain.prototype.attemptRecap;
+    LeagueBrain.prototype.attemptRecap = async function (this: LeagueBrain) {
+      const dashboard = await this.getDashboard();
+      recapCalls.push(dashboard.leagueId);
+      if (dashboard.leagueId === blank.id) return { status: "blank" };
+      if (dashboard.leagueId === already.id) return { status: "skipped_already" };
+      return { status: "skipped_not_final" };
+    };
+
+    try {
+      const limit = 2;
+      const first = await handleScheduled(env, RECAP_NOW, limit);
+      expect(first.recapped).toBe(0);
+      const targetIds = [blank.id, already.id];
+      const attempted = () => recapCalls.filter((id) => targetIds.includes(id));
+      const maxTicks = drainTickBudget(await pendingBelowCapCount(RECAP_WEEK_KEY), limit);
+      let ticks = 1;
+      while ((await pendingBelowCapCount(RECAP_WEEK_KEY, targetIds)) > 0 && ticks < maxTicks) {
+        const later = await handleScheduled(env, IDLE_NOW, limit);
+        expect(later.recapped).toBe(0);
+        ticks += 1;
+      }
+
+      expect(new Set(attempted()).size).toBe(2);
+      expect(attempted()).toHaveLength(2);
+      const rows = await backlogRows(RECAP_WEEK_KEY, targetIds);
+      expect(rows.find((row) => row.league_id === blank.id)).toMatchObject({
+        status: "done",
+        attempts: 1,
+        last_error: "blank",
+      });
+      expect(rows.find((row) => row.league_id === already.id)).toMatchObject({
+        status: "done",
+        attempts: 1,
+        last_error: "skipped_already",
+      });
+
+      const extra = await handleScheduled(env, IDLE_NOW, limit);
+      expect(extra.recapped).toBe(0);
+      expect(attempted()).toHaveLength(2);
+    } finally {
+      LeagueBrain.prototype.attemptRecap = originalAttemptRecap;
+    }
+  });
+
+  it("retries skipped_not_final, model_error, and thrown until the cap then marks done", async () => {
+    const now = 1_805_811_000_000;
+    const notFinal = await seedLeague("backlog_not_final", now, "active");
+    const failing = await seedLeague("backlog_throw", now + 1, "active");
+    const modelError = await seedLeague("backlog_model_error", now + 2, "active");
     const recapCalls: string[] = [];
 
     const originalAttemptRecap = LeagueBrain.prototype.attemptRecap;
@@ -567,8 +629,8 @@ describe("handleScheduled recap backlog", () => {
       if (dashboard.leagueId === modelError.id) {
         return { status: "model_error", error: "gemma failed with prompt leak" };
       }
-      if (dashboard.leagueId === blank.id) {
-        return { status: "blank" };
+      if (dashboard.leagueId === notFinal.id) {
+        return { status: "skipped_not_final" };
       }
       return { status: "skipped_not_final" };
     };
@@ -578,42 +640,40 @@ describe("handleScheduled recap backlog", () => {
 
     try {
       const limit = 2;
+      const targetIds = [notFinal.id, failing.id, modelError.id];
       const first = await handleScheduled(env, RECAP_NOW, limit);
       expect(first.recapped).toBe(0);
-      const pendingAfterFirst = await env.DB.prepare(
-        "SELECT COUNT(*) AS n FROM recap_attempt_backlog WHERE week_key = ? AND status = 'pending'",
-      )
-        .bind(RECAP_WEEK_KEY)
-        .first<{ n: number }>();
-      const maxTicks = Math.ceil((pendingAfterFirst?.n ?? 8) / limit) + 4;
+
+      const attempted = () => recapCalls.filter((id) => targetIds.includes(id));
+      const maxTicks = drainTickBudget(await pendingBelowCapCount(RECAP_WEEK_KEY), limit);
       let ticks = 1;
-      const targetIds = new Set([failing.id, modelError.id, blank.id]);
-      const attempted = () => recapCalls.filter((id) => targetIds.has(id));
-      while (new Set(attempted()).size < 3 && ticks < maxTicks) {
+      while ((await pendingBelowCapCount(RECAP_WEEK_KEY, targetIds)) > 0 && ticks < maxTicks) {
         const later = await handleScheduled(env, IDLE_NOW, limit);
         expect(later.recapped).toBe(0);
         ticks += 1;
       }
+
       expect(new Set(attempted()).size).toBe(3);
-      expect(attempted()).toHaveLength(3);
+      expect(attempted()).toHaveLength(MAX_RECAP_ATTEMPTS * 3);
       expect(errors.length).toBeGreaterThanOrEqual(1);
 
-      const rows = await backlogRows(RECAP_WEEK_KEY, [failing.id, modelError.id, blank.id]);
+      const rows = await backlogRows(RECAP_WEEK_KEY, targetIds);
+      expect(rows.find((row) => row.league_id === notFinal.id)).toMatchObject({
+        status: "done",
+        attempts: MAX_RECAP_ATTEMPTS,
+        last_error: "skipped_not_final",
+      });
       expect(rows.find((row) => row.league_id === failing.id)).toMatchObject({
         status: "done",
-        attempts: 1,
+        attempts: MAX_RECAP_ATTEMPTS,
         last_error: "thrown",
       });
       expect(rows.find((row) => row.league_id === modelError.id)).toMatchObject({
         status: "done",
-        attempts: 1,
+        attempts: MAX_RECAP_ATTEMPTS,
         last_error: "model_error",
       });
-      expect(rows.find((row) => row.league_id === blank.id)).toMatchObject({
-        status: "done",
-        attempts: 1,
-        last_error: "blank",
-      });
+      expect(rows.every((row) => row.attempts === MAX_RECAP_ATTEMPTS)).toBe(true);
       const serialized = JSON.stringify(rows);
       expect(serialized).not.toContain("recap boom");
       expect(serialized).not.toContain("secret detail");
@@ -622,10 +682,96 @@ describe("handleScheduled recap backlog", () => {
 
       const extra = await handleScheduled(env, IDLE_NOW, limit);
       expect(extra.recapped).toBe(0);
-      expect(attempted()).toHaveLength(3);
+      expect(attempted()).toHaveLength(MAX_RECAP_ATTEMPTS * 3);
     } finally {
       LeagueBrain.prototype.attemptRecap = originalAttemptRecap;
       console.error = originalError;
+    }
+  });
+
+  it("publishes on a later tick after skipped_not_final and does not republish", async () => {
+    const now = 1_805_812_000_000;
+    const league = await seedLeague("backlog_retry_then_publish", now, "active");
+    const recapCalls: string[] = [];
+    let weekFinal = false;
+    const published = new Set<string>();
+
+    const originalAttemptRecap = LeagueBrain.prototype.attemptRecap;
+    LeagueBrain.prototype.attemptRecap = async function (this: LeagueBrain) {
+      const dashboard = await this.getDashboard();
+      recapCalls.push(dashboard.leagueId);
+      if (dashboard.leagueId !== league.id) {
+        return { status: "skipped_not_final" };
+      }
+      if (!weekFinal) return { status: "skipped_not_final" };
+      if (published.has(league.id)) return { status: "skipped_already" };
+      published.add(league.id);
+      return { status: "published", recap: { subject: "Week recap", body: "Now final." } };
+    };
+
+    try {
+      const activeCount = (await listActiveLeagues(env.DB)).length;
+      const first = await handleScheduled(env, RECAP_NOW, activeCount);
+      expect(first.recapped).toBe(0);
+      expect(recapCalls.filter((id) => id === league.id)).toHaveLength(1);
+      const [afterRetryable] = await backlogRows(RECAP_WEEK_KEY, [league.id]);
+      expect(afterRetryable).toMatchObject({
+        status: "pending",
+        attempts: 1,
+        last_error: "skipped_not_final",
+      });
+
+      weekFinal = true;
+      const limit = 2;
+      const maxTicks = drainTickBudget(await pendingBelowCapCount(RECAP_WEEK_KEY), limit);
+      let recappedTotal = 0;
+      for (let ticks = 0; ticks < maxTicks && (await pendingBelowCapCount(RECAP_WEEK_KEY, [league.id])) > 0; ticks += 1) {
+        const later = await handleScheduled(env, IDLE_NOW, limit);
+        recappedTotal += later.recapped;
+      }
+      expect(recappedTotal).toBe(1);
+      expect(published).toEqual(new Set([league.id]));
+      const [done] = await backlogRows(RECAP_WEEK_KEY, [league.id]);
+      expect(done).toMatchObject({ status: "done", attempts: 2, last_error: null });
+
+      const extra = await handleScheduled(env, IDLE_NOW, limit);
+      expect(extra.recapped).toBe(0);
+      expect(recapCalls.filter((id) => id === league.id)).toHaveLength(2);
+    } finally {
+      LeagueBrain.prototype.attemptRecap = originalAttemptRecap;
+    }
+  });
+
+  it("does not select pending rows at or above the attempt cap", async () => {
+    const now = 1_805_813_000_000;
+    const league = await seedLeague("backlog_at_cap", now, "active");
+    await env.DB.prepare(
+      `INSERT INTO recap_attempt_backlog (league_id, week_key, status, attempts, last_error, created_at, updated_at)
+       VALUES (?, ?, 'pending', ?, 'skipped_not_final', ?, ?)`,
+    )
+      .bind(league.id, RECAP_WEEK_KEY, MAX_RECAP_ATTEMPTS, now, now)
+      .run();
+
+    const recapCalls: string[] = [];
+    const originalAttemptRecap = LeagueBrain.prototype.attemptRecap;
+    LeagueBrain.prototype.attemptRecap = async function (this: LeagueBrain) {
+      const dashboard = await this.getDashboard();
+      recapCalls.push(dashboard.leagueId);
+      return { status: "published", recap: { subject: "Week recap", body: "Should not publish." } };
+    };
+
+    try {
+      const extra = await handleScheduled(env, IDLE_NOW, 10);
+      expect(extra).toEqual({ polled: 0, recapped: 0 });
+      expect(recapCalls).not.toContain(league.id);
+      const [still] = await backlogRows(RECAP_WEEK_KEY, [league.id]);
+      expect(still).toMatchObject({
+        status: "pending",
+        attempts: MAX_RECAP_ATTEMPTS,
+        last_error: "skipped_not_final",
+      });
+    } finally {
+      LeagueBrain.prototype.attemptRecap = originalAttemptRecap;
     }
   });
 

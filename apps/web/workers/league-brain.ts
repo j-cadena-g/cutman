@@ -1,6 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { generateBeat, generateRecap, type WorkersAi } from "@cutman/ai";
-import { listRecapRecipients } from "@cutman/db";
+import { listRecapRecipients, setLeagueTone } from "@cutman/db";
 import { recapEmail, sendEmail } from "@cutman/email";
 import type { PlayerMap, SleeperMatchup } from "@cutman/sleeper";
 import {
@@ -95,7 +95,14 @@ export type Dashboard = {
   recaps: Array<{ week: number; subject: string; body: string; createdAt: number }>;
 };
 
+export type PersistToneResult = { ok: true } | { ok: false; error: "save" | "desync" };
+
 export class LeagueBrain extends DurableObject<Env> {
+  // In-memory FIFO for persistTone only. Concurrent RPCs yield the input gate at the D1
+  // await, so each mutation must finish (including rollback) before the next captures
+  // prior tone. Hibernation drops this queue only when no request is in flight.
+  private toneMutationMutex: Promise<void> = Promise.resolve();
+
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     ctx.blockConcurrencyWhile(async () => {
@@ -205,6 +212,51 @@ export class LeagueBrain extends DurableObject<Env> {
 
   async setTone(tone: Tone): Promise<void> {
     this.putSetting("tone", tone);
+  }
+
+  /**
+   * Coordinator for commissioner tone changes: update this object's setting and D1
+   * together. Dashboard reads stay off this queue so they can observe the live DO
+   * tone while D1 is in flight. Do not wrap the D1 write in blockConcurrencyWhile —
+   * that would stall poll/recap/dashboard for the network RTT.
+   */
+  async persistTone(tone: Tone): Promise<PersistToneResult> {
+    return this.enqueueToneMutation(() => this.persistToneLocked(tone));
+  }
+
+  private enqueueToneMutation<T>(work: () => Promise<T>): Promise<T> {
+    const run = this.toneMutationMutex.then(work);
+    this.toneMutationMutex = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
+  private async persistToneLocked(tone: Tone): Promise<PersistToneResult> {
+    let settings: Settings;
+    try {
+      settings = this.readSettings();
+    } catch {
+      return { ok: false, error: "save" };
+    }
+    const priorTone = settings.tone;
+    try {
+      this.putSetting("tone", tone);
+    } catch {
+      return { ok: false, error: "save" };
+    }
+    try {
+      await setLeagueTone(this.env.DB, settings.leagueId, tone);
+    } catch {
+      try {
+        this.putSetting("tone", priorTone);
+      } catch {
+        return { ok: false, error: "desync" };
+      }
+      return { ok: false, error: "save" };
+    }
+    return { ok: true };
   }
 
   async getDashboard(): Promise<Dashboard> {
@@ -442,6 +494,14 @@ export class LeagueBrain extends DurableObject<Env> {
 
     const legacyId = this.env.LEAGUE_BRAIN.idFromName(input.sleeperLeagueId);
     if (legacyId.equals(this.ctx.id) || input.leagueId === input.sleeperLeagueId) {
+      this.ctx.storage.transactionSync(() => this.markLegacyImportComplete(input.sleeperLeagueId));
+      return;
+    }
+
+    // Only the 0002 mapping (`legacy_${sleeperLeagueId}`) may pull from the
+    // Sleeper-named source. Any other fresh internal ID skips that RPC and
+    // marks the copy complete so onboarding brains never sit pending.
+    if (input.leagueId !== `legacy_${input.sleeperLeagueId}`) {
       this.ctx.storage.transactionSync(() => this.markLegacyImportComplete(input.sleeperLeagueId));
       return;
     }
