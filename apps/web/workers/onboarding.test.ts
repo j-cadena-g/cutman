@@ -7,8 +7,10 @@ import {
   ensureSchema,
   findPendingVerification,
   getLeagueBySleeperId,
+  getLeagueMember,
   getVerification,
   linkSleeperAccount,
+  upsertLeagueMember,
   upsertUserByClerkId,
 } from "@cutman/db";
 import type { NflState, SleeperClient, SleeperLeague, SleeperLeagueUser, SleeperUser } from "@cutman/sleeper";
@@ -1415,6 +1417,83 @@ describe("verifyCommissionerChallenge", () => {
     expect(second.league.id).toBe(first.league.id);
     expect(second.league.sleeper_league_id).toBe(pilotSleeperLeagueId);
     expect(second.league.id).not.toBe(pilotSleeperLeagueId);
+  });
+
+  it("promotes an existing member on an already-active migrated league to commissioner without inserting a new leagues row", async () => {
+    const pilotSleeperLeagueId = nextPilotLeagueId("verify_migrate_promote");
+    const requestNow = 1_802_000_000_000;
+    const { user, requested } = await setupOwner({
+      clerkUserId: "user_verify_migrate_promote",
+      email: "verify-migrate-promote@example.test",
+      pilotSleeperLeagueId,
+      sleeperUserId: "sleeper_migrate_promote",
+      username: "commish_migrate_promote",
+      teamName: "placeholder",
+      isOwner: true,
+      requestNow,
+    });
+    const existing = await createLeague(env.DB, {
+      id: `league_migrated_${pilotSleeperLeagueId}`,
+      sleeperLeagueId: pilotSleeperLeagueId,
+      name: "Migrated Pilot",
+      season: "2026",
+      now: requestNow - 1_000,
+    });
+    await activateLeague(env.DB, existing.id, requestNow - 500);
+    await upsertLeagueMember(env.DB, {
+      leagueId: existing.id,
+      userId: user.id,
+      role: "member",
+      now: requestNow - 400,
+    });
+    const matchingClient = createFakeSleeperClient({
+      leagueUsersById: {
+        [pilotSleeperLeagueId]: [
+          {
+            user_id: "sleeper_migrate_promote",
+            username: "commish_migrate_promote",
+            display_name: "commish_migrate_promote",
+            is_owner: true,
+            metadata: { team_name: `Team ${requested.challenge}` },
+          },
+        ],
+      },
+      leaguesById: {
+        [pilotSleeperLeagueId]: {
+          league_id: pilotSleeperLeagueId,
+          name: "Migrated Pilot",
+          season: "2026",
+          sport: "nfl",
+        },
+      },
+    });
+
+    const before = await env.DB.prepare("SELECT COUNT(*) AS n FROM leagues WHERE sleeper_league_id = ?")
+      .bind(pilotSleeperLeagueId)
+      .first<{ n: number }>();
+    expect(before?.n).toBe(1);
+
+    const result = await verifyCommissionerChallenge(
+      makeDeps({ sleeperClient: matchingClient, pilotSleeperLeagueId, now: () => requestNow + 1_000 }),
+      { clerkUserId: user.id },
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected ok");
+    expect(result.league.id).toBe(existing.id);
+    expect(result.league.status).toBe("active");
+    expect(result.membership.role).toBe("commissioner");
+    expect(result.membership.league_id).toBe(existing.id);
+
+    const after = await env.DB.prepare("SELECT COUNT(*) AS n FROM leagues WHERE sleeper_league_id = ?")
+      .bind(pilotSleeperLeagueId)
+      .first<{ n: number }>();
+    expect(after?.n).toBe(1);
+    expect(await getLeagueBySleeperId(env.DB, pilotSleeperLeagueId)).toMatchObject({
+      id: existing.id,
+      status: "active",
+    });
+    expect(await getLeagueMember(env.DB, existing.id, user.id)).toMatchObject({ role: "commissioner" });
   });
 
   it("attaches the commissioner to a league inserted after the no-row read instead of burning the challenge", async () => {

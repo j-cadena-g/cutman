@@ -1194,6 +1194,71 @@ describe("LeagueBrain legacy Durable Object migration", () => {
     );
   });
 
+  it("clears pending and skips the copy when abandoned is set during the export await", async () => {
+    const sleeperId = "900000000000000102";
+    const internalId = `legacy_${sleeperId}`;
+    await seedLegacyBrain(sleeperId, {
+      leagueId: sleeperId,
+      sleeperLeagueId: sleeperId,
+    });
+    const next = env.LEAGUE_BRAIN.getByName(internalId);
+    const input = {
+      leagueId: internalId,
+      sleeperLeagueId: sleeperId,
+      name: "Cutman League",
+      tone: "playful" as const,
+    };
+
+    const exportCalls = await runInDurableObject(next, async (instance) => {
+      const brain = instance as unknown as TestBrain & {
+        putSetting(key: string, value: string): void;
+      };
+      const original = brain.exportLegacyStateFromSource.bind(brain);
+      let releaseExport!: () => void;
+      let signalStarted!: () => void;
+      const exportStarted = new Promise<void>((resolve) => {
+        signalStarted = resolve;
+      });
+      const exportGate = new Promise<void>((resolve) => {
+        releaseExport = resolve;
+      });
+      let calls = 0;
+      brain.exportLegacyStateFromSource = async (sleeperLeagueId, callerInternalLeagueId) => {
+        calls += 1;
+        signalStarted();
+        await exportGate;
+        return original(sleeperLeagueId, callerInternalLeagueId);
+      };
+
+      const bootstrapPromise = brain.bootstrap(input);
+      await exportStarted;
+      brain.putSetting("legacyImportAbandoned", "1");
+      releaseExport();
+      await bootstrapPromise;
+      return calls;
+    });
+
+    expect(exportCalls).toBe(1);
+    const after = await readBrainSql(next);
+    expect(after.snapshots).toEqual([]);
+    expect(after.beats).toEqual([]);
+    expect(after.recaps).toEqual([]);
+    expect(after.bible).toEqual([
+      expect.objectContaining({
+        entry: "Cutman League is in the book. Tone: playful.",
+      }),
+    ]);
+    expect(after.settings).toEqual(
+      expect.arrayContaining([
+        { key: "leagueId", value: internalId },
+        { key: "sleeperLeagueId", value: sleeperId },
+        { key: "legacyImportAbandoned", value: "1" },
+      ]),
+    );
+    expect(after.settings.some((row) => row.key === "legacyImportPending")).toBe(false);
+    expect(after.settings.some((row) => row.key === "legacyMigratedFrom")).toBe(false);
+  });
+
   it("abandons legacy import after consecutive failures and then bootstraps a fresh book", async () => {
     const abandonSleeperId = "900000000000000031";
     const abandonInternalId = `legacy_${abandonSleeperId}`;

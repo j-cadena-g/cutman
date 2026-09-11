@@ -62,8 +62,10 @@ export function onboardingDiscoveryRefreshRequested(request: { url: string }): b
 }
 
 // After a forced `?refresh=1` load has already consumed quota and run discovery, strip the query
-// so a reload or form POST revalidation cannot charge again. Active members still redirect to
-// `/leagues/:id` first — do not replace that with `/onboarding`.
+// so a reload or form POST revalidation cannot charge again. Ordinary active members still
+// redirect to `/leagues/:id` first (`redirectingToLeague`) — do not replace that with
+// `/onboarding`. Unverified Sleeper owners of an already-active league stay on onboarding, so
+// their refresh still strips (`refresh && !redirectingToLeague`).
 export function shouldStripOnboardingRefreshQuery(input: {
   refresh: boolean;
   redirectingToLeague: boolean;

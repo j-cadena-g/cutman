@@ -21,13 +21,28 @@ export type PilotLeagueStep =
   | { kind: "awaiting_commissioner" }
   | { kind: "provisioning" }
   | { kind: "join_available" }
-  // Kept for pure-function completeness (and its own unit tests below) even though the real
-  // `/onboarding` loader never reaches it in practice: it redirects to `/leagues/:id` the moment
-  // `membership && league && league.status === "active"` is true — the exact same condition that
-  // would produce this step — before `computePilotLeagueStep` is ever called. See
-  // app/routes/onboarding.tsx's loader.
+  // Ordinary active members (and already-verified commissioners) are redirected to
+  // `/leagues/:id` by the `/onboarding` loader before this step is computed. Unverified Sleeper
+  // owners of an already-active league stay on onboarding — 0002 migrated leagues have an
+  // `active` row with every membership `role = "member"` and no commissioner yet. See
+  // `shouldRedirectActiveOnboardingMember` and app/routes/onboarding.tsx's loader.
   | { kind: "already_member" }
   | { kind: "setup_error" };
+
+// Membership-first: ordinary active members leave `/onboarding` for `/leagues/:id`. Do not
+// redirect when this user is a current Sleeper owner who has not verified as commissioner —
+// they still need the team-name challenge. Discovery-failed / missing `pilotEntry` keeps the
+// redirect (do not trap an active member on onboarding during a Sleeper outage). Commissioners
+// always redirect, even if Sleeper still lists them as owner.
+export function shouldRedirectActiveOnboardingMember(input: {
+  membership: LeagueMemberRow | null;
+  league: LeagueRow | null;
+  isOwner: boolean;
+}): boolean {
+  if (!input.membership || !input.league || input.league.status !== "active") return false;
+  if (input.membership.role !== "commissioner" && input.isOwner) return false;
+  return true;
+}
 
 export function computePilotLeagueStep(input: {
   sleeperConnected: boolean;
@@ -63,15 +78,29 @@ export function computePilotLeagueStep(input: {
     if (!input.pilotEntry) return { kind: "not_a_pilot_league_member" };
   }
 
-  // Once a `leagues` row exists, *someone* has already completed the commissioner challenge —
-  // that decides the step for everyone, independent of whether this exact user did it (a
-  // regular member never sees "request a challenge" just because the league happens to still be
-  // provisioning). `confirmedMember` only matters to distinguish "already in" from "can join"
-  // once the league is active.
-  if (input.league) {
-    if (input.league.status === "error") return { kind: "setup_error" };
-    if (input.league.status === "provisioning") return { kind: "provisioning" };
-    return confirmedMember ? { kind: "already_member" } : { kind: "join_available" };
+  // A `leagues` row does not mean a commissioner exists: 0002 migrated leagues are already
+  // `active` with every membership `role = "member"`. Unverified current Sleeper owners (or
+  // anyone with a pending team-name challenge) must still see the challenge path. Ordinary
+  // members and already-verified commissioners stay on already_member / join_available.
+  const offerOwnerChallengeOnActiveLeague =
+    input.league?.status === "active" &&
+    input.membership != null &&
+    input.membership.role !== "commissioner" &&
+    (Boolean(input.pendingVerification) || input.pilotEntry?.isOwner === true);
+
+  if (input.league && !offerOwnerChallengeOnActiveLeague) {
+    switch (input.league.status) {
+      case "error":
+        return { kind: "setup_error" };
+      case "provisioning":
+        return { kind: "provisioning" };
+      case "active":
+        return confirmedMember ? { kind: "already_member" } : { kind: "join_available" };
+      default: {
+        const exhaustive: never = input.league.status;
+        return exhaustive;
+      }
+    }
   }
 
   if (input.pendingVerification) {
@@ -83,9 +112,10 @@ export function computePilotLeagueStep(input: {
     };
   }
 
-  // `pilotEntry` is guaranteed non-null here: `confirmedMember` is false whenever we reach this
-  // line (the `input.league` branch above already returned for a confirmed member), and the
-  // `!input.pilotEntry` check above already returned `not_a_pilot_league_member` otherwise.
+  // No-league owners reach here with a non-null `pilotEntry` (the `!input.pilotEntry` check
+  // above already returned `not_a_pilot_league_member`). Migrated-active unverified owners
+  // reach here because `offerOwnerChallengeOnActiveLeague` skipped the already_member shortcut,
+  // which requires `pilotEntry.isOwner`.
   return input.pilotEntry?.isOwner ? { kind: "request_challenge" } : { kind: "awaiting_commissioner" };
 }
 

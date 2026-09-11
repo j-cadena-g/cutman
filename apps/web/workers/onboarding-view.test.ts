@@ -6,6 +6,7 @@ import {
   formatChallengeCountdown,
   isStuckProvisioning,
   provisioningStartedAtFromLeague,
+  shouldRedirectActiveOnboardingMember,
   STUCK_PROVISIONING_MS,
   type OnboardingErrorKind,
 } from "../app/lib/onboarding-view.ts";
@@ -74,6 +75,42 @@ describe("computePilotLeagueStep", () => {
     expect(result).toEqual({ kind: "already_member" });
   });
 
+  it("reports request_challenge for an unverified Sleeper owner of an already-active migrated league", () => {
+    const result = computePilotLeagueStep({
+      sleeperConnected: true,
+      discoveryFailed: false,
+      pilotEntry: { isOwner: true },
+      league: makeLeague({ status: "active" }),
+      membership: makeMembership({ role: "member" }),
+      pendingVerification: null,
+    });
+    expect(result).toEqual({ kind: "request_challenge" });
+  });
+
+  it("reports challenge_pending for an unverified owner of an already-active league with a pending code", () => {
+    const result = computePilotLeagueStep({
+      sleeperConnected: true,
+      discoveryFailed: false,
+      pilotEntry: { isOwner: true },
+      league: makeLeague({ status: "active" }),
+      membership: makeMembership({ role: "member" }),
+      pendingVerification: { challenge: "CUTMAN-OWN1", expiresAt: 99, attempts: 1 },
+    });
+    expect(result).toEqual({ kind: "challenge_pending", challenge: "CUTMAN-OWN1", expiresAt: 99, attempts: 1 });
+  });
+
+  it("still reports already_member when the active-league member is already commissioner, even if Sleeper lists them as owner", () => {
+    const result = computePilotLeagueStep({
+      sleeperConnected: true,
+      discoveryFailed: false,
+      pilotEntry: { isOwner: true },
+      league: makeLeague({ status: "active" }),
+      membership: makeMembership({ role: "commissioner" }),
+      pendingVerification: null,
+    });
+    expect(result).toEqual({ kind: "already_member" });
+  });
+
   it("reports not_a_pilot_league_member when the connected Sleeper account isn't in the pilot league and no league row exists yet", () => {
     const result = computePilotLeagueStep({
       sleeperConnected: true,
@@ -115,6 +152,18 @@ describe("computePilotLeagueStep", () => {
       sleeperConnected: true,
       discoveryFailed: false,
       pilotEntry: { isOwner: false },
+      league: makeLeague({ status: "active" }),
+      membership: null,
+      pendingVerification: null,
+    });
+    expect(result).toEqual({ kind: "join_available" });
+  });
+
+  it("still reports join_available for a current Sleeper owner of an active league who has no membership row yet", () => {
+    const result = computePilotLeagueStep({
+      sleeperConnected: true,
+      discoveryFailed: false,
+      pilotEntry: { isOwner: true },
       league: makeLeague({ status: "active" }),
       membership: null,
       pendingVerification: null,
@@ -249,6 +298,18 @@ describe("computePilotLeagueStep", () => {
     expect(result).toEqual({ kind: "already_member" });
   });
 
+  it("still reports challenge_pending on an active migrated league when a member has a pending code even if discovery failed", () => {
+    const result = computePilotLeagueStep({
+      sleeperConnected: true,
+      discoveryFailed: true,
+      pilotEntry: null,
+      league: makeLeague({ status: "active" }),
+      membership: makeMembership({ role: "member" }),
+      pendingVerification: { challenge: "CUTMAN-PEND", expiresAt: 7, attempts: 0 },
+    });
+    expect(result).toEqual({ kind: "challenge_pending", challenge: "CUTMAN-PEND", expiresAt: 7, attempts: 0 });
+  });
+
   it("still resolves provisioning from the DB alone when discovery failed but a membership row exists", () => {
     const result = computePilotLeagueStep({
       sleeperConnected: true,
@@ -259,6 +320,69 @@ describe("computePilotLeagueStep", () => {
       pendingVerification: null,
     });
     expect(result).toEqual({ kind: "provisioning" });
+  });
+});
+
+describe("shouldRedirectActiveOnboardingMember", () => {
+  it("redirects ordinary active members and verified commissioners", () => {
+    expect(
+      shouldRedirectActiveOnboardingMember({
+        membership: makeMembership({ role: "member" }),
+        league: makeLeague({ status: "active" }),
+        isOwner: false,
+      }),
+    ).toBe(true);
+    expect(
+      shouldRedirectActiveOnboardingMember({
+        membership: makeMembership({ role: "commissioner" }),
+        league: makeLeague({ status: "active" }),
+        isOwner: true,
+      }),
+    ).toBe(true);
+  });
+
+  it("does not redirect an unverified Sleeper owner of an already-active league", () => {
+    expect(
+      shouldRedirectActiveOnboardingMember({
+        membership: makeMembership({ role: "member" }),
+        league: makeLeague({ status: "active" }),
+        isOwner: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("still redirects active members when discovery failed (isOwner false)", () => {
+    expect(
+      shouldRedirectActiveOnboardingMember({
+        membership: makeMembership({ role: "member" }),
+        league: makeLeague({ status: "active" }),
+        isOwner: false,
+      }),
+    ).toBe(true);
+  });
+
+  it("does not redirect when there is no membership, or the league is not active", () => {
+    expect(
+      shouldRedirectActiveOnboardingMember({
+        membership: null,
+        league: makeLeague({ status: "active" }),
+        isOwner: true,
+      }),
+    ).toBe(false);
+    expect(
+      shouldRedirectActiveOnboardingMember({
+        membership: makeMembership({ role: "member" }),
+        league: makeLeague({ status: "provisioning" }),
+        isOwner: true,
+      }),
+    ).toBe(false);
+    expect(
+      shouldRedirectActiveOnboardingMember({
+        membership: makeMembership({ role: "member" }),
+        league: null,
+        isOwner: true,
+      }),
+    ).toBe(false);
   });
 });
 

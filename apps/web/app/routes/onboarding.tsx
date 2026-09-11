@@ -27,6 +27,7 @@ import {
   formatChallengeCountdown,
   isStuckProvisioning,
   provisioningStartedAtFromLeague,
+  shouldRedirectActiveOnboardingMember,
   type PilotLeagueStep,
 } from "~/lib/onboarding-view";
 import { describeExplorerError } from "~/lib/sleeper-explorer";
@@ -126,10 +127,17 @@ export async function loader(args: Route.LoaderArgs) {
   const league = await getLeagueBySleeperId(env.DB, deps.pilotSleeperLeagueId);
   const membership = league ? await getLeagueMember(env.DB, league.id, user.id) : null;
 
-  // Active members leave onboarding entirely. Only after that check, strip `?refresh=1` so the
+  // Ordinary active members leave onboarding entirely. Unverified Sleeper owners of an
+  // already-active league (0002 migrated rows, role = "member") stay so they can complete the
+  // team-name challenge. Discovery-failed / missing pilotEntry still redirects — do not trap an
+  // active member here on a Sleeper outage. Only after that check, strip `?refresh=1` so the
   // query cannot stick: a reload or connect/join form revalidation of `/onboarding` must not
   // charge explorer origin quota again. Discovery (and tryConsumeRefreshOrigin) already ran above.
-  const redirectingToLeague = Boolean(membership && league && league.status === "active");
+  const redirectingToLeague = shouldRedirectActiveOnboardingMember({
+    membership,
+    league,
+    isOwner: pilotEntry?.isOwner === true,
+  });
   if (redirectingToLeague && league) {
     throw redirect(`/leagues/${league.id}`);
   }
@@ -563,10 +571,9 @@ export default function Onboarding({ loaderData, actionData }: Route.ComponentPr
           </Card>
         ) : null}
 
-        {/* "already_member" is intentionally not rendered here: the loader above redirects to
-            `/leagues/:id` the moment membership + an active league both exist, so this step can
-            never actually reach the component (see computePilotLeagueStep's PilotLeagueStep
-            comment and app/routes/onboarding.tsx's loader). */}
+        {/* "already_member" is intentionally not rendered here: the loader above redirects
+            ordinary active members (and verified commissioners) to `/leagues/:id`. Unverified
+            Sleeper owners stay on onboarding as request_challenge / challenge_pending instead. */}
 
         {comingSoonLeagues.length > 0 ? (
           <div>

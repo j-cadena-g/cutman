@@ -1,6 +1,14 @@
 /// <reference types="@cloudflare/vitest-pool-workers/types" />
 import { applyD1Migrations, env, runInDurableObject } from "cloudflare:test";
-import { ensureSchema, getLeague, upsertUserByClerkId } from "@cutman/db";
+import {
+  activateLeague,
+  createLeague,
+  ensureSchema,
+  getLeague,
+  getLeagueMember,
+  upsertLeagueMember,
+  upsertUserByClerkId,
+} from "@cutman/db";
 import type { NflState, SleeperClient, SleeperLeague, SleeperLeagueUser, SleeperUser } from "@cutman/sleeper";
 import {
   EXAMPLE_COMMISSIONER_CHALLENGE,
@@ -175,5 +183,73 @@ describe("verify then provision", () => {
       return (JSON.parse(row.payload) as { users: unknown[] }).users;
     });
     expect(snapshotUsers).toHaveLength(v1FixtureUsers.length);
+  });
+
+  it("promotes a migrated member to commissioner on an already-active league and does not bootstrap again", async () => {
+    const user = await seedUser("user_verify_migrate_active", "verify-migrate-active@example.test");
+    const pilotSleeperLeagueId = "sleeper_verify_migrate_active";
+    const sleeperUserId = "sleeper_user_verify_migrate_active";
+    const sleeperClient = createFakeSleeperClient({
+      usersByLookup: {
+        commish: { user_id: sleeperUserId, username: "commish", display_name: "Commish" },
+      },
+      leagueUsersById: {
+        [pilotSleeperLeagueId]: [
+          {
+            user_id: sleeperUserId,
+            username: "commish",
+            display_name: "Commish",
+            is_owner: true,
+            metadata: { team_name: `Team ${EXAMPLE_COMMISSIONER_CHALLENGE}` },
+          },
+        ],
+      },
+      leaguesById: {
+        [pilotSleeperLeagueId]: {
+          league_id: pilotSleeperLeagueId,
+          name: "Migrated Active",
+          season: "2026",
+          sport: "nfl",
+        },
+      },
+    });
+    const deps = makeDeps({ sleeperClient, pilotSleeperLeagueId });
+    const existing = await createLeague(env.DB, {
+      id: "league_verify_migrate_active",
+      sleeperLeagueId: pilotSleeperLeagueId,
+      name: "Migrated Active",
+      season: "2026",
+      now: 1_806_000_000_000,
+    });
+    await activateLeague(env.DB, existing.id, 1_806_000_000_010);
+    await upsertLeagueMember(env.DB, {
+      leagueId: existing.id,
+      userId: user.id,
+      role: "member",
+      now: 1_806_000_000_020,
+    });
+    await connectSleeperAccount(deps, { clerkUserId: user.id, usernameInput: "commish" });
+    const requested = await requestCommissionerChallenge(deps, { clerkUserId: user.id });
+    if (!requested.ok) throw new Error("expected challenge request to succeed");
+
+    const verified = await verifyCommissionerChallenge(deps, { clerkUserId: user.id });
+    expect(verified.ok).toBe(true);
+    if (!verified.ok) throw new Error("expected ok");
+    expect(verified.league.id).toBe(existing.id);
+    expect(verified.league.status).toBe("active");
+    expect(verified.membership.role).toBe("commissioner");
+    expect(await getLeagueMember(env.DB, existing.id, user.id)).toMatchObject({ role: "commissioner" });
+
+    const provisioned = await provisionAndActivateLeague(
+      provisioningDepsFromEnv(env, verified.league.id, () => 1_806_000_000_050),
+      verified.league,
+    );
+    expect(provisioned.ok).toBe(true);
+    if (!provisioned.ok) throw new Error("expected ok");
+    expect(provisioned.league.id).toBe(existing.id);
+    expect(provisioned.league.status).toBe("active");
+    expect(await getLeague(env.DB, existing.id)).toMatchObject({ id: existing.id, status: "active" });
+    expect(await getDashboardOrNull(env.LEAGUE_BRAIN.getByName(existing.id))).toBeNull();
+    expect(await settingKeys(existing.id)).toEqual([]);
   });
 });

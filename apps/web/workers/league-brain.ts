@@ -533,7 +533,10 @@ export class LeagueBrain extends DurableObject<Env> {
       this.ctx.storage.transactionSync(() => this.clearLegacyImportInFlight());
       return;
     }
-    if (this.getSetting(LEGACY_IMPORT_ABANDONED_KEY)) return;
+    if (this.getSetting(LEGACY_IMPORT_ABANDONED_KEY)) {
+      this.deleteSetting(LEGACY_IMPORT_PENDING_KEY);
+      return;
+    }
     if (!this.isLegacyImportPending() && this.hasHistoricalRows()) {
       this.ctx.storage.transactionSync(() => this.markLegacyImportComplete(input.sleeperLeagueId));
       return;

@@ -18,7 +18,7 @@ import {
   type OnboardingDiscoveryCacheDeps,
 } from "../app/lib/onboarding-discovery-cache.server.ts";
 import type { DiscoverLeaguesResult, DiscoveredLeague } from "../app/lib/onboarding.server.ts";
-import { computePilotLeagueStep } from "../app/lib/onboarding-view.ts";
+import { computePilotLeagueStep, shouldRedirectActiveOnboardingMember } from "../app/lib/onboarding-view.ts";
 import {
   createMemoryExplorerCache,
   kvExplorerCache,
@@ -213,6 +213,60 @@ describe("shouldStripOnboardingRefreshQuery", () => {
     expect(shouldStripOnboardingRefreshQuery({ refresh: true, redirectingToLeague: true })).toBe(false);
     expect(shouldStripOnboardingRefreshQuery({ refresh: false, redirectingToLeague: false })).toBe(false);
     expect(shouldStripOnboardingRefreshQuery({ refresh: false, redirectingToLeague: true })).toBe(false);
+  });
+
+  it("strips refresh for an unverified Sleeper owner of an already-active league (they stay on onboarding)", () => {
+    const redirectingToLeague = shouldRedirectActiveOnboardingMember({
+      membership: {
+        league_id: "pilot_league",
+        user_id: "user_1",
+        role: "member",
+        recap_email_opt_in: 0,
+        created_at: 0,
+      },
+      league: {
+        id: "pilot_league",
+        sleeper_league_id: "sleeper_pilot_league",
+        name: "The Pilot",
+        season: "2026",
+        status: "active",
+        tone: "playful",
+        created_at: 0,
+        activated_at: 1,
+        provisioning_error: null,
+        provisioning_started_at: null,
+      },
+      isOwner: true,
+    });
+    expect(redirectingToLeague).toBe(false);
+    expect(shouldStripOnboardingRefreshQuery({ refresh: true, redirectingToLeague })).toBe(true);
+  });
+
+  it("does not strip refresh when an ordinary active member is redirected to the league", () => {
+    const redirectingToLeague = shouldRedirectActiveOnboardingMember({
+      membership: {
+        league_id: "pilot_league",
+        user_id: "user_1",
+        role: "member",
+        recap_email_opt_in: 0,
+        created_at: 0,
+      },
+      league: {
+        id: "pilot_league",
+        sleeper_league_id: "sleeper_pilot_league",
+        name: "The Pilot",
+        season: "2026",
+        status: "active",
+        tone: "playful",
+        created_at: 0,
+        activated_at: 1,
+        provisioning_error: null,
+        provisioning_started_at: null,
+      },
+      isOwner: false,
+    });
+    expect(redirectingToLeague).toBe(true);
+    expect(shouldStripOnboardingRefreshQuery({ refresh: true, redirectingToLeague })).toBe(false);
   });
 });
 
