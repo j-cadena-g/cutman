@@ -215,10 +215,6 @@ export class LeagueBrain extends DurableObject<Env> {
     };
   }
 
-  async setTone(tone: Tone): Promise<void> {
-    this.putSetting("tone", tone);
-  }
-
   /**
    * Coordinator for commissioner tone changes: update this object's setting and D1
    * together. Dashboard reads stay off this queue so they can observe the live DO

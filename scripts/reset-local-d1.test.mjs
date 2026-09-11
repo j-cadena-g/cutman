@@ -39,29 +39,49 @@ async function writeSentinel(dir, name = "keep-me") {
   return filePath;
 }
 
+const SEGMENTS_AFTER_REPO_ROOT = Object.freeze(["apps", "web", ...LOCAL_D1_SEGMENTS]);
+
+/**
+ * chain = [repoRoot, apps, web, ...LOCAL_D1_SEGMENTS]. Skip index 0 (the real
+ * mkdtemp root already exists). A checkout whose own root path is a symlink is
+ * covered separately: the guard refuses it rather than following.
+ */
 const SYMLINK_CASES = [
-  { name: "apps/web", linkIndex: 0 },
-  { name: ".wrangler", linkIndex: 1 },
-  { name: "state", linkIndex: 2 },
-  { name: "v3", linkIndex: 3 },
-  { name: "d1", linkIndex: 4 },
+  { name: "apps", linkIndex: 1 },
+  { name: "apps/web", linkIndex: 2 },
+  { name: ".wrangler", linkIndex: 3 },
+  { name: "state", linkIndex: 4 },
+  { name: "v3", linkIndex: 5 },
+  { name: "d1", linkIndex: 6 },
 ];
+
+function localD1PathChain(root) {
+  const appsDir = path.join(root, "apps");
+  const webDir = path.join(appsDir, "web");
+  return [
+    root,
+    appsDir,
+    webDir,
+    ...LOCAL_D1_SEGMENTS.map((_, index) =>
+      path.join(webDir, ...LOCAL_D1_SEGMENTS.slice(0, index + 1)),
+    ),
+  ];
+}
 
 /**
  * Suffix under the symlink target where the D1 sentinel must live.
- * chain = [webDir, ...LOCAL_D1_SEGMENTS]; `linkIndex` selects which entry is the link.
+ * chain = [repoRoot, apps, web, ...LOCAL_D1_SEGMENTS]; `linkIndex` selects which entry is the link.
  * - Leaf (`d1`): the target *is* that directory, so there is no extra suffix.
- * - Replaced ancestor: skip that entry and keep the D1 segments under the target.
+ * - Replaced ancestor: skip that entry and keep the remaining segments under the target.
  */
 function remainingSegmentsUnderLinkTarget(linkIndex) {
-  const replacedSegmentIndex = linkIndex - 1;
-  if (replacedSegmentIndex < 0) {
-    return LOCAL_D1_SEGMENTS;
+  if (linkIndex === 0) {
+    return [...SEGMENTS_AFTER_REPO_ROOT];
   }
-  if (replacedSegmentIndex === LOCAL_D1_SEGMENTS.length - 1) {
+  if (linkIndex === SEGMENTS_AFTER_REPO_ROOT.length) {
     return [];
   }
-  return LOCAL_D1_SEGMENTS.slice(replacedSegmentIndex + 1);
+  return SEGMENTS_AFTER_REPO_ROOT.slice(linkIndex);
 }
 
 describe("reset-local-d1 path guards", () => {
@@ -113,16 +133,11 @@ describe("reset-local-d1 path guards", () => {
 
   for (const { name, linkIndex } of SYMLINK_CASES) {
     it(`rejects a symbolic link at ${name} before rm`, async () => {
-      await withTempRoot(async ({ root, webDir, localD1Dir }) => {
+      await withTempRoot(async ({ root, localD1Dir }) => {
         const target = path.join(root, "link-target");
         const remaining = remainingSegmentsUnderLinkTarget(linkIndex);
         const keepPath = await writeSentinel(path.join(target, ...remaining));
-        const chain = [
-          webDir,
-          ...LOCAL_D1_SEGMENTS.map((_, index) =>
-            path.join(webDir, ...LOCAL_D1_SEGMENTS.slice(0, index + 1)),
-          ),
-        ];
+        const chain = localD1PathChain(root);
         const linkPath = chain[linkIndex];
         await mkdir(path.dirname(linkPath), { recursive: true });
         await symlink(target, linkPath);
@@ -150,6 +165,32 @@ describe("reset-local-d1 path guards", () => {
       });
     });
   }
+
+  it("rejects a symbolic link at the derived repo root before rm", async () => {
+    const outer = await mkdtemp(path.join(os.tmpdir(), "cutman-reset-d1-root-link-"));
+    try {
+      const realRoot = path.join(outer, "real-root");
+      const linkRoot = path.join(outer, "link-root");
+      await mkdir(realRoot);
+      await symlink(realRoot, linkRoot);
+      const webDir = path.join(linkRoot, "apps", "web");
+      const localD1Dir = path.join(webDir, ...LOCAL_D1_SEGMENTS);
+      const keepPath = await writeSentinel(path.join(realRoot, "apps", "web", ...LOCAL_D1_SEGMENTS));
+
+      await assert.rejects(
+        () => resetLocalD1MatchingExpected(localD1Dir, localD1Dir),
+        (error) => {
+          assert.match(error.message, /symbolic link/);
+          assert.ok(error.message.includes(linkRoot));
+          return true;
+        },
+      );
+      await access(keepPath);
+      assert.equal((await lstat(linkRoot)).isSymbolicLink(), true);
+    } finally {
+      await rm(outer, { recursive: true, force: true });
+    }
+  });
 
   it("rejects an unexpected suffix before any deletion", async () => {
     await withTempRoot(async ({ webDir }) => {

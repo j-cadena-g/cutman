@@ -55,12 +55,20 @@ export function assertExpectedLocalD1Path(targetDir) {
 }
 
 /**
- * lstat every existing component from `webDir` through `.wrangler/state/v3/d1`.
- * Missing tail components are safe — stop descending at the first ENOENT.
- * Any symbolic link in the chain is rejected so recursive rm cannot follow it.
+ * lstat every existing component from the derived repo root through
+ * `apps/web/.wrangler/state/v3/d1`. Missing tail components are safe — stop
+ * descending at the first ENOENT. Any symbolic link in the chain is rejected
+ * so recursive rm cannot follow it, including a symlink at `apps` itself.
+ *
+ * Repo root is `dirname(dirname(webDir))` (the parent of `apps`). A checkout
+ * whose own root path is a symlink is refused rather than followed: that is
+ * intentional for a destructive wipe. Ancestor symlinks above the repo root
+ * are outside this chain (e.g. `~/dev` as a volume symlink is fine).
  */
 export async function assertLocalD1PathHasNoSymlinks(targetWebDir) {
-  const chain = [targetWebDir];
+  const targetAppsDir = path.dirname(targetWebDir);
+  const targetRepoRoot = path.dirname(targetAppsDir);
+  const chain = [targetRepoRoot, targetAppsDir, targetWebDir];
   let current = targetWebDir;
   for (const segment of LOCAL_D1_SEGMENTS) {
     current = path.join(current, segment);

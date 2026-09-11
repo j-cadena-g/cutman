@@ -151,6 +151,35 @@ export function selectScheduledLeaguePage<T extends { id: string }>(input: {
   };
 }
 
+/**
+ * Ordinary poll-hour split of the per-tick DO cap.
+ * maxLeagues=1 keeps the only slot for regular rotation; backlog drains on idle hours.
+ */
+export function scheduledPollHourLimits(maxLeagues: number): {
+  backlogLimit: number;
+  pollLimit: number;
+} {
+  if (!Number.isInteger(maxLeagues) || maxLeagues < 1) {
+    throw new Error("scheduled league page limit must be a positive integer");
+  }
+  if (maxLeagues === 1) {
+    return { backlogLimit: 0, pollLimit: 1 };
+  }
+  const backlogLimit = Math.floor(maxLeagues / 2);
+  return { backlogLimit, pollLimit: maxLeagues - backlogLimit };
+}
+
+function uniqueLeaguesById<T extends { id: string }>(leagues: T[]): T[] {
+  const seen = new Set<string>();
+  const unique: T[] = [];
+  for (const league of leagues) {
+    if (seen.has(league.id)) continue;
+    seen.add(league.id);
+    unique.push(league);
+  }
+  return unique;
+}
+
 /** Bounded last_error codes. Never store raw Error.message or model text. */
 export type RecapAttemptReason = RecapStatus | "thrown";
 
@@ -504,29 +533,40 @@ export async function handleScheduled(
         return { polled: 0, recapped: 0 };
       }
     }
-    pending = await listPendingRecapLeagues(env.DB, weekKey, maxLeagues);
-  }
-
-  const drainBacklog = pending.length > 0;
-  if (!poll && !recapWindow && !drainBacklog) {
-    return { polled: 0, recapped: 0 };
+    if (!poll) {
+      pending = await listPendingRecapLeagues(env.DB, weekKey, maxLeagues);
+      if (pending.length === 0) {
+        return { polled: 0, recapped: 0 };
+      }
+    }
   }
 
   let page: ScheduledLeaguePage<LeagueRow> | null = null;
   let work: LeagueRow[] = [];
   let recapIds = new Set<string>();
 
-  if (recapWindow || (poll && !drainBacklog)) {
+  if (recapWindow) {
     const afterId = await readScheduledLeagueCursor(env.DB);
     page = await loadScheduledLeaguePage(env.DB, afterId, maxLeagues);
     work = page.leagues;
-    if (recapWindow) {
-      recapIds = await pendingRecapIds(
-        env.DB,
-        weekKey,
-        work.map((league) => league.id),
-      );
-    }
+    recapIds = await pendingRecapIds(
+      env.DB,
+      weekKey,
+      work.map((league) => league.id),
+    );
+  } else if (poll) {
+    const { backlogLimit, pollLimit } = scheduledPollHourLimits(maxLeagues);
+    pending =
+      backlogLimit > 0 ? await listPendingRecapLeagues(env.DB, weekKey, backlogLimit) : [];
+    const afterId = await readScheduledLeagueCursor(env.DB);
+    const pollPageLimit = pending.length > 0 ? pollLimit : maxLeagues;
+    page = await loadScheduledLeaguePage(env.DB, afterId, pollPageLimit);
+    work = uniqueLeaguesById([...page.leagues, ...pending]);
+    recapIds = await pendingRecapIds(
+      env.DB,
+      weekKey,
+      work.map((league) => league.id),
+    );
   } else {
     work = pending;
     recapIds = new Set(work.map((league) => league.id));
