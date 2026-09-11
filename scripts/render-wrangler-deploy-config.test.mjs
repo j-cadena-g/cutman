@@ -338,6 +338,17 @@ describe("render-wrangler-deploy-config output path", () => {
     }
   });
 
+  it("treats a file-as-parent in the destination chain as absent", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "cutman-wrangler-enotdir-walk-"));
+    try {
+      const filePath = path.join(root, "not-a-directory");
+      await writeFile(filePath, "x");
+      await assertPathChainHasNoSymlinks(root, path.join(filePath, "child.jsonc"));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("treats ENOTDIR from snapshotFile as absent without touching repo outputs", async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "cutman-wrangler-enotdir-"));
     try {
@@ -359,7 +370,6 @@ describe("render-wrangler-deploy-config output path", () => {
       ...baseEnv(),
       WRANGLER_RENDER_OUTPUT: WRANGLER_DEV_OUTPUT_PATH,
     };
-    delete env.NODE_TEST_CONTEXT;
 
     const result = spawnSync(
       process.execPath,
@@ -812,6 +822,53 @@ describe("render-wrangler-deploy-config", () => {
           "Invalid PILOT_SLEEPER_LEAGUE_ID; expected a string value.",
         );
         assert.doesNotMatch(error.message, /42/);
+        return true;
+      },
+    );
+  });
+
+  it("rejects a non-string required env value without echoing it", () => {
+    const leaked = { toString: () => "leaked-required-value" };
+    assert.throws(
+      () => renderProduction(baseEnv({ APP_ORIGIN: leaked })),
+      (error) => {
+        assert.equal(error.message, "Invalid APP_ORIGIN; expected a string value.");
+        assert.doesNotMatch(error.message, /leaked-required-value/);
+        assert.notEqual(error.name, "TypeError");
+        return true;
+      },
+    );
+    assert.throws(
+      () => renderProduction(baseEnv({ CLERK_PUBLISHABLE_KEY: 42 })),
+      (error) => {
+        assert.equal(
+          error.message,
+          "Invalid CLERK_PUBLISHABLE_KEY; expected a string value.",
+        );
+        assert.doesNotMatch(error.message, /42/);
+        assert.notEqual(error.name, "TypeError");
+        return true;
+      },
+    );
+  });
+
+  it("rejects a non-string APP_ENV without echoing it", () => {
+    const leaked = { toString: () => "leaked-app-env" };
+    assert.throws(
+      () => renderProduction(baseEnv({ APP_ENV: leaked })),
+      (error) => {
+        assert.equal(error.message, "Invalid APP_ENV; expected a string value.");
+        assert.doesNotMatch(error.message, /leaked-app-env/);
+        assert.notEqual(error.name, "TypeError");
+        return true;
+      },
+    );
+    assert.throws(
+      () => renderDev(baseEnv({ APP_ENV: 42 })),
+      (error) => {
+        assert.equal(error.message, "Invalid APP_ENV; expected a string value.");
+        assert.doesNotMatch(error.message, /42/);
+        assert.notEqual(error.name, "TypeError");
         return true;
       },
     );

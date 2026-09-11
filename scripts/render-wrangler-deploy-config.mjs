@@ -188,8 +188,9 @@ function freezeAllowedOutputs(allowedOutputs) {
 /**
  * lstat every existing path component from `rootPath` through `destinationPath`.
  * The root itself is not checked (the repo directory may be a symlink). Missing
- * tail components are safe — stop at the first ENOENT. Any symlink in the chain
- * (parent or destination) is rejected so writes cannot follow it.
+ * tail components are safe — stop at the first ENOENT or ENOTDIR (a file where
+ * a directory was expected means the destination cannot exist). Any symlink in
+ * the chain (parent or destination) is rejected so writes cannot follow it.
  */
 export async function assertPathChainHasNoSymlinks(rootPath, destinationPath) {
   const resolvedRoot = path.resolve(rootPath);
@@ -214,7 +215,7 @@ export async function assertPathChainHasNoSymlinks(rootPath, destinationPath) {
     try {
       stats = await lstat(candidate);
     } catch (error) {
-      if (error && error.code === "ENOENT") {
+      if (error && (error.code === "ENOENT" || error.code === "ENOTDIR")) {
         return;
       }
       throw error;
@@ -300,7 +301,7 @@ function getOptionalValidatedValue(name, env) {
 }
 
 function getRequiredValue(name, env) {
-  const value = env[name]?.trim();
+  const value = getOptionalValue(name, env);
   const rule = requiredValues[name];
 
   if (!value) {
@@ -404,7 +405,7 @@ export function renderWranglerConfig(
     CLERK_PUBLISHABLE_KEY: getRequiredValue("CLERK_PUBLISHABLE_KEY", env),
     APP_ORIGIN: getRequiredValue("APP_ORIGIN", env),
     APP_ENV:
-      env.APP_ENV?.trim() ||
+      getOptionalValue("APP_ENV", env) ||
       (isDevConfig ? "development" : "production"),
     USE_SLEEPER_FIXTURES: resolveUseSleeperFixturesForConfig(isDevConfig, env),
     PILOT_SLEEPER_LEAGUE_ID: resolvePilotSleeperLeagueId(isDevConfig, env),
@@ -550,8 +551,8 @@ export async function isSameRealPath(leftPath, rightPath) {
  */
 export async function isCliEntrypoint(argvPath, modulePath) {
   if (!argvPath) return false;
-  await realpath(argvPath);
-  return isSameRealPath(argvPath, modulePath);
+  const resolvedArgvPath = await realpath(argvPath);
+  return isSameRealPath(resolvedArgvPath, modulePath);
 }
 
 if (await isCliEntrypoint(process.argv[1], fileURLToPath(import.meta.url))) {
