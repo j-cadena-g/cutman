@@ -378,10 +378,14 @@ describe("stale explorer origin quota sweep", () => {
   });
 
   it("bounds deletions per call and leaves remaining stale rows for a later tick", async () => {
-    await sweepStaleExplorerOriginQuota(env.DB, {
-      now: FIXED_NOW,
-      limit: EXPLORER_ORIGIN_QUOTA_STALE_SWEEP_LIMIT,
-    });
+    for (let i = 0; i < 32; i++) {
+      const deleted = await sweepStaleExplorerOriginQuota(env.DB, {
+        now: FIXED_NOW,
+        limit: EXPLORER_ORIGIN_QUOTA_STALE_SWEEP_LIMIT,
+      });
+      if (deleted === 0) break;
+      if (i === 31) throw new Error("stale explorer origin quota sweep did not drain");
+    }
     const staleHour = explorerOriginQuotaStaleCutoffHourKey(FIXED_NOW) - 1;
     const ids = [crypto.randomUUID(), crypto.randomUUID(), crypto.randomUUID()].map(
       (id) => `sweep_${id}`,

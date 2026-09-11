@@ -21,6 +21,9 @@ apps/web/worker-configuration.d.ts
 *.tsbuildinfo
 agent-tools
 
+# Temp dirs from reset-local-d1 tests if the process dies before cleanup
+.tmp-reset-d1-outside-*
+
 # Pinned 1Password CLI for Workers Builds
 .bin/
 

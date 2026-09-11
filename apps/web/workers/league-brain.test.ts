@@ -1109,6 +1109,92 @@ describe("LeagueBrain legacy Durable Object migration", () => {
     expect(again.settings).toEqual(migrated.settings);
   });
 
+  it("marks import pending before the source export await so concurrent reads observe it", async () => {
+    const sleeperId = "900000000000000101";
+    const internalId = `legacy_${sleeperId}`;
+    await seedLegacyBrain(sleeperId, {
+      leagueId: sleeperId,
+      sleeperLeagueId: sleeperId,
+    });
+    const next = env.LEAGUE_BRAIN.getByName(internalId);
+    const input = {
+      leagueId: internalId,
+      sleeperLeagueId: sleeperId,
+      name: "Cutman League",
+      tone: "playful" as const,
+    };
+
+    await runInDurableObject(next, async (instance) => {
+      const brain = instance as unknown as TestBrain;
+      const original = brain.exportLegacyStateFromSource.bind(brain);
+      let releaseExport!: () => void;
+      let signalStarted!: () => void;
+      const exportStarted = new Promise<void>((resolve) => {
+        signalStarted = resolve;
+      });
+      const exportGate = new Promise<void>((resolve) => {
+        releaseExport = resolve;
+      });
+      brain.exportLegacyStateFromSource = async (sleeperLeagueId, callerInternalLeagueId) => {
+        signalStarted();
+        await exportGate;
+        return original(sleeperLeagueId, callerInternalLeagueId);
+      };
+
+      const bootstrapPromise = brain.bootstrap(input);
+      await exportStarted;
+
+      const refusals: { dashboard?: string; poll?: string } = {};
+      try {
+        await brain.getDashboard();
+      } catch (error) {
+        refusals.dashboard = error instanceof Error ? error.message : String(error);
+      }
+      try {
+        await brain.poll();
+      } catch (error) {
+        refusals.poll = error instanceof Error ? error.message : String(error);
+      }
+      expect(refusals).toEqual({
+        dashboard: LEGACY_IMPORT_PENDING_MESSAGE,
+        poll: LEGACY_IMPORT_PENDING_MESSAGE,
+      });
+
+      releaseExport();
+      await bootstrapPromise;
+    });
+
+    const migrated = await readBrainSql(next);
+    expect(migrated.snapshots).toEqual([
+      expect.objectContaining({
+        id: 7,
+        payload_hash: "hash-legacy-snap",
+      }),
+    ]);
+    expect(migrated.beats).toHaveLength(1);
+    expect(migrated.bible).toEqual([
+      expect.objectContaining({
+        entry: "Week 2: the trade that split the group chat.",
+      }),
+    ]);
+    expect(migrated.recaps).toHaveLength(1);
+    expect(migrated.settings).toEqual(
+      expect.arrayContaining([
+        { key: "leagueId", value: internalId },
+        { key: "sleeperLeagueId", value: sleeperId },
+        { key: "legacyMigratedFrom", value: sleeperId },
+      ]),
+    );
+    expect(migrated.settings.some((row) => row.key === "legacyImportPending")).toBe(false);
+    expect(migrated.settings.some((row) => row.key === "legacyImportFailureCount")).toBe(false);
+    await expect(next.getDashboard()).resolves.toEqual(
+      expect.objectContaining({
+        leagueId: internalId,
+        sleeperLeagueId: sleeperId,
+      }),
+    );
+  });
+
   it("abandons legacy import after consecutive failures and then bootstraps a fresh book", async () => {
     const abandonSleeperId = "900000000000000031";
     const abandonInternalId = `legacy_${abandonSleeperId}`;

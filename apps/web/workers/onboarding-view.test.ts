@@ -363,7 +363,8 @@ describe("describeOnboardingError", () => {
   });
 
   it("gives clear expiry guidance for an expired challenge", () => {
-    expect(describeOnboardingError("challenge_expired")).toMatch(/15 minutes|expired/i);
+    expect(describeOnboardingError("challenge_expired")).toMatch(/expired/i);
+    expect(describeOnboardingError("challenge_expired")).toMatch(/request a new one/i);
   });
 
   it("gives a clear retry path when the team name doesn't contain the challenge yet", () => {

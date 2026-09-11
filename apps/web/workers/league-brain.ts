@@ -44,12 +44,6 @@ function bootstrapBibleEntry(name: string, tone: Tone): string {
   return `${name} is in the book. Tone: ${tone}.`;
 }
 
-/** True only for the exact bootstrap seed of this object's stored name and tone. */
-function isBootstrapBibleSeed(entry: string, name: string | null, tone: string | null): boolean {
-  if (!name || !tone || !isTone(tone)) return false;
-  return entry === bootstrapBibleEntry(name, tone);
-}
-
 type LegacyImportLogEvent = "league_brain.legacy_import_failed" | "league_brain.legacy_import_abandoned";
 type LegacyImportFailureReason = "error" | "unknown";
 
@@ -519,9 +513,12 @@ export class LeagueBrain extends DurableObject<Env> {
       return;
     }
 
+    // Mark pending before the export RPC. That await yields the DO input gate, so
+    // concurrent poll/attemptRecap/dashboard must see pending and refuse to seed history.
+    this.markLegacyImportPending();
     const legacy = await this.exportLegacyStateFromSource(input.sleeperLeagueId, input.leagueId);
-    // The export await yields the DO input gate. Re-read completion markers before
-    // writing so a concurrent bootstrap cannot look "done" with a partial copy.
+    // Re-read completion markers before writing so a concurrent bootstrap cannot
+    // look "done" with a partial copy.
     if (this.getSetting(LEGACY_MIGRATED_FROM_KEY)) {
       this.ctx.storage.transactionSync(() => this.clearLegacyImportInFlight());
       return;
@@ -581,7 +578,7 @@ export class LeagueBrain extends DurableObject<Env> {
         this.deleteSetting(LEGACY_IMPORT_PENDING_KEY);
         this.putSetting(LEGACY_IMPORT_ABANDONED_KEY, "1");
       } else {
-        this.putSetting(LEGACY_IMPORT_PENDING_KEY, "1");
+        this.markLegacyImportPending();
       }
     });
     if (attempt === 0) return;
@@ -623,6 +620,10 @@ export class LeagueBrain extends DurableObject<Env> {
     this.deleteSetting(LEGACY_IMPORT_ABANDONED_KEY);
   }
 
+  private markLegacyImportPending(): void {
+    this.putSetting(LEGACY_IMPORT_PENDING_KEY, "1");
+  }
+
   private markLegacyImportComplete(sleeperLeagueId: string): void {
     this.putSetting(LEGACY_MIGRATED_FROM_KEY, sleeperLeagueId);
     this.clearLegacyImportInFlight();
@@ -649,10 +650,15 @@ export class LeagueBrain extends DurableObject<Env> {
     if (beat.length > 0) return true;
     const recap = this.ctx.storage.sql.exec("SELECT week FROM recaps LIMIT 1").toArray();
     if (recap.length > 0) return true;
-    const bible = this.ctx.storage.sql.exec("SELECT entry FROM bible").toArray() as Array<{ entry: string }>;
     const name = this.getSetting("name");
     const tone = this.getSetting("tone");
-    return bible.some((row) => !isBootstrapBibleSeed(row.entry, name, tone));
+    const bible =
+      name && tone && isTone(tone)
+        ? this.ctx.storage.sql
+            .exec("SELECT entry FROM bible WHERE entry != ? LIMIT 1", bootstrapBibleEntry(name, tone))
+            .toArray()
+        : this.ctx.storage.sql.exec("SELECT entry FROM bible LIMIT 1").toArray();
+    return bible.length > 0;
   }
 
   /**

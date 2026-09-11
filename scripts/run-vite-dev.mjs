@@ -17,10 +17,6 @@ import {
   formatMissingAgenticNote,
 } from "./lib/local-dev-secrets.mjs";
 import { parseManifestKeys } from "./lib/parse-manifest-keys.mjs";
-import {
-  WRANGLER_DEV_OUTPUT_PATH,
-  writeRenderedWranglerConfig,
-} from "./render-wrangler-deploy-config.mjs";
 
 const CUTMAN_DEV_PORT = 41789;
 
@@ -109,6 +105,12 @@ if (command === "vite") {
     process.exit(1);
   }
 }
+
+// Deferred so usage/secret/port preflight can fail first.
+const {
+  WRANGLER_DEV_OUTPUT_PATH,
+  writeRenderedWranglerConfig,
+} = await import("./render-wrangler-deploy-config.mjs");
 
 await writeRenderedWranglerConfig({
   outputPath: WRANGLER_DEV_OUTPUT_PATH,

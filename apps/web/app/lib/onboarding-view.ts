@@ -154,7 +154,7 @@ export function describeOnboardingError(kind: OnboardingErrorKind): string {
     case "sleeper_account_mismatch":
       return "Your connected Sleeper account changed since you requested this code. Request a new one.";
     case "challenge_expired":
-      return "That verification code expired. Request a new one and finish verifying within 15 minutes.";
+      return "That verification code expired. Request a new one and finish verifying before it expires.";
     case "challenge_not_found_in_team_name":
       return "Cutman didn't find your code in your Sleeper team name yet. Save the rename on Sleeper, then verify again.";
     case "challenge_already_used":

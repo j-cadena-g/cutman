@@ -102,13 +102,23 @@ async function readJsonOrNull<T>(cache: ExplorerCache, key: string): Promise<T |
   }
 }
 
+function isCachedEnvelope<T>(value: unknown): value is Cached<T> {
+  if (!value || typeof value !== "object") return false;
+  const entry = value as Record<string, unknown>;
+  return (
+    typeof entry.fetchedAt === "number" &&
+    Number.isFinite(entry.fetchedAt) &&
+    entry.payload !== undefined
+  );
+}
+
 async function readCache<T>(
   deps: ExplorerDeps,
   key: string,
   ttlMs: number,
 ): Promise<CacheRead<T> | null> {
-  const cached = await readJsonOrNull<Cached<T>>(deps.cache, key);
-  if (!cached) return null;
+  const cached = await readJsonOrNull<unknown>(deps.cache, key);
+  if (!isCachedEnvelope<T>(cached)) return null;
   return {
     payload: cached.payload,
     fetchedAt: cached.fetchedAt,
