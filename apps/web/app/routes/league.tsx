@@ -8,6 +8,7 @@ import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
 import { Card, CardDescription, CardTitle } from "~/components/ui/card";
 import { getDashboardOrNull } from "~/lib/dashboard";
+import { clerkAppearance } from "~/lib/clerk-appearance";
 import { cloudflareEnv } from "~/lib/env";
 import type { Route } from "./+types/league";
 
@@ -126,6 +127,7 @@ function SignedInUserControls() {
     <Show when="signed-in">
       <UserButton
         appearance={{
+          ...clerkAppearance,
           elements: {
             avatarBox: "h-10 w-10 ring-2 ring-flag/70",
           },

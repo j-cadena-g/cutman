@@ -1,5 +1,6 @@
 import { ClerkProvider } from "@clerk/react-router";
 import { isRouteErrorResponse, Links, Meta, Outlet, Scripts, ScrollRestoration } from "react-router";
+import { clerkAppearance } from "~/lib/clerk-appearance";
 import { clerkRequestMiddleware, loadRootAuth } from "~/lib/clerk.server";
 import type { Route } from "./+types/root";
 import "./app.css";
@@ -54,7 +55,7 @@ export default function App({ loaderData }: Route.ComponentProps) {
     return <Outlet />;
   }
   return (
-    <ClerkProvider loaderData={loaderData}>
+    <ClerkProvider appearance={clerkAppearance} loaderData={loaderData}>
       <Outlet />
     </ClerkProvider>
   );

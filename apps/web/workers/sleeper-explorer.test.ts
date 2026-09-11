@@ -29,7 +29,6 @@ import {
 } from "../app/lib/explorer-origin-quota.server.ts";
 import {
   BOARD_TTL_MS,
-  FRESH_BOARD_PLAYERS_ORIGIN_CHARGE,
   ORIGIN_QUOTA_PER_HOUR,
   USER_TTL_MS,
   createMemoryExplorerCache,
@@ -53,6 +52,11 @@ import {
   isValidExplorerUsername,
   parseExplorerUsernameForm,
   sleeperAvatarUrl,
+  sleeperPlayerHeadshotUrl,
+  formatExplorerRecord,
+  formatExplorerScore,
+  matchupLeader,
+  zipMatchupStarters,
 } from "../app/lib/sleeper-explorer.ts";
 
 function countingClient(base: SleeperClient = createFixtureClient()) {
@@ -399,6 +403,95 @@ describe("sleeperAvatarUrl", () => {
   });
 });
 
+describe("sleeperPlayerHeadshotUrl", () => {
+  it("returns null for empty-slot sentinels", () => {
+    expect(sleeperPlayerHeadshotUrl("")).toBeNull();
+    expect(sleeperPlayerHeadshotUrl("0")).toBeNull();
+  });
+
+  it("uses the NFL player thumb path for numeric ids", () => {
+    expect(sleeperPlayerHeadshotUrl("4046")).toBe("https://sleepercdn.com/content/nfl/players/thumb/4046.jpg");
+  });
+
+  it("uses the team logo path for defense ids and lowercases the code", () => {
+    expect(sleeperPlayerHeadshotUrl("PHI")).toBe("https://sleepercdn.com/images/team_logos/nfl/phi.png");
+  });
+});
+
+describe("formatExplorerScore / formatExplorerRecord", () => {
+  it("renders Sleeper-style two-decimal scores and a dash for missing points", () => {
+    expect(formatExplorerScore(128.4)).toBe("128.40");
+    expect(formatExplorerScore(100)).toBe("100.00");
+    expect(formatExplorerScore(null)).toBe("—");
+  });
+
+  it("omits ties from the record unless the team has one", () => {
+    expect(formatExplorerRecord(5, 2, 0)).toBe("5-2");
+    expect(formatExplorerRecord(5, 1, 1)).toBe("5-1-1");
+  });
+});
+
+describe("zipMatchupStarters / matchupLeader", () => {
+  it("aligns starters by slot index, including empty seats", () => {
+    const lines = zipMatchupStarters(
+      [
+        { playerId: "4046", name: "Patrick Mahomes", position: "QB", team: "KC", points: 24.1, headshotUrl: null },
+        { playerId: "", name: "Empty", position: "RB", team: null, points: null, headshotUrl: null },
+      ],
+      [{ playerId: "4881", name: "Lamar Jackson", position: "QB", team: "BAL", points: 19, headshotUrl: null }],
+    );
+    expect(lines).toHaveLength(2);
+    expect(lines[0]?.slot).toBe("QB");
+    expect(lines[0]?.left?.name).toBe("Patrick Mahomes");
+    expect(lines[0]?.right?.name).toBe("Lamar Jackson");
+    expect(lines[1]?.slot).toBe("RB");
+    expect(lines[1]?.right).toBeNull();
+  });
+
+  it("keeps a right-only extra starter aligned to its slot", () => {
+    const lines = zipMatchupStarters(
+      [{ playerId: "4046", name: "Patrick Mahomes", position: "QB", team: "KC", points: 24.1, headshotUrl: null }],
+      [
+        { playerId: "4881", name: "Lamar Jackson", position: "QB", team: "BAL", points: 19, headshotUrl: null },
+        { playerId: "4035", name: "Saquon Barkley", position: "RB", team: "PHI", points: 14.2, headshotUrl: null },
+      ],
+    );
+    expect(lines).toHaveLength(2);
+    expect(lines[0]?.slot).toBe("QB");
+    expect(lines[0]?.left?.name).toBe("Patrick Mahomes");
+    expect(lines[0]?.right?.name).toBe("Lamar Jackson");
+    expect(lines[1]?.slot).toBe("RB");
+    expect(lines[1]?.left).toBeNull();
+    expect(lines[1]?.right?.name).toBe("Saquon Barkley");
+  });
+
+  it("names the roster currently ahead and stays unset on a tie or missing score", () => {
+    expect(
+      matchupLeader([
+        { rosterId: 1, teamName: "A", displayName: "A", abandoned: false, avatarUrl: null, wins: 1, losses: 0, ties: 0, points: 10, starters: [] },
+        { rosterId: 2, teamName: "B", displayName: "B", abandoned: false, avatarUrl: null, wins: 0, losses: 1, ties: 0, points: 8, starters: [] },
+      ]),
+    ).toBe(1);
+    expect(
+      matchupLeader([
+        { rosterId: 1, teamName: "A", displayName: "A", abandoned: false, avatarUrl: null, wins: 1, losses: 0, ties: 0, points: 10, starters: [] },
+        { rosterId: 2, teamName: "B", displayName: "B", abandoned: false, avatarUrl: null, wins: 0, losses: 1, ties: 0, points: 10, starters: [] },
+      ]),
+    ).toBeNull();
+    expect(
+      matchupLeader([
+        { rosterId: 1, teamName: "A", displayName: "A", abandoned: false, avatarUrl: null, wins: 1, losses: 0, ties: 0, points: 10, starters: [] },
+      ]),
+    ).toBeNull();
+    expect(
+      matchupLeader([
+        { rosterId: 1, teamName: "A", displayName: "A", abandoned: false, avatarUrl: null, wins: 1, losses: 0, ties: 0, points: 10, starters: [] },
+        { rosterId: 2, teamName: "B", displayName: "B", abandoned: false, avatarUrl: null, wins: 0, losses: 1, ties: 0, points: null, starters: [] },
+      ]),
+    ).toBeNull();
+  });
+});
+
 describe("isRealPlayerId", () => {
   it("rejects null, undefined, empty string, and Sleeper placeholder 0", () => {
     expect(isRealPlayerId(null)).toBe(false);
@@ -552,18 +645,25 @@ describe("assembleStandings / assembleScoreboard / assembleRosters", () => {
     expect(byes.map((game) => game.sides.map((side) => side.rosterId))).toEqual([[3], [4], [5], [6]]);
   });
 
-  it("skips Sleeper empty-slot sentinel 0 without shifting later roster positions", () => {
+  it("keeps an empty scoreboard slot so later starters stay aligned to roster positions", () => {
     const users: SleeperLeagueUser[] = [
-      { user_id: "u-a", username: "a", display_name: "Alex", metadata: { team_name: "A" } },
+      { user_id: "u-a", username: "a", display_name: "Alex", avatar: "ava-a", metadata: { team_name: "A" } },
     ];
-    const rosters: SleeperRoster[] = [{ roster_id: 1, owner_id: "u-a" }];
+    const rosters: SleeperRoster[] = [{ roster_id: 1, owner_id: "u-a", settings: { wins: 3, losses: 1, ties: 0 } }];
     const matchups: SleeperMatchup[] = [
       { roster_id: 1, matchup_id: 1, points: 10, starters: ["4046", "0", "4881"] },
     ];
     const games = assembleScoreboard(rosters, users, matchups, fixturePlayers, ["QB", "RB", "WR"]);
     const starters = games[0]?.sides[0]?.starters ?? [];
-    expect(starters.map((player) => player.playerId)).toEqual(["4046", "4881"]);
-    expect(starters[1]).toMatchObject({ playerId: "4881", position: "WR" });
+    expect(starters.map((player) => player.playerId)).toEqual(["4046", "", "4881"]);
+    expect(starters[1]).toMatchObject({ playerId: "", name: "Empty", position: "RB", headshotUrl: null });
+    expect(starters[2]).toMatchObject({ playerId: "4881", position: "WR" });
+    expect(games[0]?.sides[0]).toMatchObject({
+      avatarUrl: "https://sleepercdn.com/avatars/thumbs/ava-a",
+      wins: 3,
+      losses: 1,
+    });
+    expect(starters[0]?.headshotUrl).toBe("https://sleepercdn.com/content/nfl/players/thumb/4046.jpg");
   });
 
   it("never renders placeholder 0, empty, or null ids in starters, bench, or reserve", () => {
@@ -1269,7 +1369,7 @@ describe("lookupExplorerBoard", () => {
     expect(used("clerk_1", FIXED_NOW)).toBe(ORIGIN_QUOTA_PER_HOUR);
   });
 
-  it("charges 1 quota for getPlayers on a fresh cached board", async () => {
+  it("does not consume quota for a fresh cached board", async () => {
     const { originQuota, used } = makeQuota();
     const cache = createMemoryExplorerCache();
     const { client, calls } = countingClient();
@@ -1293,33 +1393,10 @@ describe("lookupExplorerBoard", () => {
     expect(calls.getRosters).toBe(1);
     expect(calls.getMatchups).toBe(1);
     expect(calls.getPlayers).toBe(2);
-    expect(used("clerk_1", FIXED_NOW)).toBe(5 + FRESH_BOARD_PLAYERS_ORIGIN_CHARGE);
+    expect(used("clerk_1", FIXED_NOW)).toBe(5);
   });
 
-  it("succeeds a fresh cached board when remaining quota is exactly 1", async () => {
-    const { originQuota, seed, used } = makeQuota();
-    const cache = createMemoryExplorerCache();
-    const first = await lookupExplorerBoard(makeDeps({ cache, originQuota, now: () => FIXED_NOW }), {
-      sleeperLeagueId: V1_LEAGUE_ID,
-      clerkUserId: "clerk_1",
-    });
-    expect(first.kind).toBe("ok");
-    seed("clerk_1", FIXED_NOW, ORIGIN_QUOTA_PER_HOUR - FRESH_BOARD_PLAYERS_ORIGIN_CHARGE);
-    const { client, calls } = countingClient();
-    const second = await lookupExplorerBoard(
-      makeDeps({ sleeper: client, cache, originQuota, now: () => FIXED_NOW }),
-      {
-        sleeperLeagueId: V1_LEAGUE_ID,
-        clerkUserId: "clerk_1",
-      },
-    );
-    expect(second.kind).toBe("ok");
-    expect(calls.getLeague).toBe(0);
-    expect(calls.getPlayers).toBe(1);
-    expect(used("clerk_1", FIXED_NOW)).toBe(ORIGIN_QUOTA_PER_HOUR);
-  });
-
-  it("returns quota_exceeded on a fresh cached board when origin quota is spent without calling getPlayers", async () => {
+  it("serves a fresh cached board when remaining origin quota is zero", async () => {
     const { originQuota, seed, used } = makeQuota();
     const cache = createMemoryExplorerCache();
     const first = await lookupExplorerBoard(makeDeps({ cache, originQuota, now: () => FIXED_NOW }), {
@@ -1336,12 +1413,9 @@ describe("lookupExplorerBoard", () => {
         clerkUserId: "clerk_1",
       },
     );
-    expect(second).toEqual({ kind: "quota_exceeded" });
+    expect(second.kind).toBe("ok");
     expect(calls.getLeague).toBe(0);
-    expect(calls.getLeagueUsers).toBe(0);
-    expect(calls.getRosters).toBe(0);
-    expect(calls.getMatchups).toBe(0);
-    expect(calls.getPlayers).toBe(0);
+    expect(calls.getPlayers).toBe(1);
     expect(used("clerk_1", FIXED_NOW)).toBe(ORIGIN_QUOTA_PER_HOUR);
   });
 

@@ -1,5 +1,6 @@
 import { Link } from "react-router";
 import { BrandNav } from "~/components/brand-nav";
+import { ExplorerAvatar } from "~/components/explorer-avatar";
 import { Badge } from "~/components/ui/badge";
 import { Card, CardDescription, CardTitle } from "~/components/ui/card";
 import { cloudflareEnv } from "~/lib/env";
@@ -43,19 +44,7 @@ export default function ExploreUser({ loaderData }: Route.ComponentProps) {
         <>
           <p className="mt-3 text-xs font-semibold uppercase tracking-[0.18em] text-muted">Sleeper profile</p>
           <div className="mt-3 flex items-center gap-4">
-            {result.user.avatarUrl ? (
-              <img
-                src={result.user.avatarUrl}
-                alt=""
-                width={56}
-                height={56}
-                className="h-14 w-14 rounded-full object-cover"
-              />
-            ) : (
-              <div className="flex h-14 w-14 items-center justify-center rounded-full bg-field text-sm text-muted">
-                {result.user.displayName.slice(0, 1)}
-              </div>
-            )}
+            <ExplorerAvatar src={result.user.avatarUrl} name={result.user.displayName} size="lg" />
             <div>
               <h1 className="font-display text-4xl">{result.user.displayName}</h1>
               <p className="mt-1 text-muted">@{result.user.username}</p>
@@ -81,13 +70,16 @@ export default function ExploreUser({ loaderData }: Route.ComponentProps) {
                     to={`/explore/leagues/${encodeURIComponent(league.sleeperLeagueId)}`}
                     className="block rounded-xl focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-flag/70"
                   >
-                    <Card className="transition-colors hover:bg-turf">
-                      <Badge>{formatLeagueStatus(league.status)}</Badge>
-                      <CardTitle className="mt-3">{league.name}</CardTitle>
-                      <CardDescription>
-                        Season {league.season}
-                        {league.totalRosters ? ` · ${league.totalRosters} teams` : ""}
-                      </CardDescription>
+                    <Card className="flex items-center gap-4 transition-colors hover:bg-turf">
+                      <ExplorerAvatar src={league.avatarUrl} name={league.name} size="md" />
+                      <div className="min-w-0">
+                        <Badge>{formatLeagueStatus(league.status)}</Badge>
+                        <CardTitle className="mt-2 truncate">{league.name}</CardTitle>
+                        <CardDescription>
+                          Season {league.season}
+                          {league.totalRosters ? ` · ${league.totalRosters} teams` : ""}
+                        </CardDescription>
+                      </div>
                     </Card>
                   </Link>
                 </li>

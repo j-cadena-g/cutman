@@ -30,6 +30,25 @@ export function sleeperAvatarUrl(avatar: string | null | undefined): string | nu
   return `https://sleepercdn.com/avatars/thumbs/${encodeURIComponent(avatar)}`;
 }
 
+const TEAM_ID_PATTERN = /^[A-Z]{2,3}$/;
+
+export function sleeperPlayerHeadshotUrl(playerId: string): string | null {
+  if (!isRealPlayerId(playerId)) return null;
+  if (TEAM_ID_PATTERN.test(playerId)) {
+    return `https://sleepercdn.com/images/team_logos/nfl/${encodeURIComponent(playerId.toLowerCase())}.png`;
+  }
+  return `https://sleepercdn.com/content/nfl/players/thumb/${encodeURIComponent(playerId)}.jpg`;
+}
+
+export function formatExplorerScore(value: number | null): string {
+  if (value === null) return "—";
+  return value.toFixed(2);
+}
+
+export function formatExplorerRecord(wins: number, losses: number, ties: number): string {
+  return ties > 0 ? `${wins}-${losses}-${ties}` : `${wins}-${losses}`;
+}
+
 export function playerDisplayName(playerId: string, players: PlayerMap): string {
   const player = players[playerId];
   if (!player) return playerId;
@@ -61,6 +80,7 @@ export type ExplorerLeagueCard = {
   season: string;
   status: string | null;
   totalRosters: number | null;
+  avatarUrl: string | null;
 };
 
 export type ExplorerPlayer = {
@@ -69,6 +89,7 @@ export type ExplorerPlayer = {
   position: string | null;
   team: string | null;
   points: number | null;
+  headshotUrl: string | null;
 };
 
 export type ExplorerManager = {
@@ -76,12 +97,13 @@ export type ExplorerManager = {
   teamName: string;
   displayName: string;
   abandoned: boolean;
-};
-
-export type ExplorerStandingRow = ExplorerManager & {
+  avatarUrl: string | null;
   wins: number;
   losses: number;
   ties: number;
+};
+
+export type ExplorerStandingRow = ExplorerManager & {
   pointsFor: number;
 };
 
@@ -94,6 +116,35 @@ export type ExplorerMatchupView = {
   matchupId: number | null;
   sides: ExplorerMatchupSide[];
 };
+
+export type ExplorerMatchupLine = {
+  slot: string | null;
+  left: ExplorerPlayer | null;
+  right: ExplorerPlayer | null;
+};
+
+export function zipMatchupStarters(left: ExplorerPlayer[], right: ExplorerPlayer[]): ExplorerMatchupLine[] {
+  const length = Math.max(left.length, right.length);
+  const lines: ExplorerMatchupLine[] = [];
+  for (let index = 0; index < length; index += 1) {
+    const leftPlayer = left[index] ?? null;
+    const rightPlayer = right[index] ?? null;
+    lines.push({
+      slot: leftPlayer?.position ?? rightPlayer?.position ?? null,
+      left: leftPlayer,
+      right: rightPlayer,
+    });
+  }
+  return lines;
+}
+
+export function matchupLeader(sides: ExplorerMatchupSide[]): number | null {
+  if (sides.length < 2) return null;
+  const [left, right] = sides;
+  if (left?.points == null || right?.points == null) return null;
+  if (left.points === right.points) return null;
+  return left.points > right.points ? left.rosterId : right.rosterId;
+}
 
 export type ExplorerRosterView = ExplorerManager & {
   starters: ExplorerPlayer[];
@@ -126,6 +177,7 @@ export function toExplorerLeagueCard(league: SleeperLeague): ExplorerLeagueCard 
     season: league.season,
     status: league.status ?? null,
     totalRosters: league.total_rosters ?? null,
+    avatarUrl: sleeperAvatarUrl(league.avatar),
   };
 }
 
@@ -133,16 +185,27 @@ export function usersById(users: SleeperLeagueUser[]): Map<string, SleeperLeague
   return new Map(users.map((user) => [user.user_id, user]));
 }
 
+function recordFromRoster(roster: SleeperRoster | undefined): Pick<ExplorerManager, "wins" | "losses" | "ties"> {
+  return {
+    wins: roster?.settings?.wins ?? 0,
+    losses: roster?.settings?.losses ?? 0,
+    ties: roster?.settings?.ties ?? 0,
+  };
+}
+
 export function managerForRoster(
   roster: SleeperRoster,
   users: Map<string, SleeperLeagueUser>,
 ): ExplorerManager {
+  const record = recordFromRoster(roster);
   if (!roster.owner_id) {
     return {
       rosterId: roster.roster_id,
       teamName: "Abandoned roster",
       displayName: "No owner",
       abandoned: true,
+      avatarUrl: null,
+      ...record,
     };
   }
   const user = users.get(roster.owner_id);
@@ -153,6 +216,19 @@ export function managerForRoster(
     teamName,
     displayName,
     abandoned: false,
+    avatarUrl: sleeperAvatarUrl(user?.avatar),
+    ...record,
+  };
+}
+
+function emptyExplorerPlayer(slot: string | null): ExplorerPlayer {
+  return {
+    playerId: "",
+    name: "Empty",
+    position: slot,
+    team: null,
+    points: null,
+    headshotUrl: null,
   };
 }
 
@@ -167,8 +243,9 @@ function toExplorerPlayer(
     playerId,
     name: playerDisplayName(playerId, players),
     position: slot && slot !== "BN" ? slot : (player?.position ?? null),
-    team: player?.team ?? (/^[A-Z]{2,3}$/.test(playerId) ? playerId : null),
+    team: player?.team ?? (TEAM_ID_PATTERN.test(playerId) ? playerId : null),
     points: points?.[playerId] ?? null,
+    headshotUrl: sleeperPlayerHeadshotUrl(playerId),
   };
 }
 
@@ -177,11 +254,15 @@ function starterPlayers(
   rosterPositions: string[] | null | undefined,
   players: PlayerMap,
   points: Record<string, number> | null | undefined,
+  keepEmptySlots = false,
 ): ExplorerPlayer[] {
   const ids = starterIds ?? [];
   return ids.flatMap((playerId, index) => {
-    if (!isRealPlayerId(playerId)) return [];
-    return [toExplorerPlayer(playerId, players, points, rosterPositions?.[index] ?? null)];
+    const slot = rosterPositions?.[index] ?? null;
+    if (!isRealPlayerId(playerId)) {
+      return keepEmptySlots ? [emptyExplorerPlayer(slot)] : [];
+    }
+    return [toExplorerPlayer(playerId, players, points, slot)];
   });
 }
 
@@ -254,11 +335,15 @@ export function assembleScoreboard(
               teamName: `Roster ${side.roster_id}`,
               displayName: "Unknown manager",
               abandoned: true,
+              avatarUrl: null,
+              wins: 0,
+              losses: 0,
+              ties: 0,
             };
         return {
           ...manager,
           points: side.custom_points ?? side.points,
-          starters: starterPlayers(side.starters, rosterPositions, players, side.players_points),
+          starters: starterPlayers(side.starters, rosterPositions, players, side.players_points, true),
         };
       }),
     };

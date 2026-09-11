@@ -1,5 +1,6 @@
 import { SignIn } from "@clerk/react-router";
 import { Link } from "react-router";
+import { clerkAppearance } from "~/lib/clerk-appearance";
 import { clerkIsConfigured } from "~/lib/clerk.server";
 import { cloudflareEnv } from "~/lib/env";
 import type { Route } from "./+types/sign-in";
@@ -16,7 +17,13 @@ export default function SignInPage({ loaderData }: Route.ComponentProps) {
       <p className="mt-4 text-muted">Sign in with Clerk to continue to league setup or your dashboard.</p>
       {loaderData.clerkConfigured ? (
         <div className="mt-10">
-          <SignIn routing="path" path="/sign-in" signUpUrl="/sign-up" forceRedirectUrl="/" />
+          <SignIn
+            routing="path"
+            path="/sign-in"
+            signUpUrl="/sign-up"
+            forceRedirectUrl="/"
+            appearance={clerkAppearance}
+          />
         </div>
       ) : (
         <div className="mt-10 space-y-4 text-sm text-muted">

@@ -18,7 +18,6 @@ import {
   type ExplorerOriginQuotaRow,
 } from "../app/lib/explorer-origin-quota.server.ts";
 import {
-  FRESH_BOARD_PLAYERS_ORIGIN_CHARGE,
   ORIGIN_QUOTA_PER_HOUR,
   createMemoryExplorerCache,
   lookupExplorerBoard,
@@ -372,7 +371,7 @@ describe("explorer lookups against the quota abstraction", () => {
     expect(await rowCountOnD1(clerkUserId)).toBe(1);
   });
 
-  it("returns quota_exceeded on a fresh cached board when quota is spent without calling Sleeper", async () => {
+  it("serves a fresh cached board without consuming quota even when the hour is spent", async () => {
     const store = new Map<string, ExplorerOriginQuotaRow>();
     const originQuota = createMemoryExplorerOriginQuota(store);
     const cache = createMemoryExplorerCache();
@@ -383,17 +382,17 @@ describe("explorer lookups against the quota abstraction", () => {
     expect(first.kind).toBe("ok");
     store.set(USER_A, { hourKey: explorerOriginQuotaHourKey(FIXED_NOW), used: ORIGIN_QUOTA_PER_HOUR });
     const { sleeper, calls } = countingSleeper();
-    const blocked = await lookupExplorerBoard(makeUserDeps({ sleeper, cache, originQuota }), {
+    const cached = await lookupExplorerBoard(makeUserDeps({ sleeper, cache, originQuota }), {
       sleeperLeagueId: V1_LEAGUE_ID,
       clerkUserId: USER_A,
     });
-    expect(blocked).toEqual({ kind: "quota_exceeded" });
+    expect(cached.kind).toBe("ok");
     expect(calls.getLeague).toBe(0);
-    expect(calls.getPlayers).toBe(0);
+    expect(calls.getPlayers).toBe(1);
     expect(memoryUsed(store, USER_A, FIXED_NOW)).toBe(ORIGIN_QUOTA_PER_HOUR);
   });
 
-  it("charges 1 against D1 quota on a fresh cached board", async () => {
+  it("does not charge D1 quota on a fresh cached board", async () => {
     const originQuota = d1ExplorerOriginQuota(env.DB);
     const clerkUserId = `board_fresh_${crypto.randomUUID()}`;
     const cache = createMemoryExplorerCache();
@@ -411,7 +410,7 @@ describe("explorer lookups against the quota abstraction", () => {
     expect(second.kind).toBe("ok");
     expect(calls.getLeague).toBe(0);
     expect(calls.getPlayers).toBe(1);
-    expect(await usedOnD1(clerkUserId, FIXED_NOW)).toBe(5 + FRESH_BOARD_PLAYERS_ORIGIN_CHARGE);
+    expect(await usedOnD1(clerkUserId, FIXED_NOW)).toBe(5);
   });
 });
 describe("explorer origin quota consume binds", () => {

@@ -30,11 +30,10 @@ export const NFL_STATE_TTL_MS = 15 * 60 * 1000;
 export const USER_TTL_MS = 60 * 60 * 1000;
 export const LEAGUES_TTL_MS = 15 * 60 * 1000;
 export const BOARD_TTL_MS = 5 * 60 * 1000;
-export const ORIGIN_QUOTA_PER_HOUR = 30;
+/** Per-Clerk-user Sleeper origin units per hour. A username lookup is 1–2; a league board miss is 5. */
+export const ORIGIN_QUOTA_PER_HOUR = 120;
 /** Board miss: getLeague, getLeagueUsers, getRosters, getMatchups, and getPlayers. */
 const BOARD_MISS_ORIGIN_CHARGE = 5;
-/** Fresh board cache: only getPlayers can miss origin (player-map daily refresh). */
-export const FRESH_BOARD_PLAYERS_ORIGIN_CHARGE = 1;
 
 type Cached<T> = {
   fetchedAt: number;
@@ -461,8 +460,6 @@ export async function lookupExplorerBoard(
 
   if (cached?.fresh) {
     if (!cached.payload?.league) return { kind: "not_found" };
-    const allowed = await tryConsumeQuota(deps, input.clerkUserId, FRESH_BOARD_PLAYERS_ORIGIN_CHARGE);
-    if (!allowed) return { kind: "quota_exceeded" };
     return (await explorerBoardFromCache(deps, cached, week, stateResult.stale)) ?? { kind: "not_found" };
   }
 

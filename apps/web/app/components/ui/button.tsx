@@ -8,7 +8,7 @@ const buttonVariants = cva(
   {
     variants: {
       variant: {
-        default: "bg-flag text-ink hover:bg-cream",
+        default: "bg-flag text-ink hover:opacity-90",
         secondary: "bg-field text-cream border border-cream/15 hover:bg-turf",
         ghost: "text-cream hover:bg-cream/10",
         danger: "bg-danger text-cream hover:opacity-90",
