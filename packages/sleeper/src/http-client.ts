@@ -100,8 +100,8 @@ export class HttpSleeperClient implements SleeperClient {
     return (await response.json()) as T;
   }
 
-  private async getJsonOrNull<T>(path: string): Promise<T | null> {
-    const signal = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
+  private async getJsonOrNull<T>(path: string, timeoutMs = REQUEST_TIMEOUT_MS): Promise<T | null> {
+    const signal = AbortSignal.timeout(timeoutMs);
     const response = await this.fetchPath(path, signal);
     if (response.status === 404) return null;
     if (!response.ok) {

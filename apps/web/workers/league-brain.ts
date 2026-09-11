@@ -235,7 +235,7 @@ export class LeagueBrain extends DurableObject<Env> {
     } catch {
       return { ok: false, error: "save" };
     }
-    const priorTone = settings.tone;
+    const priorStoredTone = this.getSetting("tone");
     try {
       this.putSetting("tone", tone);
     } catch {
@@ -256,7 +256,11 @@ export class LeagueBrain extends DurableObject<Env> {
       }
       try {
         if (this.getSetting("tone") === tone) {
-          this.putSetting("tone", priorTone);
+          if (priorStoredTone === null) {
+            this.deleteSetting("tone");
+          } else {
+            this.putSetting("tone", priorStoredTone);
+          }
         }
       } catch {
         return { ok: false, error: "desync" };

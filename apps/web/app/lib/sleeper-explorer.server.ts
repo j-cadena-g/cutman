@@ -33,6 +33,8 @@ export const BOARD_TTL_MS = 5 * 60 * 1000;
 export const ORIGIN_QUOTA_PER_HOUR = 30;
 /** Board miss: getLeague, getLeagueUsers, getRosters, getMatchups, and getPlayers. */
 const BOARD_MISS_ORIGIN_CHARGE = 5;
+/** Fresh board cache: only getPlayers can miss origin (player-map daily refresh). */
+export const FRESH_BOARD_PLAYERS_ORIGIN_CHARGE = 1;
 
 type Cached<T> = {
   fetchedAt: number;
@@ -458,6 +460,9 @@ export async function lookupExplorerBoard(
   const cached = await readCache<BoardPayload>(deps, boardKey(leagueId, week), BOARD_TTL_MS);
 
   if (cached?.fresh) {
+    if (!cached.payload?.league) return { kind: "not_found" };
+    const allowed = await tryConsumeQuota(deps, input.clerkUserId, FRESH_BOARD_PLAYERS_ORIGIN_CHARGE);
+    if (!allowed) return { kind: "quota_exceeded" };
     return (await explorerBoardFromCache(deps, cached, week, stateResult.stale)) ?? { kind: "not_found" };
   }
 

@@ -1929,6 +1929,8 @@ describe("LeagueBrain persistTone", () => {
     env: Env;
     persistTone: LeagueBrain["persistTone"];
     putSetting(key: string, value: string): void;
+    getSetting(key: string): string | null;
+    deleteSetting(key: string): void;
     bootstrap: LeagueBrain["bootstrap"];
     getDashboard: LeagueBrain["getDashboard"];
   };
@@ -2032,6 +2034,48 @@ describe("LeagueBrain persistTone", () => {
       (brain) => brain.persistTone("savage"),
     );
     expect(result).toEqual({ ok: false, error: "save" });
+    expect((await stub.getDashboard()).tone).toBe("playful");
+    expect((await getLeague(env.DB, leagueId))?.tone).toBe("playful");
+  });
+
+  it("deletes the Durable Object tone on rollback when the stored setting was unset", async () => {
+    const { stub, leagueId } = await bootLeague("tone-persist-rollback-unset", "lg_tone_persist_rollback_unset");
+    const result = await withInterceptedToneDb(
+      stub,
+      async () => {
+        throw new Error("simulated d1 tone write failure");
+      },
+      async (brain) => {
+        brain.deleteSetting("tone");
+        return brain.persistTone("savage");
+      },
+    );
+    expect(result).toEqual({ ok: false, error: "save" });
+    await runInDurableObject(stub, async (instance) => {
+      const brain = instance as unknown as ToneBrain;
+      expect(brain.getSetting("tone")).toBeNull();
+    });
+    expect((await stub.getDashboard()).tone).toBe("playful");
+    expect((await getLeague(env.DB, leagueId))?.tone).toBe("playful");
+  });
+
+  it("restores the raw invalid Durable Object tone when D1 fails", async () => {
+    const { stub, leagueId } = await bootLeague("tone-persist-rollback-invalid", "lg_tone_persist_rollback_invalid");
+    const result = await withInterceptedToneDb(
+      stub,
+      async () => {
+        throw new Error("simulated d1 tone write failure");
+      },
+      async (brain) => {
+        brain.putSetting("tone", "mysterious");
+        return brain.persistTone("savage");
+      },
+    );
+    expect(result).toEqual({ ok: false, error: "save" });
+    await runInDurableObject(stub, async (instance) => {
+      const brain = instance as unknown as ToneBrain;
+      expect(brain.getSetting("tone")).toBe("mysterious");
+    });
     expect((await stub.getDashboard()).tone).toBe("playful");
     expect((await getLeague(env.DB, leagueId))?.tone).toBe("playful");
   });

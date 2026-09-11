@@ -29,6 +29,7 @@ import {
 } from "../app/lib/explorer-origin-quota.server.ts";
 import {
   BOARD_TTL_MS,
+  FRESH_BOARD_PLAYERS_ORIGIN_CHARGE,
   ORIGIN_QUOTA_PER_HOUR,
   USER_TTL_MS,
   createMemoryExplorerCache,
@@ -1268,7 +1269,7 @@ describe("lookupExplorerBoard", () => {
     expect(used("clerk_1", FIXED_NOW)).toBe(ORIGIN_QUOTA_PER_HOUR);
   });
 
-  it("does not charge quota for a cached board", async () => {
+  it("charges 1 quota for getPlayers on a fresh cached board", async () => {
     const { originQuota, used } = makeQuota();
     const cache = createMemoryExplorerCache();
     const { client, calls } = countingClient();
@@ -1291,10 +1292,34 @@ describe("lookupExplorerBoard", () => {
     expect(calls.getLeagueUsers).toBe(1);
     expect(calls.getRosters).toBe(1);
     expect(calls.getMatchups).toBe(1);
-    expect(used("clerk_1", FIXED_NOW)).toBe(5);
+    expect(calls.getPlayers).toBe(2);
+    expect(used("clerk_1", FIXED_NOW)).toBe(5 + FRESH_BOARD_PLAYERS_ORIGIN_CHARGE);
   });
 
-  it("serves a cached board when the hour quota is already spent", async () => {
+  it("succeeds a fresh cached board when remaining quota is exactly 1", async () => {
+    const { originQuota, seed, used } = makeQuota();
+    const cache = createMemoryExplorerCache();
+    const first = await lookupExplorerBoard(makeDeps({ cache, originQuota, now: () => FIXED_NOW }), {
+      sleeperLeagueId: V1_LEAGUE_ID,
+      clerkUserId: "clerk_1",
+    });
+    expect(first.kind).toBe("ok");
+    seed("clerk_1", FIXED_NOW, ORIGIN_QUOTA_PER_HOUR - FRESH_BOARD_PLAYERS_ORIGIN_CHARGE);
+    const { client, calls } = countingClient();
+    const second = await lookupExplorerBoard(
+      makeDeps({ sleeper: client, cache, originQuota, now: () => FIXED_NOW }),
+      {
+        sleeperLeagueId: V1_LEAGUE_ID,
+        clerkUserId: "clerk_1",
+      },
+    );
+    expect(second.kind).toBe("ok");
+    expect(calls.getLeague).toBe(0);
+    expect(calls.getPlayers).toBe(1);
+    expect(used("clerk_1", FIXED_NOW)).toBe(ORIGIN_QUOTA_PER_HOUR);
+  });
+
+  it("returns quota_exceeded on a fresh cached board when origin quota is spent without calling getPlayers", async () => {
     const { originQuota, seed, used } = makeQuota();
     const cache = createMemoryExplorerCache();
     const first = await lookupExplorerBoard(makeDeps({ cache, originQuota, now: () => FIXED_NOW }), {
@@ -1311,8 +1336,12 @@ describe("lookupExplorerBoard", () => {
         clerkUserId: "clerk_1",
       },
     );
-    expect(second.kind).toBe("ok");
+    expect(second).toEqual({ kind: "quota_exceeded" });
     expect(calls.getLeague).toBe(0);
+    expect(calls.getLeagueUsers).toBe(0);
+    expect(calls.getRosters).toBe(0);
+    expect(calls.getMatchups).toBe(0);
+    expect(calls.getPlayers).toBe(0);
     expect(used("clerk_1", FIXED_NOW)).toBe(ORIGIN_QUOTA_PER_HOUR);
   });
 
@@ -1488,6 +1517,7 @@ describe("lookupExplorerBoard", () => {
   );
 
   it("returns not_found for a fresh cache with payload without league instead of throwing", async () => {
+    const { originQuota, used } = makeQuota();
     const cache = createMemoryExplorerCache();
     await seedFreshNflState(cache, FIXED_NOW);
     await cache.putJson(`explore:board:${FAKE_BOARD_LEAGUE_ID}:1`, {
@@ -1496,7 +1526,7 @@ describe("lookupExplorerBoard", () => {
     });
     const { client, calls } = countingClient();
     const result = await lookupExplorerBoard(
-      makeDeps({ sleeper: client, cache, now: () => FIXED_NOW }),
+      makeDeps({ sleeper: client, cache, originQuota, now: () => FIXED_NOW }),
       { sleeperLeagueId: FAKE_BOARD_LEAGUE_ID, clerkUserId: "clerk_1" },
     );
     expect(result).toEqual({ kind: "not_found" });
@@ -1504,6 +1534,8 @@ describe("lookupExplorerBoard", () => {
     expect(calls.getLeagueUsers).toBe(0);
     expect(calls.getRosters).toBe(0);
     expect(calls.getMatchups).toBe(0);
+    expect(calls.getPlayers).toBe(0);
+    expect(used("clerk_1", FIXED_NOW)).toBe(0);
   });
 
   it("returns quota_exceeded for a stale malformed cache with no payload when quota is spent", async () => {

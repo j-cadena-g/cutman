@@ -1,6 +1,6 @@
 /// <reference types="@cloudflare/vitest-pool-workers/types" />
 import { applyD1Migrations, env } from "cloudflare:test";
-import { EXAMPLE_SLEEPER_USERNAME, createFixtureClient } from "@cutman/sleeper";
+import { EXAMPLE_SLEEPER_USERNAME, V1_LEAGUE_ID, createFixtureClient, type SleeperClient } from "@cutman/sleeper";
 import { beforeAll, describe, expect, it } from "vitest";
 import {
   EXPLORER_ORIGIN_QUOTA_CONSUME_SQL,
@@ -18,7 +18,10 @@ import {
   type ExplorerOriginQuotaRow,
 } from "../app/lib/explorer-origin-quota.server.ts";
 import {
+  FRESH_BOARD_PLAYERS_ORIGIN_CHARGE,
+  ORIGIN_QUOTA_PER_HOUR,
   createMemoryExplorerCache,
+  lookupExplorerBoard,
   lookupExplorerUser,
   type ExplorerDeps,
 } from "../app/lib/sleeper-explorer.server.ts";
@@ -97,6 +100,22 @@ function makeUserDeps(overrides: Partial<ExplorerDeps> = {}): ExplorerDeps {
     quotaPerHour: overrides.quotaPerHour,
     originQuota: overrides.originQuota ?? createMemoryExplorerOriginQuota(),
   };
+}
+
+function countingSleeper(base: SleeperClient = createFixtureClient()) {
+  const calls = { getLeague: 0, getPlayers: 0 };
+  const sleeper: SleeperClient = {
+    ...base,
+    async getLeague(leagueId) {
+      calls.getLeague += 1;
+      return base.getLeague(leagueId);
+    },
+    async getPlayers() {
+      calls.getPlayers += 1;
+      return base.getPlayers();
+    },
+  };
+  return { sleeper, calls };
 }
 
 describe("explorer origin quota contract", () => {
@@ -351,6 +370,48 @@ describe("explorer lookups against the quota abstraction", () => {
     expect(results.filter((result) => result.kind === "quota_exceeded").length).toBe(18);
     expect(await usedOnD1(clerkUserId, FIXED_NOW)).toBe(4);
     expect(await rowCountOnD1(clerkUserId)).toBe(1);
+  });
+
+  it("returns quota_exceeded on a fresh cached board when quota is spent without calling Sleeper", async () => {
+    const store = new Map<string, ExplorerOriginQuotaRow>();
+    const originQuota = createMemoryExplorerOriginQuota(store);
+    const cache = createMemoryExplorerCache();
+    const first = await lookupExplorerBoard(makeUserDeps({ cache, originQuota }), {
+      sleeperLeagueId: V1_LEAGUE_ID,
+      clerkUserId: USER_A,
+    });
+    expect(first.kind).toBe("ok");
+    store.set(USER_A, { hourKey: explorerOriginQuotaHourKey(FIXED_NOW), used: ORIGIN_QUOTA_PER_HOUR });
+    const { sleeper, calls } = countingSleeper();
+    const blocked = await lookupExplorerBoard(makeUserDeps({ sleeper, cache, originQuota }), {
+      sleeperLeagueId: V1_LEAGUE_ID,
+      clerkUserId: USER_A,
+    });
+    expect(blocked).toEqual({ kind: "quota_exceeded" });
+    expect(calls.getLeague).toBe(0);
+    expect(calls.getPlayers).toBe(0);
+    expect(memoryUsed(store, USER_A, FIXED_NOW)).toBe(ORIGIN_QUOTA_PER_HOUR);
+  });
+
+  it("charges 1 against D1 quota on a fresh cached board", async () => {
+    const originQuota = d1ExplorerOriginQuota(env.DB);
+    const clerkUserId = `board_fresh_${crypto.randomUUID()}`;
+    const cache = createMemoryExplorerCache();
+    const first = await lookupExplorerBoard(makeUserDeps({ cache, originQuota }), {
+      sleeperLeagueId: V1_LEAGUE_ID,
+      clerkUserId,
+    });
+    expect(first.kind).toBe("ok");
+    expect(await usedOnD1(clerkUserId, FIXED_NOW)).toBe(5);
+    const { sleeper, calls } = countingSleeper();
+    const second = await lookupExplorerBoard(makeUserDeps({ sleeper, cache, originQuota }), {
+      sleeperLeagueId: V1_LEAGUE_ID,
+      clerkUserId,
+    });
+    expect(second.kind).toBe("ok");
+    expect(calls.getLeague).toBe(0);
+    expect(calls.getPlayers).toBe(1);
+    expect(await usedOnD1(clerkUserId, FIXED_NOW)).toBe(5 + FRESH_BOARD_PLAYERS_ORIGIN_CHARGE);
   });
 });
 describe("explorer origin quota consume binds", () => {

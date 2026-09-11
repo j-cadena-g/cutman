@@ -253,6 +253,28 @@ describe("HttpSleeperClient errors", () => {
     }
   });
 
+  it("uses the passed timeoutMs on getJsonOrNull", async () => {
+    const requested: number[] = [];
+    const original = AbortSignal.timeout.bind(AbortSignal);
+    const spy = vi.spyOn(AbortSignal, "timeout").mockImplementation((ms: number) => {
+      requested.push(ms);
+      return original(ms);
+    });
+    try {
+      const client = new HttpSleeperClient(async () => new Response("null", { status: 404 }));
+      await expect(
+        (
+          client as unknown as {
+            getJsonOrNull: (path: string, timeoutMs?: number) => Promise<unknown>;
+          }
+        ).getJsonOrNull("/user/alice", 1_500),
+      ).resolves.toBeNull();
+      expect(requested).toEqual([1_500]);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it("uses a longer timeout for getPlayers so the body read is covered", async () => {
     const requested: number[] = [];
     const original = AbortSignal.timeout.bind(AbortSignal);

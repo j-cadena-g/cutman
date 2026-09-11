@@ -20,8 +20,11 @@
 --   Remaining ties: enabled_at DESC, sleeper_league_id ASC, user_id ASC (deterministic;
 --   repeated SELECT executions pick the same Clerk user). INSERT OR IGNORE is a safety
 --   net for leftover unique sleeper_user_id collisions, not the selection rule.
---   Then allowlist rows whose LOWER(TRIM(clerk_email)) matches LOWER(TRIM(users.email));
---   null clerk_email is not matched. username/display_name from allowlist.sleeper_username,
+--   Then allowlist-only users not already copied from league_members: rows whose
+--   LOWER(TRIM(clerk_email)) matches LOWER(TRIM(users.email)); null clerk_email is not
+--   matched. Matching users are ranked PARTITION BY sleeper_user_id; keep rn = 1.
+--   Ties: users.created_at ASC, users.id ASC (deterministic; repeated SELECT executions
+--   pick the same Clerk user). username/display_name from allowlist.sleeper_username,
 --   else 'legacy_' || sleeper_user_id
 -- Drop allowlist and rebuilt legacy tables only after copies succeed.
 
@@ -160,14 +163,27 @@ WHERE preferred.sleeper_rn = 1;
 
 INSERT OR IGNORE INTO sleeper_accounts (user_id, sleeper_user_id, username, display_name, updated_at)
 SELECT
-  u.id,
-  a.sleeper_user_id,
-  COALESCE(NULLIF(a.sleeper_username, ''), 'legacy_' || a.sleeper_user_id),
-  COALESCE(NULLIF(a.sleeper_username, ''), 'legacy_' || a.sleeper_user_id),
-  COALESCE(a.created_at, u.created_at)
-FROM allowlist AS a
-INNER JOIN users AS u ON LOWER(TRIM(u.email)) = LOWER(TRIM(a.clerk_email))
-WHERE a.clerk_email IS NOT NULL;
+  ranked.user_id,
+  ranked.sleeper_user_id,
+  COALESCE(NULLIF(ranked.sleeper_username, ''), 'legacy_' || ranked.sleeper_user_id),
+  COALESCE(NULLIF(ranked.sleeper_username, ''), 'legacy_' || ranked.sleeper_user_id),
+  COALESCE(ranked.allowlist_created_at, ranked.user_created_at)
+FROM (
+  SELECT
+    u.id AS user_id,
+    a.sleeper_user_id AS sleeper_user_id,
+    a.sleeper_username AS sleeper_username,
+    a.created_at AS allowlist_created_at,
+    u.created_at AS user_created_at,
+    ROW_NUMBER() OVER (
+      PARTITION BY a.sleeper_user_id
+      ORDER BY u.created_at ASC, u.id ASC
+    ) AS rn
+  FROM allowlist AS a
+  INNER JOIN users AS u ON LOWER(TRIM(u.email)) = LOWER(TRIM(a.clerk_email))
+  WHERE a.clerk_email IS NOT NULL
+) AS ranked
+WHERE ranked.rn = 1;
 
 DROP TABLE league_members;
 DROP TABLE leagues;

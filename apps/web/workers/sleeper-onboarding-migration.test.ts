@@ -167,6 +167,21 @@ describe("0002 sleeper onboarding migration", () => {
       env.DB.prepare(
         "INSERT INTO league_members (sleeper_league_id, user_id, sleeper_user_id, is_owner, recap_email_opt_in) VALUES (?, ?, ?, ?, ?)",
       ).bind("sleeper_league_new_tie", "user_zzz", "sleeper_shared_tie", 0, 0),
+      // Allowlist-only: two Clerk users LOWER(TRIM) to the same clerk_email / sleeper_user_id.
+      // users.email is UNIQUE COLLATE NOCASE, so the later row uses padding; ranking still matches.
+      env.DB.prepare("INSERT INTO users (id, email, created_at) VALUES (?, ?, ?)").bind(
+        "user_zzz_dup",
+        "dup@example.test",
+        10_000,
+      ),
+      env.DB.prepare("INSERT INTO users (id, email, created_at) VALUES (?, ?, ?)").bind(
+        "user_aaa_dup",
+        "  DUP@example.test",
+        10_100,
+      ),
+      env.DB.prepare(
+        "INSERT INTO allowlist (sleeper_user_id, sleeper_username, clerk_email, created_at) VALUES (?, ?, ?, ?)",
+      ).bind("sleeper_dup_only", "duped", "  Dup@example.test  ", 10_050),
     ]);
 
     await applyD1Migrations(env.DB, migrationNamed("0002_sleeper_onboarding"));
@@ -188,6 +203,7 @@ describe("0002 sleeper onboarding migration", () => {
     }>();
     expect(users.results).toEqual([
       { id: "user_aaa", email: "aaa@example.test", created_at: 9_200 },
+      { id: "user_aaa_dup", email: "  DUP@example.test", created_at: 10_100 },
       { id: "user_allowlist", email: "allow@example.test", created_at: 3_000 },
       { id: "user_commish", email: "commish@example.test", created_at: 1_000 },
       { id: "user_email_match", email: "  Preferred@example.test", created_at: 9_000 },
@@ -197,6 +213,7 @@ describe("0002 sleeper onboarding migration", () => {
       { id: "user_spaced", email: "  Spaced@example.test", created_at: 8_000 },
       { id: "user_unlinked", email: "unlinked@example.test", created_at: 4_000 },
       { id: "user_zzz", email: "zzz@example.test", created_at: 9_300 },
+      { id: "user_zzz_dup", email: "dup@example.test", created_at: 10_000 },
     ]);
 
     const leagueColumns = await env.DB.prepare("PRAGMA table_info(leagues)").all<{
@@ -455,15 +472,22 @@ describe("0002 sleeper onboarding migration", () => {
         display_name: "tied",
         updated_at: 9_150,
       },
+      {
+        user_id: "user_zzz_dup",
+        sleeper_user_id: "sleeper_dup_only",
+        username: "duped",
+        display_name: "duped",
+        updated_at: 10_050,
+      },
     ]);
     expect(accounts.results.some((account) => account.sleeper_user_id === "sleeper_aaa_old")).toBe(
       false,
     );
 
     expect(await count("league_verifications")).toBe(0);
-    expect(await count("users")).toBe(10);
+    expect(await count("users")).toBe(12);
     expect(await count("league_members")).toBe(9);
-    expect(await count("sleeper_accounts")).toBe(7);
+    expect(await count("sleeper_accounts")).toBe(8);
     expect(await count("app_state")).toBe(0);
   });
 
@@ -545,5 +569,41 @@ describe("0002 sleeper onboarding migration", () => {
       { user_id: "user_aaa", role: "member" },
       { user_id: "user_zzz", role: "member" },
     ]);
+  });
+
+  it("keeps the earliest Clerk user when two allowlist-only users match the same email / sleeper_user_id", async () => {
+    const shared = await env.DB.prepare(
+      `SELECT user_id, sleeper_user_id, username, display_name, updated_at
+       FROM sleeper_accounts
+       WHERE sleeper_user_id = ?
+       ORDER BY user_id`,
+    )
+      .bind("sleeper_dup_only")
+      .all<{
+        user_id: string;
+        sleeper_user_id: string;
+        username: string;
+        display_name: string;
+        updated_at: number;
+      }>();
+    expect(shared.results).toEqual([
+      {
+        user_id: "user_zzz_dup",
+        sleeper_user_id: "sleeper_dup_only",
+        username: "duped",
+        display_name: "duped",
+        updated_at: 10_050,
+      },
+    ]);
+    const discarded = await env.DB.prepare("SELECT user_id FROM sleeper_accounts WHERE user_id = ?")
+      .bind("user_aaa_dup")
+      .first<{ user_id: string }>();
+    expect(discarded).toBeNull();
+
+    const members = await env.DB.prepare(
+      `SELECT user_id FROM league_members
+       WHERE user_id IN ('user_aaa_dup', 'user_zzz_dup')`,
+    ).all<{ user_id: string }>();
+    expect(members.results).toEqual([]);
   });
 });
