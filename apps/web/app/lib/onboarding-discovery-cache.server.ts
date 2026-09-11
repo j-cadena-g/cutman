@@ -9,11 +9,21 @@ export const ONBOARDING_DISCOVERY_TTL_MS = 15 * 60 * 1000;
 const CACHE_KEY_PREFIX = "onboarding:discovery:";
 const RELATIVE_URL_BASE = "https://cutman.invalid";
 
+export type OnboardingDiscoveryQuotaExceeded = {
+  ok: false;
+  error: { kind: "quota_exceeded" };
+};
+
+export type OnboardingDiscoveryLoadResult = DiscoverLeaguesResult | OnboardingDiscoveryQuotaExceeded;
+
 export type OnboardingDiscoveryCacheDeps = {
   cache: ExplorerCache;
   now: () => number;
   ttlMs?: number;
   discover: () => Promise<DiscoverLeaguesResult>;
+  // Forced `?refresh=1` origin calls only. Default (cached) loads never invoke this, including
+  // a cache miss that still discovers — onboarding's first load is allowed without quota.
+  tryConsumeRefreshOrigin?: () => Promise<boolean>;
 };
 
 type CachedOnboardingDiscovery = {
@@ -131,10 +141,15 @@ async function writeCachedDiscovery(
   });
 }
 
+async function consumeForcedRefreshOrigin(deps: OnboardingDiscoveryCacheDeps): Promise<boolean> {
+  if (!deps.tryConsumeRefreshOrigin) return true;
+  return deps.tryConsumeRefreshOrigin();
+}
+
 export async function loadCachedOnboardingDiscovery(
   deps: OnboardingDiscoveryCacheDeps,
   input: { clerkUserId: string; sleeperUserId: string; refresh?: boolean },
-): Promise<DiscoverLeaguesResult> {
+): Promise<OnboardingDiscoveryLoadResult> {
   const canCache =
     typeof input.clerkUserId === "string" &&
     input.clerkUserId.length > 0 &&
@@ -142,6 +157,9 @@ export async function loadCachedOnboardingDiscovery(
     input.sleeperUserId.length > 0;
 
   if (!canCache) {
+    if (input.refresh && !(await consumeForcedRefreshOrigin(deps))) {
+      return { ok: false, error: { kind: "quota_exceeded" } };
+    }
     return deps.discover();
   }
 
@@ -149,6 +167,9 @@ export async function loadCachedOnboardingDiscovery(
   if (!input.refresh) {
     const cached = await readCachedDiscovery(deps, key);
     if (cached) return cached;
+  } else if (!(await consumeForcedRefreshOrigin(deps))) {
+    // Spent quota: do not hit Sleeper and do not replace a previous successful cache entry.
+    return { ok: false, error: { kind: "quota_exceeded" } };
   }
 
   const result = await deps.discover();

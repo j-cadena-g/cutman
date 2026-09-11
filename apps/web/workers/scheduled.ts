@@ -527,7 +527,11 @@ export async function handleScheduled(
   }
 
   let enrollment = await readRecapEnrollmentState(env.DB);
-  await deleteStaleRecapAttempts(env.DB, weekKey);
+  try {
+    await deleteStaleRecapAttempts(env.DB, weekKey);
+  } catch (error) {
+    logScheduledLeagueFailure(error);
+  }
   if (recapWindow) {
     if (enrollment?.weekKey !== weekKey) {
       enrollment = { weekKey, afterId: null, complete: false };

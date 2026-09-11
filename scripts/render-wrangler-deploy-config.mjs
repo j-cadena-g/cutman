@@ -94,6 +94,9 @@ function escapeRegExp(value) {
  * The lookahead requires a closing quote after the binding name so `PLAYERS`
  * cannot match a longer sibling such as `PLAYERS_FOO`. Groups stay
  * (prefix, current, suffix) so replaceConfigValue only splices the id.
+ * `[^{}]*` cannot cross nested objects: a nested metadata/remote object
+ * between `binding` and `id` is unsupported. Do not replace this with a
+ * JSONC parser.
  */
 function kvNamespaceIdReplacementPattern(binding) {
   const escapedBinding = escapeRegExp(binding);
@@ -274,11 +277,19 @@ export async function resolveAndAssertOutputPathForAllowedPaths(
 
 /**
  * Resolve a destination against the frozen repository allowlist.
- * Extra arguments are ignored so callers cannot inject a custom allowlist.
+ * Unexpected additional arguments are rejected so callers cannot inject a
+ * custom allowlist. Valid 0- or 1-arg calls keep the default
+ * `requested = process.env.WRANGLER_RENDER_OUTPUT` and the frozen
+ * PRODUCTION_ALLOWED_OUTPUTS / symlinkRoot.
  */
 export async function resolveAndAssertOutputPath(
   requested = process.env.WRANGLER_RENDER_OUTPUT,
 ) {
+  if (arguments.length > 1) {
+    throw new Error(
+      "resolveAndAssertOutputPath does not accept additional arguments; callers cannot pass a custom allowlist.",
+    );
+  }
   return resolveAndAssertOutputPathForAllowedPaths(requested, {
     allowedOutputs: PRODUCTION_ALLOWED_OUTPUTS,
     symlinkRoot: repoRoot,
@@ -510,6 +521,10 @@ export async function writeRenderedWranglerConfigForAllowedPaths({
     secretsExample,
   });
 
+  // Residual TOCTOU: assertPathChainHasNoSymlinks lstats the chain, then
+  // mkdir/writeFile follow the path. A symlink swapped in between those
+  // calls is an accepted residual race; this does not use O_NOFOLLOW or
+  // fd writing.
   await mkdir(path.dirname(outputPath), { recursive: true });
   await writeFile(outputPath, rendered);
 

@@ -6,6 +6,7 @@ import {
 } from "@cutman/db";
 import { useEffect, useState } from "react";
 import { Form, Link, redirect } from "react-router";
+import { d1ExplorerOriginQuota } from "~/lib/explorer-origin-quota.server";
 import {
   loadCachedOnboardingDiscovery,
   onboardingDiscoveryRefreshRequested,
@@ -27,7 +28,8 @@ import {
   provisioningStartedAtFromLeague,
   type PilotLeagueStep,
 } from "~/lib/onboarding-view";
-import { kvExplorerCache } from "~/lib/sleeper-explorer.server";
+import { describeExplorerError } from "~/lib/sleeper-explorer";
+import { kvExplorerCache, ORIGIN_QUOTA_PER_HOUR } from "~/lib/sleeper-explorer.server";
 import { provisionAndActivateLeague, provisioningDepsFromEnv, retryProvisionAndActivateLeague } from "~/lib/provisioning.server";
 import { BrandNav } from "~/components/brand-nav";
 import { Badge } from "~/components/ui/badge";
@@ -71,15 +73,25 @@ export async function loader(args: Route.LoaderArgs) {
   let pilotEntry: { name: string; isOwner: boolean } | null = null;
   let comingSoonLeagues: Array<{ sleeperLeagueId: string; name: string; season: string }> = [];
   let discoveryFailed = false;
+  let discoveryQuotaExceeded = false;
   if (sleeperAccount) {
     try {
       // Default loads reuse a bounded EXPLORER_CACHE entry keyed by this Clerk user + Sleeper
-      // account. `?refresh=1` bypasses that entry and replaces it on the next typed success.
+      // account — cache hits do not consume explorer origin quota. `?refresh=1` charges 1 against
+      // the per-Clerk-user D1 quota, then bypasses the cache and replaces it on the next typed
+      // success. Spent quota is a typed failure: no Sleeper call, no cache write.
       const discovery = await loadCachedOnboardingDiscovery(
         {
           cache: kvExplorerCache(env.EXPLORER_CACHE),
           now: deps.now,
           discover: () => discoverLeagues(deps, { clerkUserId: user.id }),
+          tryConsumeRefreshOrigin: () =>
+            d1ExplorerOriginQuota(env.DB).tryConsume({
+              clerkUserId: user.id,
+              charge: 1,
+              now: deps.now(),
+              limit: ORIGIN_QUOTA_PER_HOUR,
+            }),
         },
         {
           clerkUserId: user.id,
@@ -94,9 +106,11 @@ export async function loader(args: Route.LoaderArgs) {
           .filter((league) => league.classification === "coming_soon")
           .map((league) => ({ sleeperLeagueId: league.sleeperLeagueId, name: league.name, season: league.season }));
       } else {
-        // Typed failure (today: account vanished between the loader read and discovery).
-        // Do not treat this as "confirmed not a member". Not cached.
+        // Typed failure (account vanished between the loader read and discovery, or a forced
+        // refresh that could not consume origin quota). Do not treat this as "confirmed not a
+        // member". Not cached. Quota exhaustion must not be described as an unlinked account.
         discoveryFailed = true;
+        discoveryQuotaExceeded = discovery.error.kind === "quota_exceeded";
       }
     } catch (error) {
       // Sleeper's API (or the network path to it) failed. Never let this reach the root error
@@ -142,6 +156,7 @@ export async function loader(args: Route.LoaderArgs) {
     pilotLeagueName,
     comingSoonLeagues,
     step,
+    discoveryQuotaExceeded,
     isCommissioner: membership?.role === "commissioner",
     provisioningStartedAt: provisioningStartedAtFromLeague(league),
     // Serialized into SSR HTML and reused as the first client `now`, so countdown/retry markup
@@ -364,6 +379,7 @@ export default function Onboarding({ loaderData, actionData }: Route.ComponentPr
     pilotLeagueName,
     comingSoonLeagues,
     step,
+    discoveryQuotaExceeded,
     isCommissioner,
     provisioningStartedAt,
     nowMs,
@@ -422,11 +438,14 @@ export default function Onboarding({ loaderData, actionData }: Route.ComponentPr
 
         {step.kind === "discovery_unavailable" ? (
           <Card>
-            <Badge>Connection issue</Badge>
-            <CardTitle className="mt-3">Cutman couldn't reach Sleeper</CardTitle>
+            <Badge>{discoveryQuotaExceeded ? "Lookup limit" : "Connection issue"}</Badge>
+            <CardTitle className="mt-3">
+              {discoveryQuotaExceeded ? "Lookup limit reached" : "Cutman couldn't reach Sleeper"}
+            </CardTitle>
             <CardDescription>
-              Something went wrong reading your leagues from Sleeper just now. This is usually temporary — try
-              again in a moment.
+              {discoveryQuotaExceeded
+                ? describeExplorerError("quota_exceeded")
+                : "Something went wrong reading your leagues from Sleeper just now. This is usually temporary — try again in a moment."}
             </CardDescription>
             <div className="mt-5">
               <Button asChild variant="secondary">

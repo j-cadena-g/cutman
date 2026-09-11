@@ -99,7 +99,8 @@ export async function action(args: Route.ActionArgs) {
           };
         default: {
           const _exhaustive: never = result.error;
-          return _exhaustive;
+          void _exhaustive;
+          return saveError;
         }
       }
     } catch {

@@ -573,6 +573,21 @@ describe("render-wrangler-deploy-config output path", () => {
     }
   });
 
+  it("rejects a second argument without writing repository files", async () => {
+    const before = await snapshotAllowedOutputs();
+    await assert.rejects(
+      () =>
+        resolveAndAssertOutputPath(WRANGLER_DEPLOY_OUTPUT_PATH, {
+          allowedOutputs: {
+            production: WRANGLER_DEPLOY_OUTPUT_PATH,
+            dev: WRANGLER_DEV_OUTPUT_PATH,
+          },
+        }),
+      /does not accept additional arguments/,
+    );
+    assert.deepEqual(await snapshotAllowedOutputs(), before);
+  });
+
   it("ignores injected allowlists on the public writer and resolver", async () => {
     await withTempAllowedOutputs(async ({ dir, allowedOutputs }) => {
       const before = await snapshotAllowedOutputs();
@@ -592,7 +607,7 @@ describe("render-wrangler-deploy-config output path", () => {
             allowedOutputs,
             symlinkRoot: dir,
           }),
-        /Refusing to write Wrangler config/,
+        /does not accept additional arguments/,
       );
       await assert.rejects(() => readFile(allowedOutputs.production), { code: "ENOENT" });
       assert.deepEqual(await snapshotAllowedOutputs(), before);
@@ -742,6 +757,14 @@ describe("render-wrangler-deploy-config", () => {
     const rendered = renderDev(baseEnv());
     assert.match(rendered, new RegExp(`"PILOT_SLEEPER_LEAGUE_ID"\\s*:\\s*"${FAKE_PILOT_ID}"`));
     assert.match(rendered, useSleeperFixturesPattern("false"));
+  });
+
+  it("writes a supplied PILOT_SLEEPER_LEAGUE_ID on fixture-mode local-dev render", () => {
+    const rendered = renderDev(
+      baseEnv({ USE_SLEEPER_FIXTURES: "true", PILOT_SLEEPER_LEAGUE_ID: FAKE_PILOT_ID }),
+    );
+    assert.match(rendered, new RegExp(`"PILOT_SLEEPER_LEAGUE_ID"\\s*:\\s*"${FAKE_PILOT_ID}"`));
+    assert.match(rendered, useSleeperFixturesPattern("true"));
   });
 
   it("keeps the fake placeholder when fixture-mode local-dev render omits PILOT_SLEEPER_LEAGUE_ID", () => {

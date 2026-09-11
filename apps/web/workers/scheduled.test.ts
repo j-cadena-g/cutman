@@ -173,6 +173,33 @@ async function completeRecapEnrollment(weekKey: string): Promise<void> {
   );
 }
 
+/** Keep first/all/raw on intercepted D1 statements; override only bind and run. */
+function overridePreparedBindRun(
+  statement: D1PreparedStatement,
+  run: (bound: D1PreparedStatement) => ReturnType<D1PreparedStatement["run"]>,
+): D1PreparedStatement {
+  return new Proxy(statement, {
+    get(target, prop, receiver) {
+      if (prop === "bind") {
+        return (...values: unknown[]) => {
+          const bound = target.bind(...values);
+          return new Proxy(bound, {
+            get(boundTarget, boundProp, boundReceiver) {
+              if (boundProp === "run") {
+                return () => run(boundTarget);
+              }
+              const boundValue = Reflect.get(boundTarget, boundProp, boundReceiver);
+              return typeof boundValue === "function" ? boundValue.bind(boundTarget) : boundValue;
+            },
+          });
+        };
+      }
+      const value = Reflect.get(target, prop, receiver);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
+
 async function setCursorBeforeLeague(leagueId: string): Promise<void> {
   const allActive = await listActiveLeagues(env.DB, { limit: 10_000 });
   const idx = allActive.findIndex((league) => league.id === leagueId);
@@ -457,18 +484,13 @@ describe("handleScheduled", () => {
       get(target, prop, receiver) {
         if (prop === "prepare") {
           return (query: string) => {
+            const statement = originalPrepare(query);
             if (!query.includes("DELETE FROM explorer_origin_quota")) {
-              return originalPrepare(query);
+              return statement;
             }
-            return {
-              bind() {
-                return {
-                  run: async () => {
-                    throw new Error("sweep boom");
-                  },
-                };
-              },
-            };
+            return overridePreparedBindRun(statement, async () => {
+              throw new Error("sweep boom");
+            });
           };
         }
         const value = Reflect.get(target, prop, receiver);
@@ -493,6 +515,70 @@ describe("handleScheduled", () => {
       const serialized = JSON.stringify(errors);
       expect(serialized).not.toContain(league.id);
       expect(serialized).not.toContain("sweep boom");
+      expect(await scheduledCursorValue()).toBe(JSON.stringify({ afterId: league.id }));
+    } finally {
+      LeagueBrain.prototype.poll = originalPoll;
+      console.error = originalError;
+    }
+  });
+
+  it("continues polling when the stale recap attempt sweep throws", async () => {
+    const now = 1_805_051_000_000;
+    const league = await seedLeague("stale_recap_sweep_throw", now, "active");
+    await setCursorBeforeLeague(league.id);
+
+    const polledIds: string[] = [];
+    const originalPoll = LeagueBrain.prototype.poll;
+    const originalError = console.error;
+    const errors: unknown[][] = [];
+    LeagueBrain.prototype.poll = async function (this: LeagueBrain) {
+      const dashboard = await this.getDashboard();
+      polledIds.push(dashboard.leagueId);
+      return { wroteBeat: false, hash: "test", facts: 0 };
+    };
+    console.error = (...args: unknown[]) => {
+      errors.push(args);
+    };
+
+    const originalPrepare = env.DB.prepare.bind(env.DB);
+    const wrappedDb = new Proxy(env.DB, {
+      get(target, prop, receiver) {
+        if (prop === "prepare") {
+          return (query: string) => {
+            const statement = originalPrepare(query);
+            if (
+              !query.includes("DELETE FROM recap_attempt_backlog") ||
+              !query.includes("week_key")
+            ) {
+              return statement;
+            }
+            return overridePreparedBindRun(statement, async () => {
+              throw new Error("stale recap sweep boom");
+            });
+          };
+        }
+        const value = Reflect.get(target, prop, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const scheduledEnv = new Proxy(env, {
+      get(target, prop, receiver) {
+        if (prop === "DB") return wrappedDb;
+        return Reflect.get(target, prop, receiver);
+      },
+    }) as Env;
+
+    try {
+      const result = await handleScheduled(scheduledEnv, POLL_NOW, 1);
+      expect(result.polled).toBe(1);
+      expect(result.recapped).toBe(0);
+      expect(polledIds).toContain(league.id);
+      expect(errors).toHaveLength(1);
+      const payload = JSON.parse(String(errors[0]?.[0])) as Record<string, unknown>;
+      expect(payload).toEqual({ event: "scheduled.league.failed", reason: "error" });
+      const serialized = JSON.stringify(errors);
+      expect(serialized).not.toContain(league.id);
+      expect(serialized).not.toContain("stale recap sweep boom");
       expect(await scheduledCursorValue()).toBe(JSON.stringify({ afterId: league.id }));
     } finally {
       LeagueBrain.prototype.poll = originalPoll;
@@ -1468,20 +1554,13 @@ describe("handleScheduled recap backlog", () => {
             if (!query.includes("UPDATE recap_attempt_backlog")) {
               return statement;
             }
-            return {
-              bind(...values: unknown[]) {
-                const bound = statement.bind(...values);
-                return {
-                  run: async () => {
-                    settleCalls += 1;
-                    if (settleCalls === 1) {
-                      throw new Error("settle boom");
-                    }
-                    return bound.run();
-                  },
-                };
-              },
-            };
+            return overridePreparedBindRun(statement, (bound) => {
+              settleCalls += 1;
+              if (settleCalls === 1) {
+                return Promise.reject(new Error("settle boom"));
+              }
+              return bound.run();
+            });
           };
         }
         const value = Reflect.get(target, prop, receiver);
@@ -1560,20 +1639,13 @@ describe("handleScheduled recap backlog", () => {
             if (!query.includes("UPDATE recap_attempt_backlog")) {
               return statement;
             }
-            return {
-              bind(...values: unknown[]) {
-                const bound = statement.bind(...values);
-                return {
-                  run: async () => {
-                    settleCalls += 1;
-                    if (settleCalls === 1) {
-                      throw new Error("settle boom");
-                    }
-                    return bound.run();
-                  },
-                };
-              },
-            };
+            return overridePreparedBindRun(statement, (bound) => {
+              settleCalls += 1;
+              if (settleCalls === 1) {
+                return Promise.reject(new Error("settle boom"));
+              }
+              return bound.run();
+            });
           };
         }
         const value = Reflect.get(target, prop, receiver);

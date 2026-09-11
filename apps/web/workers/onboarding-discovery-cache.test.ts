@@ -1,6 +1,12 @@
 /// <reference types="@cloudflare/vitest-pool-workers/types" />
-import { env } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { applyD1Migrations, env } from "cloudflare:test";
+import { beforeAll, describe, expect, it } from "vitest";
+import {
+  createMemoryExplorerOriginQuota,
+  d1ExplorerOriginQuota,
+  explorerOriginQuotaHourKey,
+  type ExplorerOriginQuotaRow,
+} from "../app/lib/explorer-origin-quota.server.ts";
 import {
   ONBOARDING_DISCOVERY_TTL_MS,
   loadCachedOnboardingDiscovery,
@@ -11,9 +17,11 @@ import {
   type OnboardingDiscoveryCacheDeps,
 } from "../app/lib/onboarding-discovery-cache.server.ts";
 import type { DiscoverLeaguesResult, DiscoveredLeague } from "../app/lib/onboarding.server.ts";
+import { computePilotLeagueStep } from "../app/lib/onboarding-view.ts";
 import {
   createMemoryExplorerCache,
   kvExplorerCache,
+  ORIGIN_QUOTA_PER_HOUR,
   type ExplorerCache,
 } from "../app/lib/sleeper-explorer.server.ts";
 
@@ -55,6 +63,12 @@ const NOT_LINKED: DiscoverLeaguesResult = {
   ok: false,
   error: { kind: "sleeper_account_not_linked" },
 };
+
+type D1Migration = { name: string; queries: string[] };
+
+beforeAll(async () => {
+  await applyD1Migrations(env.DB, (env as Env & { TEST_MIGRATIONS: D1Migration[] }).TEST_MIGRATIONS);
+});
 
 function recordingCache(store = new Map<string, string>()): {
   cache: ExplorerCache;
@@ -115,7 +129,38 @@ function makeDeps(
     now: overrides.now ?? (() => FIXED_NOW),
     ttlMs: overrides.ttlMs,
     discover: overrides.discover ?? (async () => SUCCESS),
+    tryConsumeRefreshOrigin: overrides.tryConsumeRefreshOrigin,
   };
+}
+
+function countingRefreshOrigin(
+  quota: ReturnType<typeof createMemoryExplorerOriginQuota>,
+  clerkUserId: string,
+  now = FIXED_NOW,
+): { tryConsumeRefreshOrigin: () => Promise<boolean>; calls: { n: number } } {
+  const calls = { n: 0 };
+  return {
+    calls,
+    async tryConsumeRefreshOrigin() {
+      calls.n += 1;
+      return quota.tryConsume({
+        clerkUserId,
+        charge: 1,
+        now,
+        limit: ORIGIN_QUOTA_PER_HOUR,
+      });
+    },
+  };
+}
+
+function memoryUsed(
+  store: Map<string, ExplorerOriginQuotaRow>,
+  clerkUserId: string,
+  now: number,
+): number {
+  const row = store.get(clerkUserId);
+  if (!row || row.hourKey !== explorerOriginQuotaHourKey(now)) return 0;
+  return row.used;
 }
 
 describe("onboardingDiscoveryCacheKey", () => {
@@ -473,5 +518,235 @@ describe("loadCachedOnboardingDiscovery", () => {
       leagues: SUCCESS.leagues,
     });
     expect(await env.PLAYERS.get(key)).toBeNull();
+  });
+});
+
+describe("forced refresh origin quota", () => {
+  it("does not call Sleeper or write cache when a refresh cannot consume origin quota", async () => {
+    const recorded = recordingCache();
+    await loadCachedOnboardingDiscovery(makeDeps({ cache: recorded.cache, discover: async () => SUCCESS }), {
+      clerkUserId: CLERK_A,
+      sleeperUserId: SLEEPER_A,
+    });
+
+    const store = new Map<string, ExplorerOriginQuotaRow>();
+    const quota = createMemoryExplorerOriginQuota(store);
+    expect(
+      await quota.tryConsume({
+        clerkUserId: CLERK_A,
+        charge: ORIGIN_QUOTA_PER_HOUR,
+        now: FIXED_NOW,
+        limit: ORIGIN_QUOTA_PER_HOUR,
+      }),
+    ).toBe(true);
+
+    const origin = countingRefreshOrigin(quota, CLERK_A);
+    const { discover, calls } = countingDiscover(REFRESHED_SUCCESS);
+    const result = await loadCachedOnboardingDiscovery(
+      makeDeps({
+        cache: recorded.cache,
+        discover,
+        tryConsumeRefreshOrigin: origin.tryConsumeRefreshOrigin,
+      }),
+      { clerkUserId: CLERK_A, sleeperUserId: SLEEPER_A, refresh: true },
+    );
+
+    expect(result).toEqual({ ok: false, error: { kind: "quota_exceeded" } });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected quota failure");
+    expect(result.error.kind).not.toBe("sleeper_account_not_linked");
+    expect(calls.n).toBe(0);
+    expect(origin.calls.n).toBe(1);
+    expect(recorded.puts).toHaveLength(1);
+    expect(memoryUsed(store, CLERK_A, FIXED_NOW)).toBe(ORIGIN_QUOTA_PER_HOUR);
+    // Loader maps this typed failure to discoveryFailed; the existing step still renders.
+    expect(
+      computePilotLeagueStep({
+        sleeperConnected: true,
+        discoveryFailed: true,
+        pilotEntry: null,
+        league: null,
+        membership: null,
+        pendingVerification: null,
+      }),
+    ).toEqual({ kind: "discovery_unavailable" });
+  });
+
+  it("runs discover and consumes 1 when a refresh has remaining origin quota", async () => {
+    const recorded = recordingCache();
+    const store = new Map<string, ExplorerOriginQuotaRow>();
+    const quota = createMemoryExplorerOriginQuota(store);
+    expect(
+      await quota.tryConsume({
+        clerkUserId: CLERK_A,
+        charge: ORIGIN_QUOTA_PER_HOUR - 1,
+        now: FIXED_NOW,
+        limit: ORIGIN_QUOTA_PER_HOUR,
+      }),
+    ).toBe(true);
+
+    const origin = countingRefreshOrigin(quota, CLERK_A);
+    const { discover, calls } = countingDiscover(REFRESHED_SUCCESS);
+    const result = await loadCachedOnboardingDiscovery(
+      makeDeps({
+        cache: recorded.cache,
+        discover,
+        tryConsumeRefreshOrigin: origin.tryConsumeRefreshOrigin,
+      }),
+      { clerkUserId: CLERK_A, sleeperUserId: SLEEPER_A, refresh: true },
+    );
+
+    expect(result).toEqual(REFRESHED_SUCCESS);
+    expect(calls.n).toBe(1);
+    expect(origin.calls.n).toBe(1);
+    expect(memoryUsed(store, CLERK_A, FIXED_NOW)).toBe(ORIGIN_QUOTA_PER_HOUR);
+    expect(recorded.puts).toHaveLength(1);
+    expect(recorded.puts[0]?.value).toMatchObject({
+      season: REFRESHED_SUCCESS.season,
+      leagues: REFRESHED_SUCCESS.leagues,
+    });
+  });
+
+  it("serves a default cache hit with spent quota without consuming or rediscovering", async () => {
+    const recorded = recordingCache();
+    await loadCachedOnboardingDiscovery(makeDeps({ cache: recorded.cache, discover: async () => SUCCESS }), {
+      clerkUserId: CLERK_A,
+      sleeperUserId: SLEEPER_A,
+    });
+
+    const store = new Map<string, ExplorerOriginQuotaRow>();
+    const quota = createMemoryExplorerOriginQuota(store);
+    expect(
+      await quota.tryConsume({
+        clerkUserId: CLERK_A,
+        charge: ORIGIN_QUOTA_PER_HOUR,
+        now: FIXED_NOW,
+        limit: ORIGIN_QUOTA_PER_HOUR,
+      }),
+    ).toBe(true);
+
+    const origin = countingRefreshOrigin(quota, CLERK_A);
+    const { discover, calls } = countingDiscover(REFRESHED_SUCCESS);
+    const result = await loadCachedOnboardingDiscovery(
+      makeDeps({
+        cache: recorded.cache,
+        discover,
+        tryConsumeRefreshOrigin: origin.tryConsumeRefreshOrigin,
+      }),
+      { clerkUserId: CLERK_A, sleeperUserId: SLEEPER_A },
+    );
+
+    expect(result).toEqual(SUCCESS);
+    expect(calls.n).toBe(0);
+    expect(origin.calls.n).toBe(0);
+    expect(memoryUsed(store, CLERK_A, FIXED_NOW)).toBe(ORIGIN_QUOTA_PER_HOUR);
+    expect(recorded.puts).toHaveLength(1);
+  });
+
+  it("still discovers on a default cache miss even when origin quota is spent", async () => {
+    const recorded = recordingCache();
+    const store = new Map<string, ExplorerOriginQuotaRow>();
+    const quota = createMemoryExplorerOriginQuota(store);
+    expect(
+      await quota.tryConsume({
+        clerkUserId: CLERK_A,
+        charge: ORIGIN_QUOTA_PER_HOUR,
+        now: FIXED_NOW,
+        limit: ORIGIN_QUOTA_PER_HOUR,
+      }),
+    ).toBe(true);
+
+    const origin = countingRefreshOrigin(quota, CLERK_A);
+    const { discover, calls } = countingDiscover(SUCCESS);
+    const result = await loadCachedOnboardingDiscovery(
+      makeDeps({
+        cache: recorded.cache,
+        discover,
+        tryConsumeRefreshOrigin: origin.tryConsumeRefreshOrigin,
+      }),
+      { clerkUserId: CLERK_A, sleeperUserId: SLEEPER_A },
+    );
+
+    expect(result).toEqual(SUCCESS);
+    expect(calls.n).toBe(1);
+    expect(origin.calls.n).toBe(0);
+    expect(memoryUsed(store, CLERK_A, FIXED_NOW)).toBe(ORIGIN_QUOTA_PER_HOUR);
+    expect(recorded.puts).toHaveLength(1);
+  });
+
+  it("does not discover or cache when a refresh with empty cache keys has spent D1 origin quota", async () => {
+    const clerkUserId = `clerk_${crypto.randomUUID()}`;
+    const quota = d1ExplorerOriginQuota(env.DB);
+    expect(
+      await quota.tryConsume({
+        clerkUserId,
+        charge: ORIGIN_QUOTA_PER_HOUR,
+        now: FIXED_NOW,
+        limit: ORIGIN_QUOTA_PER_HOUR,
+      }),
+    ).toBe(true);
+
+    const recorded = recordingCache();
+    const consumeCalls = { n: 0 };
+    const { discover, calls } = countingDiscover(SUCCESS);
+    const result = await loadCachedOnboardingDiscovery(
+      makeDeps({
+        cache: recorded.cache,
+        discover,
+        tryConsumeRefreshOrigin: async () => {
+          consumeCalls.n += 1;
+          return quota.tryConsume({
+            clerkUserId,
+            charge: 1,
+            now: FIXED_NOW,
+            limit: ORIGIN_QUOTA_PER_HOUR,
+          });
+        },
+      }),
+      { clerkUserId: "", sleeperUserId: SLEEPER_A, refresh: true },
+    );
+
+    expect(result).toEqual({ ok: false, error: { kind: "quota_exceeded" } });
+    expect(calls.n).toBe(0);
+    expect(consumeCalls.n).toBe(1);
+    expect(recorded.puts).toHaveLength(0);
+  });
+
+  it("consumes 1 from D1 origin quota when a refresh is allowed", async () => {
+    const clerkUserId = `clerk_${crypto.randomUUID()}`;
+    const sleeperUserId = `sleeper_${crypto.randomUUID()}`;
+    const quota = d1ExplorerOriginQuota(env.DB);
+    expect(
+      await quota.tryConsume({
+        clerkUserId,
+        charge: ORIGIN_QUOTA_PER_HOUR - 1,
+        now: FIXED_NOW,
+        limit: ORIGIN_QUOTA_PER_HOUR,
+      }),
+    ).toBe(true);
+
+    const recorded = recordingCache();
+    const { discover, calls } = countingDiscover(SUCCESS);
+    const result = await loadCachedOnboardingDiscovery(
+      makeDeps({
+        cache: recorded.cache,
+        discover,
+        tryConsumeRefreshOrigin: () =>
+          quota.tryConsume({
+            clerkUserId,
+            charge: 1,
+            now: FIXED_NOW,
+            limit: ORIGIN_QUOTA_PER_HOUR,
+          }),
+      }),
+      { clerkUserId, sleeperUserId, refresh: true },
+    );
+
+    expect(result).toEqual(SUCCESS);
+    expect(calls.n).toBe(1);
+    const row = await env.DB.prepare("SELECT used FROM explorer_origin_quota WHERE clerk_user_id = ?")
+      .bind(clerkUserId)
+      .first<{ used: number }>();
+    expect(row?.used).toBe(ORIGIN_QUOTA_PER_HOUR);
   });
 });
