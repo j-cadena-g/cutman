@@ -29,6 +29,7 @@ import {
   scheduledFailureReason,
   scheduledPollHourLimits,
   selectScheduledLeaguePage,
+  STALE_RECAP_ATTEMPT_SWEEP_LIMIT,
   type RecapEnrollmentState,
 } from "./scheduled.ts";
 
@@ -431,6 +432,72 @@ describe("handleScheduled", () => {
         .bind(freshUser)
         .first<{ hour_key: number; used: number }>(),
     ).toEqual({ hour_key: currentHour, used: 2 });
+  });
+
+  it("continues polling when the stale explorer origin quota sweep throws", async () => {
+    const now = 1_805_050_000_000;
+    const league = await seedLeague("quota_sweep_throw", now, "active");
+    await setCursorBeforeLeague(league.id);
+
+    const polledIds: string[] = [];
+    const originalPoll = LeagueBrain.prototype.poll;
+    const originalError = console.error;
+    const errors: unknown[][] = [];
+    LeagueBrain.prototype.poll = async function (this: LeagueBrain) {
+      const dashboard = await this.getDashboard();
+      polledIds.push(dashboard.leagueId);
+      return { wroteBeat: false, hash: "test", facts: 0 };
+    };
+    console.error = (...args: unknown[]) => {
+      errors.push(args);
+    };
+
+    const originalPrepare = env.DB.prepare.bind(env.DB);
+    const wrappedDb = new Proxy(env.DB, {
+      get(target, prop, receiver) {
+        if (prop === "prepare") {
+          return (query: string) => {
+            if (!query.includes("DELETE FROM explorer_origin_quota")) {
+              return originalPrepare(query);
+            }
+            return {
+              bind() {
+                return {
+                  run: async () => {
+                    throw new Error("sweep boom");
+                  },
+                };
+              },
+            };
+          };
+        }
+        const value = Reflect.get(target, prop, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const scheduledEnv = new Proxy(env, {
+      get(target, prop, receiver) {
+        if (prop === "DB") return wrappedDb;
+        return Reflect.get(target, prop, receiver);
+      },
+    }) as Env;
+
+    try {
+      const result = await handleScheduled(scheduledEnv, POLL_NOW, 1);
+      expect(result.polled).toBe(1);
+      expect(result.recapped).toBe(0);
+      expect(polledIds).toContain(league.id);
+      expect(errors).toHaveLength(1);
+      const payload = JSON.parse(String(errors[0]?.[0])) as Record<string, unknown>;
+      expect(payload).toEqual({ event: "scheduled.league.failed", reason: "error" });
+      const serialized = JSON.stringify(errors);
+      expect(serialized).not.toContain(league.id);
+      expect(serialized).not.toContain("sweep boom");
+      expect(await scheduledCursorValue()).toBe(JSON.stringify({ afterId: league.id }));
+    } finally {
+      LeagueBrain.prototype.poll = originalPoll;
+      console.error = originalError;
+    }
   });
 
   it("polls every active league by internal id and ignores leftover env names, V1-named DOs, pending, error, and discovered-only leagues", async () => {
@@ -1311,6 +1378,7 @@ describe("handleScheduled recap backlog", () => {
     )
       .bind(league.id, RECAP_WEEK_KEY, MAX_RECAP_ATTEMPTS, now, now)
       .run();
+    await completeRecapEnrollment(RECAP_WEEK_KEY);
 
     const recapCalls: string[] = [];
     const originalAttemptRecap = LeagueBrain.prototype.attemptRecap;
@@ -1450,6 +1518,109 @@ describe("handleScheduled recap backlog", () => {
     }
   });
 
+  it("continues remaining leagues when catch-path settle throws", async () => {
+    const now = 1_805_822_000_000;
+    const first = await seedLeague("catch_settle_a", now, "active");
+    const second = await seedLeague("catch_settle_b", now + 1, "active");
+    const [failing, surviving] = [first, second].sort((a, b) => a.id.localeCompare(b.id));
+    await insertPendingRecap(failing.id, RECAP_WEEK_KEY, now);
+    await insertPendingRecap(surviving.id, RECAP_WEEK_KEY, now);
+    await completeRecapEnrollment(RECAP_WEEK_KEY);
+
+    const polledIds: string[] = [];
+    const recapIds: string[] = [];
+    const originalPoll = LeagueBrain.prototype.poll;
+    const originalAttemptRecap = LeagueBrain.prototype.attemptRecap;
+    const originalError = console.error;
+    const errors: unknown[][] = [];
+    LeagueBrain.prototype.poll = async function (this: LeagueBrain) {
+      const dashboard = await this.getDashboard();
+      polledIds.push(dashboard.leagueId);
+      if (dashboard.leagueId === failing.id) {
+        throw new Error("poll boom");
+      }
+      return { wroteBeat: false, hash: "test", facts: 0 };
+    };
+    LeagueBrain.prototype.attemptRecap = async function (this: LeagueBrain) {
+      const dashboard = await this.getDashboard();
+      recapIds.push(dashboard.leagueId);
+      return { status: "published", recap: { subject: "Week recap", body: "Survivor." } };
+    };
+    console.error = (...args: unknown[]) => {
+      errors.push(args);
+    };
+
+    const originalPrepare = env.DB.prepare.bind(env.DB);
+    let settleCalls = 0;
+    const wrappedDb = new Proxy(env.DB, {
+      get(target, prop, receiver) {
+        if (prop === "prepare") {
+          return (query: string) => {
+            const statement = originalPrepare(query);
+            if (!query.includes("UPDATE recap_attempt_backlog")) {
+              return statement;
+            }
+            return {
+              bind(...values: unknown[]) {
+                const bound = statement.bind(...values);
+                return {
+                  run: async () => {
+                    settleCalls += 1;
+                    if (settleCalls === 1) {
+                      throw new Error("settle boom");
+                    }
+                    return bound.run();
+                  },
+                };
+              },
+            };
+          };
+        }
+        const value = Reflect.get(target, prop, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const scheduledEnv = new Proxy(env, {
+      get(target, prop, receiver) {
+        if (prop === "DB") return wrappedDb;
+        return Reflect.get(target, prop, receiver);
+      },
+    }) as Env;
+
+    try {
+      const result = await handleScheduled(scheduledEnv, IDLE_NOW, 10);
+      expect(result).toEqual({ polled: 1, recapped: 1 });
+      expect(polledIds).toEqual([failing.id, surviving.id]);
+      expect(recapIds).toEqual([surviving.id]);
+      expect(settleCalls).toBe(2);
+      expect(errors).toHaveLength(2);
+      for (const entry of errors) {
+        const payload = JSON.parse(String(entry[0])) as Record<string, unknown>;
+        expect(payload).toEqual({ event: "scheduled.league.failed", reason: "error" });
+      }
+      const serialized = JSON.stringify(errors);
+      expect(serialized).not.toContain(failing.id);
+      expect(serialized).not.toContain(surviving.id);
+      expect(serialized).not.toContain("poll boom");
+      expect(serialized).not.toContain("settle boom");
+      const rows = await backlogRows(RECAP_WEEK_KEY, [failing.id, surviving.id]);
+      expect(rows.find((row) => row.league_id === failing.id)).toMatchObject({
+        status: "pending",
+        attempts: 0,
+        last_error: null,
+      });
+      expect(rows.find((row) => row.league_id === surviving.id)).toMatchObject({
+        status: "done",
+        attempts: 1,
+        last_error: null,
+      });
+    } finally {
+      LeagueBrain.prototype.poll = originalPoll;
+      LeagueBrain.prototype.attemptRecap = originalAttemptRecap;
+      console.error = originalError;
+    }
+  });
+
   it("drops the previous week's backlog rows when the next Tuesday recap window opens", async () => {
     const now = 1_805_830_000_000;
     const league = await seedLeague("backlog_rollover", now, "active");
@@ -1547,6 +1718,72 @@ describe("handleScheduled recap backlog", () => {
     } finally {
       LeagueBrain.prototype.attemptRecap = originalAttemptRecap;
     }
+  });
+
+  it("deletes at most STALE_RECAP_ATTEMPT_SWEEP_LIMIT leftover-week rows per tick", async () => {
+    const now = 1_805_833_000_000;
+    const staleLeague = await seedLeague("stale_sweep_bound", now, "active");
+    const currentPending = await seedLeague("current_week_pending", now + 1, "active");
+    const currentDone = await seedLeague("current_week_done", now + 2, "active");
+    const staleCount = STALE_RECAP_ATTEMPT_SWEEP_LIMIT + 3;
+    const chunk = 20;
+    for (let offset = 0; offset < staleCount; offset += chunk) {
+      const n = Math.min(chunk, staleCount - offset);
+      const placeholders = Array.from({ length: n }, () => "(?, ?, ?, 0, NULL, ?, ?)").join(", ");
+      const binds: unknown[] = [];
+      for (let i = 0; i < n; i += 1) {
+        const status = (offset + i) % 2 === 0 ? "pending" : "done";
+        binds.push(
+          staleLeague.id,
+          `stale-${String(offset + i).padStart(4, "0")}`,
+          status,
+          now,
+          now,
+        );
+      }
+      await env.DB.prepare(
+        `INSERT INTO recap_attempt_backlog (league_id, week_key, status, attempts, last_error, created_at, updated_at)
+         VALUES ${placeholders}`,
+      )
+        .bind(...binds)
+        .run();
+    }
+    await insertPendingRecap(currentPending.id, RECAP_WEEK_KEY, now);
+    await env.DB.prepare(
+      `INSERT INTO recap_attempt_backlog (league_id, week_key, status, attempts, last_error, created_at, updated_at)
+       VALUES (?, ?, 'done', 1, NULL, ?, ?)`,
+    )
+      .bind(currentDone.id, RECAP_WEEK_KEY, now, now)
+      .run();
+
+    const staleDoneBefore = await env.DB
+      .prepare(
+        `SELECT COUNT(*) AS n FROM recap_attempt_backlog WHERE week_key != ? AND status = 'done'`,
+      )
+      .bind(RECAP_WEEK_KEY)
+      .first<{ n: number }>();
+    expect(staleDoneBefore?.n ?? 0).toBeGreaterThan(0);
+
+    const result = await handleScheduled(env, IDLE_NOW);
+    expect(result).toEqual({ polled: 0, recapped: 0 });
+
+    const staleAfter = await env.DB
+      .prepare("SELECT COUNT(*) AS n FROM recap_attempt_backlog WHERE week_key != ?")
+      .bind(RECAP_WEEK_KEY)
+      .first<{ n: number }>();
+    expect(staleAfter?.n).toBe(staleCount - STALE_RECAP_ATTEMPT_SWEEP_LIMIT);
+    expect(await backlogCount(RECAP_WEEK_KEY)).toBe(2);
+    expect(await backlogRows(RECAP_WEEK_KEY, [currentPending.id, currentDone.id])).toEqual([
+      expect.objectContaining({ league_id: currentDone.id, status: "done" }),
+      expect.objectContaining({ league_id: currentPending.id, status: "pending" }),
+    ]);
+    const staleDoneAfter = await env.DB
+      .prepare(
+        `SELECT COUNT(*) AS n FROM recap_attempt_backlog WHERE week_key != ? AND status = 'done'`,
+      )
+      .bind(RECAP_WEEK_KEY)
+      .first<{ n: number }>();
+    expect(staleDoneAfter?.n ?? 0).toBeLessThan(staleDoneBefore?.n ?? 0);
   });
 
   it("enrolls at most maxLeagues per tick and continues until every active league is covered", async () => {

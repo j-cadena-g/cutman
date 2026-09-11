@@ -1,9 +1,12 @@
 #!/usr/bin/env node
 
-import { lstat, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { isCliEntrypoint } from "./lib/cli-entrypoint.mjs";
 import { parseManifestKeys } from "./lib/parse-manifest-keys.mjs";
+
+export { isCliEntrypoint, isSameRealPath } from "./lib/cli-entrypoint.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "..");
@@ -411,8 +414,8 @@ export function renderWranglerConfig(
     PILOT_SLEEPER_LEAGUE_ID: resolvePilotSleeperLeagueId(isDevConfig, env),
   };
   if (
-    deployValues.CLOUDFLARE_KV_NAMESPACE_ID ===
-    deployValues.CLOUDFLARE_EXPLORER_KV_NAMESPACE_ID
+    deployValues.CLOUDFLARE_KV_NAMESPACE_ID.toLowerCase() ===
+    deployValues.CLOUDFLARE_EXPLORER_KV_NAMESPACE_ID.toLowerCase()
   ) {
     throw new Error(
       "CLOUDFLARE_EXPLORER_KV_NAMESPACE_ID must differ from CLOUDFLARE_KV_NAMESPACE_ID.",
@@ -532,27 +535,6 @@ export async function writeRenderedWranglerConfig({
 
 async function main() {
   await writeRenderedWranglerConfig();
-}
-
-export async function isSameRealPath(leftPath, rightPath) {
-  try {
-    return (await realpath(leftPath)) === (await realpath(rightPath));
-  } catch (error) {
-    if (error && error.code === "ENOENT") {
-      return false;
-    }
-    throw error;
-  }
-}
-
-/**
- * Absent argv is a safe non-entrypoint (imports, `node -e`). A present path that
- * cannot be resolved fails loudly instead of skipping `main()`.
- */
-export async function isCliEntrypoint(argvPath, modulePath) {
-  if (!argvPath) return false;
-  const resolvedArgvPath = await realpath(argvPath);
-  return isSameRealPath(resolvedArgvPath, modulePath);
 }
 
 if (await isCliEntrypoint(process.argv[1], fileURLToPath(import.meta.url))) {

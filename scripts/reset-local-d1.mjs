@@ -28,6 +28,9 @@ import { lstat, realpath, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { isCliEntrypoint } from "./lib/cli-entrypoint.mjs";
+
+export { isCliEntrypoint, isSameRealPath } from "./lib/cli-entrypoint.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "..");
@@ -178,27 +181,6 @@ async function main() {
   await resetLocalD1(localD1Dir);
   console.log(`Removed local D1 state: ${path.relative(repoRoot, localD1Dir)}`);
   console.log("Next: migrations reapply automatically if you ran `pnpm run db:reset:local`.");
-}
-
-export async function isSameRealPath(leftPath, rightPath) {
-  try {
-    return (await realpath(leftPath)) === (await realpath(rightPath));
-  } catch (error) {
-    if (error && error.code === "ENOENT") {
-      return false;
-    }
-    throw error;
-  }
-}
-
-/**
- * Absent argv is a safe non-entrypoint (imports, `node -e`). A present path that
- * cannot be resolved fails loudly instead of skipping `main()`.
- */
-export async function isCliEntrypoint(argvPath, modulePath) {
-  if (!argvPath) return false;
-  const resolvedArgvPath = await realpath(argvPath);
-  return isSameRealPath(resolvedArgvPath, modulePath);
 }
 
 if (await isCliEntrypoint(process.argv[1], fileURLToPath(import.meta.url))) {

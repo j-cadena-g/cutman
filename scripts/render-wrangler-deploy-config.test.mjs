@@ -993,4 +993,20 @@ describe("render-wrangler-deploy-config", () => {
       },
     );
   });
+
+  it("rejects mixed-case identical PLAYERS and EXPLORER_CACHE KV ids without exposing values", () => {
+    const mixedCasePlayersKvId = FAKE_PLAYERS_KV_ID.toUpperCase();
+    assert.notEqual(mixedCasePlayersKvId, FAKE_PLAYERS_KV_ID);
+    assert.throws(
+      () =>
+        renderProduction(
+          baseEnv({ CLOUDFLARE_EXPLORER_KV_NAMESPACE_ID: mixedCasePlayersKvId }),
+        ),
+      (error) => {
+        assert.match(error.message, /CLOUDFLARE_EXPLORER_KV_NAMESPACE_ID must differ/);
+        assert.doesNotMatch(error.message, new RegExp(FAKE_PLAYERS_KV_ID, "i"));
+        return true;
+      },
+    );
+  });
 });

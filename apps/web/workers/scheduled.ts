@@ -356,8 +356,22 @@ async function writeRecapEnrollmentState(
     .run();
 }
 
+/** Max stale recap_attempt_backlog rows removed per cron tick. Leftovers wait for the next tick. */
+export const STALE_RECAP_ATTEMPT_SWEEP_LIMIT = 500;
+
 async function deleteStaleRecapAttempts(db: D1Database, weekKey: string): Promise<void> {
-  await db.prepare("DELETE FROM recap_attempt_backlog WHERE week_key != ?").bind(weekKey).run();
+  await db
+    .prepare(
+      `DELETE FROM recap_attempt_backlog
+       WHERE rowid IN (
+         SELECT rowid FROM recap_attempt_backlog
+         WHERE week_key != ?
+         ORDER BY rowid ASC
+         LIMIT ?
+       )`,
+    )
+    .bind(weekKey, STALE_RECAP_ATTEMPT_SWEEP_LIMIT)
+    .run();
 }
 
 /** Stay under D1's bound-parameter cap while still inserting at most the current page. */
@@ -502,11 +516,15 @@ export async function handleScheduled(
   const recapWindow = shouldAttemptTuesdayRecap(parts);
   const weekKey = easternRecapWeekKey(now);
   const nowMs = now.getTime();
-  await sweepStaleExplorerOriginQuota(env.DB, {
-    now: nowMs,
-    retentionHours: EXPLORER_ORIGIN_QUOTA_STALE_RETENTION_HOURS,
-    limit: EXPLORER_ORIGIN_QUOTA_STALE_SWEEP_LIMIT,
-  });
+  try {
+    await sweepStaleExplorerOriginQuota(env.DB, {
+      now: nowMs,
+      retentionHours: EXPLORER_ORIGIN_QUOTA_STALE_RETENTION_HOURS,
+      limit: EXPLORER_ORIGIN_QUOTA_STALE_SWEEP_LIMIT,
+    });
+  } catch (error) {
+    logScheduledLeagueFailure(error);
+  }
 
   let enrollment = await readRecapEnrollmentState(env.DB);
   await deleteStaleRecapAttempts(env.DB, weekKey);
@@ -601,12 +619,16 @@ export async function handleScheduled(
     } catch (error) {
       logScheduledLeagueFailure(error);
       if (shouldRecap) {
-        await settleRecapAttempt(env.DB, {
-          leagueId: league.id,
-          weekKey,
-          reason: "thrown",
-          now: nowMs,
-        });
+        try {
+          await settleRecapAttempt(env.DB, {
+            leagueId: league.id,
+            weekKey,
+            reason: "thrown",
+            now: nowMs,
+          });
+        } catch (settleError) {
+          logScheduledLeagueFailure(settleError);
+        }
       }
     }
   }

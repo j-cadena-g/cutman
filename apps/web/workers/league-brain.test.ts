@@ -1892,7 +1892,10 @@ describe("LeagueBrain persistTone", () => {
     return { stub, leagueId: league.id };
   }
 
-  function interceptToneUpdates(db: D1Database, onToneUpdate: () => Promise<void>): D1Database {
+  function interceptToneUpdates(
+    db: D1Database,
+    onToneUpdate: (run: () => ReturnType<D1PreparedStatement["run"]>) => Promise<void>,
+  ): D1Database {
     return new Proxy(db, {
       get(target, prop, receiver) {
         if (prop === "prepare") {
@@ -1908,8 +1911,9 @@ describe("LeagueBrain persistTone", () => {
                       get(boundTarget, boundProp, boundReceiver) {
                         if (boundProp === "run") {
                           return async () => {
-                            await onToneUpdate();
-                            return (boundTarget as D1PreparedStatement).run();
+                            const run = () => (boundTarget as D1PreparedStatement).run();
+                            await onToneUpdate(run);
+                            return run();
                           };
                         }
                         const value = Reflect.get(boundTarget, boundProp, boundReceiver);
@@ -1932,7 +1936,7 @@ describe("LeagueBrain persistTone", () => {
 
   async function withInterceptedToneDb<T>(
     stub: DurableObjectStub<LeagueBrain>,
-    onToneUpdate: () => Promise<void>,
+    onToneUpdate: (run: () => ReturnType<D1PreparedStatement["run"]>) => Promise<void>,
     fn: (brain: ToneBrain) => Promise<T>,
   ): Promise<T> {
     return runInDurableObject(stub, async (instance) => {
@@ -1966,6 +1970,21 @@ describe("LeagueBrain persistTone", () => {
     expect(result).toEqual({ ok: false, error: "save" });
     expect((await stub.getDashboard()).tone).toBe("playful");
     expect((await getLeague(env.DB, leagueId))?.tone).toBe("playful");
+  });
+
+  it("keeps the Durable Object tone when D1 commits then throws", async () => {
+    const { stub, leagueId } = await bootLeague("tone-persist-commit-throw", "lg_tone_persist_commit_throw");
+    const result = await withInterceptedToneDb(
+      stub,
+      async (run) => {
+        await run();
+        throw new Error("simulated d1 rpc throw after commit");
+      },
+      (brain) => brain.persistTone("savage"),
+    );
+    expect(result).toEqual({ ok: true });
+    expect((await stub.getDashboard()).tone).toBe("savage");
+    expect((await getLeague(env.DB, leagueId))?.tone).toBe("savage");
   });
 
   it("keeps a newer Durable Object tone written while D1 is in flight", async () => {

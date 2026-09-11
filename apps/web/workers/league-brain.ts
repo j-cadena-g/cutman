@@ -1,6 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { generateBeat, generateRecap, type WorkersAi } from "@cutman/ai";
-import { listRecapRecipients, setLeagueTone } from "@cutman/db";
+import { getLeague, listRecapRecipients, setLeagueTone } from "@cutman/db";
 import { recapEmail, sendEmail } from "@cutman/email";
 import type { PlayerMap, SleeperMatchup } from "@cutman/sleeper";
 import {
@@ -244,6 +244,16 @@ export class LeagueBrain extends DurableObject<Env> {
     try {
       await setLeagueTone(this.env.DB, settings.leagueId, tone);
     } catch {
+      // Workers RPC can throw after D1 committed. Confirm before rolling the DO back.
+      let persisted: string | null | undefined;
+      try {
+        persisted = (await getLeague(this.env.DB, settings.leagueId))?.tone ?? null;
+      } catch {
+        persisted = undefined;
+      }
+      if (persisted === tone) {
+        return { ok: true };
+      }
       try {
         if (this.getSetting("tone") === tone) {
           this.putSetting("tone", priorTone);

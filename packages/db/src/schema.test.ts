@@ -50,7 +50,37 @@ const FINAL_CREATE_RE =
 const SCRATCH_NAME_RE = /\b_cutman_0002_/;
 const USERS_CREATE_RE = /^CREATE TABLE IF NOT EXISTS users\b/i;
 
+function assertNoQuotedSemicolon(sql: string): void {
+  let inString = false;
+  for (let i = 0; i < sql.length; i++) {
+    const char = sql[i];
+    if (!inString) {
+      if (char === "-" && sql[i + 1] === "-") {
+        const newline = sql.indexOf("\n", i);
+        i = newline === -1 ? sql.length : newline;
+        continue;
+      }
+      if (char === "'") inString = true;
+      continue;
+    }
+    if (char === "'") {
+      if (sql[i + 1] === "'") {
+        i += 1;
+        continue;
+      }
+      inString = false;
+      continue;
+    }
+    if (char === ";") {
+      throw new Error(
+        `semicolon inside a single-quoted SQL string literal at index ${i}; statements() splits on ';' and would mis-parse this`,
+      );
+    }
+  }
+}
+
 function statements(sql: string): string[] {
+  assertNoQuotedSemicolon(sql);
   return sql
     .replace(/--.*$/gm, "")
     .split(";")
@@ -79,6 +109,20 @@ function readMigration(name: string): string {
 describe("SCHEMA_SQL", () => {
   it("strips inline comments as well as whole-line comments", () => {
     expect(statements("-- whole line\nSELECT 1 -- inline\n; -- trailing")).toEqual(["SELECT 1"]);
+  });
+
+  it("fails before splitting if a semicolon appears inside a single-quoted string", () => {
+    expect(() => statements("SELECT 'a;b'")).toThrow(
+      /semicolon inside a single-quoted SQL string literal/,
+    );
+    expect(() => statements("SELECT 'it''s;ok'")).toThrow(
+      /semicolon inside a single-quoted SQL string literal/,
+    );
+    expect(statements("-- 'comment;only'\nSELECT 'it''s fine'")).toEqual(["SELECT 'it''s fine'"]);
+    assertNoQuotedSemicolon(SCHEMA_SQL);
+    assertNoQuotedSemicolon(readMigration("0002_sleeper_onboarding.sql"));
+    assertNoQuotedSemicolon(readMigration("0003_recap_attempt_backlog.sql"));
+    assertNoQuotedSemicolon(readMigration("0004_explorer_origin_quota.sql"));
   });
 
   it("is derived by joining SCHEMA_STATEMENTS and never split on semicolons to apply", () => {

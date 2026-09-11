@@ -29,5 +29,8 @@ describe("pilotSleeperLeagueId", () => {
     expect(() =>
       pilotSleeperLeagueId(envWith({ V1_LEAGUE_ID: "0000000000000000000" })),
     ).toThrow(/PILOT_SLEEPER_LEAGUE_ID/);
+    expect(() =>
+      pilotSleeperLeagueId(envWith({ EXAMPLE_SLEEPER_LEAGUE_ID: "0000000000000000000" })),
+    ).toThrow(/PILOT_SLEEPER_LEAGUE_ID/);
   });
 });
