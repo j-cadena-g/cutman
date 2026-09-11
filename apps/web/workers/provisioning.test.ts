@@ -599,6 +599,16 @@ describe("provision deadlines", () => {
 });
 
 describe("retryProvisionAndActivateLeague", () => {
+  it("returns pilot_league_not_found when the league row is missing", async () => {
+    const now = 1_804_079_000_000;
+    const result = await retryProvisionAndActivateLeague(depsWithBrain(silentBrain(), now), {
+      league: null,
+      membership: null,
+    });
+
+    expect(result).toEqual({ ok: false, error: { kind: "pilot_league_not_found" } });
+  });
+
   it("rejects a non-commissioner member and leaves the league in error", async () => {
     const now = 1_804_080_000_000;
     const league = await seedProvisioningLeague("retry_member", now);

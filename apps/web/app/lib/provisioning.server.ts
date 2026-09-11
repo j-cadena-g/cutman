@@ -64,7 +64,10 @@ export type ProvisionLeagueResult =
   | { ok: true; league: LeagueRow }
   | { ok: false; error: ProvisionLeagueError };
 
-export type RetryProvisionError = { kind: "not_commissioner" } | ProvisionLeagueError;
+export type RetryProvisionError =
+  | { kind: "not_commissioner" }
+  | { kind: "pilot_league_not_found" }
+  | ProvisionLeagueError;
 
 export type RetryProvisionResult =
   | { ok: true; league: LeagueRow }
@@ -170,8 +173,10 @@ export async function retryProvisionAndActivateLeague(
   deps: ProvisioningDeps,
   input: { league: LeagueRow | null; membership: LeagueMemberRow | null },
 ): Promise<RetryProvisionResult> {
+  if (!input.league) {
+    return { ok: false, error: { kind: "pilot_league_not_found" } };
+  }
   if (
-    !input.league ||
     !input.membership ||
     input.membership.role !== "commissioner" ||
     input.membership.league_id !== input.league.id

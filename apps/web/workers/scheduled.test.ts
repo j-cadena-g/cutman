@@ -135,6 +135,12 @@ async function drainUntilBacklogDone(
     }
     await handleScheduled(env, now, limit);
   }
+  const rows = await backlogRows(weekKey, leagueIds);
+  throw new Error(
+    `backlog did not drain in ${maxTicks} ticks: ${JSON.stringify(
+      rows.map((row) => ({ status: row.status, attempts: row.attempts })),
+    )}`,
+  );
 }
 
 async function scheduledCursorValue(): Promise<string | null> {

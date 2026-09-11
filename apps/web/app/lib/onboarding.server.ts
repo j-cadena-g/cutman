@@ -392,7 +392,7 @@ export async function verifyCommissionerChallenge(
     // A concurrent verify may have inserted this Sleeper league under a different internal id
     // between our no-row read and this insert. Reuse that row instead of failing after the
     // one-time challenge is already consumed.
-    let league;
+    let league: LeagueRow;
     try {
       league = await createLeague(deps.db, {
         id: deps.generateId(),
