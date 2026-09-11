@@ -46,6 +46,8 @@ const RECAP_NOW = new Date("2026-09-08T13:00:00.000Z");
 const IDLE_NOW = new Date("2026-09-08T14:00:00.000Z");
 // Next Tuesday 9:00 America/New_York — following recap week.
 const NEXT_RECAP_NOW = new Date("2026-09-15T13:00:00.000Z");
+// Next Tuesday 10:00 America/New_York — neither poll nor recap.
+const NEXT_IDLE_NOW = new Date("2026-09-15T14:00:00.000Z");
 const RECAP_WEEK_KEY = "2026-09-08";
 const NEXT_RECAP_WEEK_KEY = "2026-09-15";
 
@@ -391,6 +393,8 @@ describe("handleScheduled", () => {
     expect(shouldAttemptTuesdayRecap(easternParts(RECAP_NOW))).toBe(true);
     expect(shouldPoll(easternParts(IDLE_NOW))).toBe(false);
     expect(shouldAttemptTuesdayRecap(easternParts(IDLE_NOW))).toBe(false);
+    expect(shouldPoll(easternParts(NEXT_IDLE_NOW))).toBe(false);
+    expect(shouldAttemptTuesdayRecap(easternParts(NEXT_IDLE_NOW))).toBe(false);
   });
 
   it("does nothing when it is not a poll or recap hour", async () => {
@@ -669,6 +673,7 @@ describe("easternRecapWeekKey", () => {
     expect(easternRecapWeekKey(IDLE_NOW)).toBe(RECAP_WEEK_KEY);
     expect(easternRecapWeekKey(POLL_NOW)).toBe(RECAP_WEEK_KEY);
     expect(easternRecapWeekKey(NEXT_RECAP_NOW)).toBe(NEXT_RECAP_WEEK_KEY);
+    expect(easternRecapWeekKey(NEXT_IDLE_NOW)).toBe(NEXT_RECAP_WEEK_KEY);
   });
 });
 
@@ -1363,6 +1368,88 @@ describe("handleScheduled recap backlog", () => {
     }
   });
 
+  it("does not count a published recap when settle throws; catch still settles thrown", async () => {
+    const now = 1_805_821_000_000;
+    const league = await seedLeague("backlog_settle_throw", now, "active");
+    await insertPendingRecap(league.id, RECAP_WEEK_KEY, now);
+    await completeRecapEnrollment(RECAP_WEEK_KEY);
+
+    const originalPoll = LeagueBrain.prototype.poll;
+    const originalAttemptRecap = LeagueBrain.prototype.attemptRecap;
+    const originalError = console.error;
+    const errors: unknown[][] = [];
+    LeagueBrain.prototype.poll = async () => ({ wroteBeat: false, hash: "test", facts: 0 });
+    LeagueBrain.prototype.attemptRecap = async function (this: LeagueBrain) {
+      const dashboard = await this.getDashboard();
+      if (dashboard.leagueId !== league.id) {
+        return { status: "skipped_not_final" };
+      }
+      return { status: "published", recap: { subject: "Week recap", body: "Published then settle boom." } };
+    };
+    console.error = (...args: unknown[]) => {
+      errors.push(args);
+    };
+
+    const originalPrepare = env.DB.prepare.bind(env.DB);
+    let settleCalls = 0;
+    const wrappedDb = new Proxy(env.DB, {
+      get(target, prop, receiver) {
+        if (prop === "prepare") {
+          return (query: string) => {
+            const statement = originalPrepare(query);
+            if (!query.includes("UPDATE recap_attempt_backlog")) {
+              return statement;
+            }
+            return {
+              bind(...values: unknown[]) {
+                const bound = statement.bind(...values);
+                return {
+                  run: async () => {
+                    settleCalls += 1;
+                    if (settleCalls === 1) {
+                      throw new Error("settle boom");
+                    }
+                    return bound.run();
+                  },
+                };
+              },
+            };
+          };
+        }
+        const value = Reflect.get(target, prop, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const scheduledEnv = new Proxy(env, {
+      get(target, prop, receiver) {
+        if (prop === "DB") return wrappedDb;
+        return Reflect.get(target, prop, receiver);
+      },
+    }) as Env;
+
+    try {
+      const result = await handleScheduled(scheduledEnv, IDLE_NOW, 1);
+      expect(result).toEqual({ polled: 1, recapped: 0 });
+      expect(settleCalls).toBe(2);
+      expect(errors).toHaveLength(1);
+      const payload = JSON.parse(String(errors[0]?.[0])) as Record<string, unknown>;
+      expect(payload).toEqual({ event: "scheduled.league.failed", reason: "error" });
+      const serialized = JSON.stringify(errors);
+      expect(serialized).not.toContain(league.id);
+      expect(serialized).not.toContain("settle boom");
+      const [row] = await backlogRows(RECAP_WEEK_KEY, [league.id]);
+      expect(row).toMatchObject({
+        status: "pending",
+        attempts: 1,
+        last_error: "thrown",
+      });
+    } finally {
+      LeagueBrain.prototype.poll = originalPoll;
+      LeagueBrain.prototype.attemptRecap = originalAttemptRecap;
+      console.error = originalError;
+    }
+  });
+
   it("drops the previous week's backlog rows when the next Tuesday recap window opens", async () => {
     const now = 1_805_830_000_000;
     const league = await seedLeague("backlog_rollover", now, "active");
@@ -1391,11 +1478,45 @@ describe("handleScheduled recap backlog", () => {
       expect(await backlogCount(NEXT_RECAP_WEEK_KEY)).toBeLessThanOrEqual(2);
       const maxTicks = drainTickBudget((await listActiveLeagues(env.DB)).length, 2);
       for (let ticks = 1; ticks < maxTicks && (await backlogRows(NEXT_RECAP_WEEK_KEY, [league.id])).length === 0; ticks += 1) {
-        await handleScheduled(env, new Date("2026-09-15T14:00:00.000Z"), 2);
+        await handleScheduled(env, NEXT_IDLE_NOW, 2);
       }
       const [newRow] = await backlogRows(NEXT_RECAP_WEEK_KEY, [league.id]);
       expect(newRow).toBeDefined();
       expect(["pending", "done"]).toContain(newRow?.status);
+    } finally {
+      LeagueBrain.prototype.attemptRecap = originalAttemptRecap;
+    }
+  });
+
+  it("drops leftover previous-week backlog rows on an idle tick without starting this week's enrollment", async () => {
+    const now = 1_805_831_000_000;
+    const league = await seedLeague("backlog_idle_rollover", now, "active");
+    await insertPendingRecap(league.id, RECAP_WEEK_KEY, now);
+    await putAppState(
+      SCHEDULED_RECAP_ENROLLMENT_KEY,
+      JSON.stringify({ weekKey: RECAP_WEEK_KEY, afterId: null, complete: true }),
+    );
+
+    const originalAttemptRecap = LeagueBrain.prototype.attemptRecap;
+    const recapCalls: string[] = [];
+    LeagueBrain.prototype.attemptRecap = async function (this: LeagueBrain) {
+      const dashboard = await this.getDashboard();
+      recapCalls.push(dashboard.leagueId);
+      return { status: "published", recap: { subject: "Should not recap", body: "Idle cleanup." } };
+    };
+
+    try {
+      expect(await backlogRows(RECAP_WEEK_KEY, [league.id])).toHaveLength(1);
+      const result = await handleScheduled(env, NEXT_IDLE_NOW);
+      expect(result).toEqual({ polled: 0, recapped: 0 });
+      expect(recapCalls).toEqual([]);
+      expect(await backlogRows(RECAP_WEEK_KEY, [league.id])).toEqual([]);
+      expect(await backlogCount(NEXT_RECAP_WEEK_KEY)).toBe(0);
+      expect(await recapEnrollmentState()).toEqual({
+        weekKey: RECAP_WEEK_KEY,
+        afterId: null,
+        complete: true,
+      });
     } finally {
       LeagueBrain.prototype.attemptRecap = originalAttemptRecap;
     }

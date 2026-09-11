@@ -75,9 +75,6 @@ function localD1PathChain(root) {
  * - Replaced ancestor: skip that entry and keep the remaining segments under the target.
  */
 function remainingSegmentsUnderLinkTarget(linkIndex) {
-  if (linkIndex === SEGMENTS_AFTER_REPO_ROOT.length) {
-    return [];
-  }
   return SEGMENTS_AFTER_REPO_ROOT.slice(linkIndex);
 }
 
@@ -259,6 +256,59 @@ describe("reset-local-d1 path guards", () => {
       );
       await access(keepPath);
     });
+  });
+
+  it("deletes a matching helper target that stays under tmpdir", async () => {
+    await withTempRoot(async ({ localD1Dir }) => {
+      const keepPath = await writeSentinel(localD1Dir, "db.sqlite");
+      const canonicalTmp = await realpath(os.tmpdir());
+      const canonicalTarget = await realpath(localD1Dir);
+      const relative = path.relative(canonicalTmp, canonicalTarget);
+      assert.ok(
+        relative.length > 0 && !relative.startsWith("..") && !path.isAbsolute(relative),
+        `helper target ${canonicalTarget} is not under tmpdir ${canonicalTmp}`,
+      );
+
+      await resetLocalD1MatchingExpected(localD1Dir, localD1Dir);
+
+      await assert.rejects(() => access(keepPath), { code: "ENOENT" });
+      await assert.rejects(() => access(localD1Dir), { code: "ENOENT" });
+    });
+  });
+
+  it("refuses a matching helper target whose realpath escapes tmpdir", async () => {
+    const canonicalTmp = await realpath(os.tmpdir());
+    const outside = await mkdtemp(path.join(os.homedir(), "cutman-reset-d1-outside-"));
+    const wrapper = await mkdtemp(path.join(os.tmpdir(), "cutman-reset-d1-escape-"));
+    try {
+      const outsideReal = await realpath(outside);
+      const relativeOutside = path.relative(canonicalTmp, outsideReal);
+      assert.ok(
+        relativeOutside.length === 0 ||
+          relativeOutside.startsWith("..") ||
+          path.isAbsolute(relativeOutside),
+        `outside dir ${outsideReal} is unexpectedly under tmpdir ${canonicalTmp}`,
+      );
+
+      const linkRoot = path.join(wrapper, "linked-root");
+      await symlink(outside, linkRoot);
+      const localD1Dir = path.join(linkRoot, "apps", "web", ...LOCAL_D1_SEGMENTS);
+      const keepPath = await writeSentinel(path.join(outside, "apps", "web", ...LOCAL_D1_SEGMENTS));
+      assert.notEqual(path.resolve(keepPath), path.join(repoRoot, localD1Suffix, "keep-me"));
+
+      await assert.rejects(
+        () => resetLocalD1MatchingExpected(localD1Dir, localD1Dir),
+        (error) => {
+          assert.match(error.message, /outside tmpdir/);
+          assert.doesNotMatch(error.message, /symbolic link/);
+          return true;
+        },
+      );
+      await access(keepPath);
+    } finally {
+      await rm(wrapper, { recursive: true, force: true });
+      await rm(outside, { recursive: true, force: true });
+    }
   });
 });
 

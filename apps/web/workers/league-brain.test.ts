@@ -1779,6 +1779,7 @@ describe("LeagueBrain persistTone", () => {
     env: Env;
     persistTone: LeagueBrain["persistTone"];
     putSetting(key: string, value: string): void;
+    bootstrap: LeagueBrain["bootstrap"];
     getDashboard: LeagueBrain["getDashboard"];
   };
 
@@ -1878,6 +1879,47 @@ describe("LeagueBrain persistTone", () => {
     );
     expect(result).toEqual({ ok: false, error: "save" });
     expect((await stub.getDashboard()).tone).toBe("playful");
+    expect((await getLeague(env.DB, leagueId))?.tone).toBe("playful");
+  });
+
+  it("keeps a newer Durable Object tone written while D1 is in flight", async () => {
+    const { stub, leagueId } = await bootLeague("tone-persist-bootstrap-race", "lg_tone_persist_bootstrap_race");
+    let releaseFirstWrite!: () => void;
+    let resolveFirstWriteStarted!: () => void;
+    const firstWriteStarted = new Promise<void>((resolve) => {
+      resolveFirstWriteStarted = resolve;
+    });
+    const firstWriteGate = new Promise<void>((resolve) => {
+      releaseFirstWrite = resolve;
+    });
+
+    const result = await withInterceptedToneDb(
+      stub,
+      async () => {
+        resolveFirstWriteStarted();
+        await firstWriteGate;
+        throw new Error("simulated d1 tone write failure");
+      },
+      async (brain) => {
+        const pending = brain.persistTone("savage");
+        await firstWriteStarted;
+        expect((await brain.getDashboard()).tone).toBe("savage");
+
+        await brain.bootstrap({
+          leagueId,
+          sleeperLeagueId: `sleeper-${leagueId}`,
+          name: "Tone League",
+          tone: "sportscenter",
+        });
+        expect((await brain.getDashboard()).tone).toBe("sportscenter");
+
+        releaseFirstWrite();
+        return pending;
+      },
+    );
+
+    expect(result).toEqual({ ok: false, error: "save" });
+    expect((await stub.getDashboard()).tone).toBe("sportscenter");
     expect((await getLeague(env.DB, leagueId))?.tone).toBe("playful");
   });
 

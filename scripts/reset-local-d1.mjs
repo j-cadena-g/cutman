@@ -25,6 +25,7 @@
  * The exact production path guard and CLI entrypoint behavior are unchanged.
  */
 import { lstat, realpath, rm } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -111,12 +112,60 @@ async function removeLocalD1Dir(targetDir) {
 }
 
 /**
+ * Canonicalize a possibly-missing path: realpath the nearest existing ancestor
+ * and append the unresolved suffix. Used only by the test helper so a symlink
+ * in that chain cannot escape os.tmpdir() while still matching path.resolve.
+ */
+async function resolveCanonicalPathAllowingMissing(targetDir) {
+  let current = path.resolve(targetDir);
+  const missingSegments = [];
+  for (;;) {
+    try {
+      const canonicalExisting = await realpath(current);
+      return path.join(canonicalExisting, ...missingSegments);
+    } catch (error) {
+      if (error && (error.code === "ENOENT" || error.code === "ENOTDIR")) {
+        const parent = path.dirname(current);
+        if (parent === current) {
+          throw new Error(`Refusing to delete path outside tmpdir: ${targetDir}`);
+        }
+        missingSegments.unshift(path.basename(current));
+        current = parent;
+        continue;
+      }
+      throw error;
+    }
+  }
+}
+
+function isStrictPathDescendant(parentDir, childDir) {
+  const relative = path.relative(parentDir, childDir);
+  return (
+    relative.length > 0 && !relative.startsWith("..") && !path.isAbsolute(relative)
+  );
+}
+
+/**
+ * Test-only extra guard: the canonical target must be a strict descendant of
+ * canonical `os.tmpdir()`. path.resolve equality does not follow symlinks, so
+ * this catches a matching target/expected pair that realpath-escapes tmp.
+ */
+async function assertResolvedPathIsStrictTmpDescendant(targetDir) {
+  const canonicalTarget = await resolveCanonicalPathAllowingMissing(targetDir);
+  const canonicalTmp = await realpath(os.tmpdir());
+  if (!isStrictPathDescendant(canonicalTmp, canonicalTarget)) {
+    throw new Error(`Refusing to delete path outside tmpdir: ${targetDir}`);
+  }
+}
+
+/**
  * Test-only deletion: removes targetDir only when it canonically matches expectedDir.
  * expectedDir is required and has no production default, so this cannot fall through to
  * the real local D1 directory.
  */
 export async function resetLocalD1MatchingExpected(targetDir, expectedDir) {
   assertCanonicalResolvedPath(targetDir, expectedDir);
+  await assertResolvedPathIsStrictTmpDescendant(targetDir);
   await removeLocalD1Dir(targetDir);
 }
 

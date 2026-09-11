@@ -251,7 +251,9 @@ export class LeagueBrain extends DurableObject<Env> {
       await setLeagueTone(this.env.DB, settings.leagueId, tone);
     } catch {
       try {
-        this.putSetting("tone", priorTone);
+        if (this.getSetting("tone") === tone) {
+          this.putSetting("tone", priorTone);
+        }
       } catch {
         return { ok: false, error: "desync" };
       }

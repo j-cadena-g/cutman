@@ -244,7 +244,7 @@ describe("render-wrangler-deploy-config output path", () => {
       assert.match(result.stderr, /Refusing to write Wrangler config/);
       assert.doesNotMatch(result.stderr, /CLOUDFLARE_ACCOUNT_ID/);
       assert.doesNotMatch(result.stderr, /PILOT_SLEEPER_LEAGUE_ID/);
-      await assert.rejects(() => readFile(outputPath));
+      await assert.rejects(() => readFile(outputPath), { code: "ENOENT" });
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -468,7 +468,7 @@ describe("render-wrangler-deploy-config output path", () => {
         );
         assert.match(written, useSleeperFixturesPattern("false"));
         assert.doesNotMatch(written, /"secrets"\s*:\s*\{/);
-        await assert.rejects(() => readFile(allowedOutputs.dev));
+        await assert.rejects(() => readFile(allowedOutputs.dev), { code: "ENOENT" });
         assert.deepEqual(await snapshotAllowedOutputs(), before);
       } finally {
         if (previousOutput === undefined) {
@@ -497,7 +497,7 @@ describe("render-wrangler-deploy-config output path", () => {
         new RegExp(`"PILOT_SLEEPER_LEAGUE_ID"\\s*:\\s*"${FAKE_PILOT_ID}"`),
       );
       assert.match(written, useSleeperFixturesPattern("false"));
-      await assert.rejects(() => readFile(allowedOutputs.production));
+      await assert.rejects(() => readFile(allowedOutputs.production), { code: "ENOENT" });
       await assert.rejects(
         () =>
           writeRenderedWranglerConfigForAllowedPaths({
@@ -556,7 +556,7 @@ describe("render-wrangler-deploy-config output path", () => {
         await readFile(allowedOutputs.dev, "utf8"),
         /"account_id"/,
       );
-      await assert.rejects(() => readFile(allowedOutputs.production));
+      await assert.rejects(() => readFile(allowedOutputs.production), { code: "ENOENT" });
       assert.deepEqual(await snapshotAllowedOutputs(), before);
     } finally {
       await rm(dir, { recursive: true, force: true });
@@ -584,7 +584,7 @@ describe("render-wrangler-deploy-config output path", () => {
           }),
         /Refusing to write Wrangler config/,
       );
-      await assert.rejects(() => readFile(allowedOutputs.production));
+      await assert.rejects(() => readFile(allowedOutputs.production), { code: "ENOENT" });
       assert.deepEqual(await snapshotAllowedOutputs(), before);
     });
   });
@@ -668,8 +668,8 @@ describe("render-wrangler-deploy-config", () => {
           return true;
         },
       );
-      await assert.rejects(() => readFile(allowedOutputs.production));
-      await assert.rejects(() => readFile(allowedOutputs.dev));
+      await assert.rejects(() => readFile(allowedOutputs.production), { code: "ENOENT" });
+      await assert.rejects(() => readFile(allowedOutputs.dev), { code: "ENOENT" });
       assert.deepEqual(await snapshotAllowedOutputs(), before);
     });
   });
@@ -830,11 +830,7 @@ describe("render-wrangler-deploy-config", () => {
   });
 
   it("renders both production KV ids onto the matching bindings", () => {
-    const rendered = renderProduction(baseEnv());
-    assert.match(rendered, kvBindingIdPattern("PLAYERS", FAKE_PLAYERS_KV_ID));
-    assert.match(rendered, kvBindingIdPattern("EXPLORER_CACHE", FAKE_EXPLORER_KV_ID));
-    assert.doesNotMatch(rendered, kvBindingIdPattern("PLAYERS", FAKE_EXPLORER_KV_ID));
-    assert.doesNotMatch(rendered, kvBindingIdPattern("EXPLORER_CACHE", FAKE_PLAYERS_KV_ID));
+    assertMappedKvIds(renderProduction(baseEnv()));
   });
 
   it("replaces PLAYERS id when id appears before binding in the enclosing object", () => {

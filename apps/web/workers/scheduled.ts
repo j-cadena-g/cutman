@@ -509,9 +509,11 @@ export async function handleScheduled(
   });
 
   let enrollment = await readRecapEnrollmentState(env.DB);
+  if (enrollment?.weekKey && enrollment.weekKey !== weekKey) {
+    await deleteStaleRecapAttempts(env.DB, weekKey);
+  }
   if (recapWindow) {
     if (enrollment?.weekKey !== weekKey) {
-      await deleteStaleRecapAttempts(env.DB, weekKey);
       enrollment = { weekKey, afterId: null, complete: false };
     }
     if (!enrollment.complete) {
@@ -590,13 +592,13 @@ export async function handleScheduled(
       }
       if (shouldRecap) {
         const result = await stub.attemptRecap();
-        if (result.status === "published") recapped += 1;
         await settleRecapAttempt(env.DB, {
           leagueId: league.id,
           weekKey,
           reason: recapAttemptReason(result),
           now: nowMs,
         });
+        if (result.status === "published") recapped += 1;
       }
     } catch (error) {
       logScheduledLeagueFailure(error);
