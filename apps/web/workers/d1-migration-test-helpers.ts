@@ -3,6 +3,10 @@ import { env } from "cloudflare:test";
 
 export type D1Migration = { name: string; queries: string[] };
 
+export function allMigrations(): D1Migration[] {
+  return (env as Env & { TEST_MIGRATIONS: D1Migration[] }).TEST_MIGRATIONS;
+}
+
 export function migrationNamed(fragment: string): D1Migration[] {
   const found = (env as Env & { TEST_MIGRATIONS: D1Migration[] }).TEST_MIGRATIONS.filter((migration) =>
     migration.name.includes(fragment),

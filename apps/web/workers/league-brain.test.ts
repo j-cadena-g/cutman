@@ -29,11 +29,10 @@ import {
   UNBOOTSTRAPPED_MESSAGE,
   type LegacyBrainState,
 } from "./league-brain.ts";
-
-type D1Migration = { name: string; queries: string[] };
+import { allMigrations } from "./d1-migration-test-helpers.ts";
 
 beforeAll(async () => {
-  await applyD1Migrations(env.DB, (env as Env & { TEST_MIGRATIONS: D1Migration[] }).TEST_MIGRATIONS);
+  await applyD1Migrations(env.DB, allMigrations());
 });
 
 function snapshot(matchups = fixtureMatchupsFinal): LeagueSnapshot {

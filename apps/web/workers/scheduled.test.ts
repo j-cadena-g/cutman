@@ -32,11 +32,10 @@ import {
   STALE_RECAP_ATTEMPT_SWEEP_LIMIT,
   type RecapEnrollmentState,
 } from "./scheduled.ts";
-
-type D1Migration = { name: string; queries: string[] };
+import { allMigrations } from "./d1-migration-test-helpers.ts";
 
 beforeAll(async () => {
-  await applyD1Migrations(env.DB, (env as Env & { TEST_MIGRATIONS: D1Migration[] }).TEST_MIGRATIONS);
+  await applyD1Migrations(env.DB, allMigrations());
 });
 
 // Wednesday 3:00 America/New_York (EDT) — poll hour, not Tuesday recap.

@@ -22,11 +22,10 @@ import {
   verifyCommissionerChallenge,
   type OnboardingDeps,
 } from "../app/lib/onboarding.server.ts";
-
-type D1Migration = { name: string; queries: string[] };
+import { allMigrations } from "./d1-migration-test-helpers.ts";
 
 beforeAll(async () => {
-  await applyD1Migrations(env.DB, (env as Env & { TEST_MIGRATIONS: D1Migration[] }).TEST_MIGRATIONS);
+  await applyD1Migrations(env.DB, allMigrations());
 });
 
 // Every test gets its own pilot league id (see `nextPilotLeagueId` below) instead of sharing one
@@ -1601,11 +1600,13 @@ describe("verifyCommissionerChallenge", () => {
         },
       },
     });
+    let interceptedConsumeUpdate = false;
     const consumeFailDb = new Proxy(env.DB, {
       get(target, prop, receiver) {
         if (prop === "prepare") {
           return (sql: string) => {
             if (typeof sql === "string" && sql.includes("SET status = 'verified'")) {
+              interceptedConsumeUpdate = true;
               throw new Error("simulated consume failure");
             }
             return target.prepare(sql);
@@ -1627,6 +1628,7 @@ describe("verifyCommissionerChallenge", () => {
         { clerkUserId: user.id },
       ),
     ).rejects.toThrow("simulated consume failure");
+    expect(interceptedConsumeUpdate).toBe(true);
     expect((await getVerification(env.DB, requested.verificationId))?.status).toBe("pending");
     expect(await getLeagueBySleeperId(env.DB, pilotSleeperLeagueId)).toBeNull();
   });

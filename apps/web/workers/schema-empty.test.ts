@@ -2,13 +2,13 @@
 import { applyD1Migrations, env } from "cloudflare:test";
 import { EXAMPLE_SLEEPER_LEAGUE_ID, ensureSchema, getLeagueBySleeperId } from "@cutman/db";
 import { beforeAll, describe, expect, it } from "vitest";
-import { type D1Migration, userTables } from "./d1-migration-test-helpers.ts";
+import { allMigrations, userTables } from "./d1-migration-test-helpers.ts";
 
 // Own isolate: @cloudflare/vitest-pool-workers isolates storage per test file by default
 // (vitest.config.ts does not set --no-isolate). A global COUNT(*) = 0 cannot live in
 // db-seed.test.ts, which inserts league rows in later tests.
 beforeAll(async () => {
-  await applyD1Migrations(env.DB, (env as Env & { TEST_MIGRATIONS: D1Migration[] }).TEST_MIGRATIONS);
+  await applyD1Migrations(env.DB, allMigrations());
 });
 
 describe("schema", () => {

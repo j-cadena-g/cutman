@@ -24,6 +24,7 @@ import {
   ORIGIN_QUOTA_PER_HOUR,
   type ExplorerCache,
 } from "../app/lib/sleeper-explorer.server.ts";
+import { allMigrations } from "./d1-migration-test-helpers.ts";
 
 const FIXED_NOW = 1_800_000_000_000;
 const CLERK_A = "clerk_cache_a";
@@ -64,10 +65,8 @@ const NOT_LINKED: DiscoverLeaguesResult = {
   error: { kind: "sleeper_account_not_linked" },
 };
 
-type D1Migration = { name: string; queries: string[] };
-
 beforeAll(async () => {
-  await applyD1Migrations(env.DB, (env as Env & { TEST_MIGRATIONS: D1Migration[] }).TEST_MIGRATIONS);
+  await applyD1Migrations(env.DB, allMigrations());
 });
 
 function recordingCache(store = new Map<string, string>()): {
