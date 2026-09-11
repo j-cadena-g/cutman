@@ -193,6 +193,28 @@ describe("HttpSleeperClient errors", () => {
     expect((reserved as Error).message).not.toContain("league");
   });
 
+  it("redacts unknown path prefixes after the first segment", () => {
+    const error = new SleeperRequestError("/draft/abc123", 502);
+    expect(error.message).toBe("Sleeper /draft/:redacted failed: 502");
+    expect(error.message).not.toContain("abc123");
+    expect(error.path).toBe("/draft/abc123");
+    expect(Object.keys(error)).not.toContain("path");
+  });
+
+  it("redacts the league id on /league/:id/users without dropping the sub-resource", async () => {
+    const client = new HttpSleeperClient(async () => new Response("nope", { status: 502 }));
+    const error = await client.getLeagueUsers("fake-league-id").then(
+      () => {
+        throw new Error("expected getLeagueUsers to reject");
+      },
+      (rejection: unknown) => rejection,
+    );
+    expect(error).toEqual(expect.objectContaining({ path: "/league/fake-league-id/users", status: 502 }));
+    expect((error as Error).message).toBe("Sleeper /league/:id/users failed: 502");
+    expect((error as Error).message).not.toContain("fake-league-id");
+    expect((error as SleeperRequestError).path).toBe("/league/fake-league-id/users");
+  });
+
   it("does not call fetch as a method of the client (Workers native fetch throws Illegal invocation)", async () => {
     const nflState = { week: 1, season_type: "regular", season: "2026", league_season: "2026" };
     function thisSensitiveFetch(this: unknown, _input: Parameters<typeof fetch>[0]) {

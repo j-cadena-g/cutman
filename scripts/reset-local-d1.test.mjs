@@ -75,9 +75,6 @@ function localD1PathChain(root) {
  * - Replaced ancestor: skip that entry and keep the remaining segments under the target.
  */
 function remainingSegmentsUnderLinkTarget(linkIndex) {
-  if (linkIndex === 0) {
-    return [...SEGMENTS_AFTER_REPO_ROOT];
-  }
   if (linkIndex === SEGMENTS_AFTER_REPO_ROOT.length) {
     return [];
   }

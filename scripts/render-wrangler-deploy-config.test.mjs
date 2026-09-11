@@ -67,6 +67,7 @@ function baseEnv(overrides = {}) {
   for (const key of Object.keys(env)) {
     if (key.startsWith("V1_")) delete env[key];
   }
+  delete env.WRANGLER_RENDER_OUTPUT;
   return {
     ...env,
     CLOUDFLARE_ACCOUNT_ID: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -115,7 +116,7 @@ async function snapshotFile(filePath) {
       size: info.size,
     };
   } catch (error) {
-    if (error && error.code === "ENOENT") {
+    if (error && (error.code === "ENOENT" || error.code === "ENOTDIR")) {
       return { exists: false };
     }
     throw error;
@@ -314,6 +315,20 @@ describe("render-wrangler-deploy-config output path", () => {
       );
     } finally {
       await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("treats ENOTDIR from snapshotFile as absent without touching repo outputs", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "cutman-wrangler-enotdir-"));
+    try {
+      const filePath = path.join(dir, "not-a-directory");
+      await writeFile(filePath, "x");
+      const nested = path.join(filePath, "child.jsonc");
+      const before = await snapshotAllowedOutputs();
+      assert.deepEqual(await snapshotFile(nested), { exists: false });
+      assert.deepEqual(await snapshotAllowedOutputs(), before);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
     }
   });
 
@@ -753,6 +768,32 @@ describe("render-wrangler-deploy-config", () => {
     assert.match(
       renderDev(baseEnv({ USE_SLEEPER_FIXTURES: "\tfalse\n" })),
       useSleeperFixturesPattern("false"),
+    );
+  });
+
+  it("rejects a non-string optional env value without echoing it", () => {
+    const leaked = { toString: () => "leaked-optional-value" };
+    assert.throws(
+      () => renderProduction(baseEnv({ PILOT_SLEEPER_LEAGUE_ID: leaked })),
+      (error) => {
+        assert.equal(
+          error.message,
+          "Invalid PILOT_SLEEPER_LEAGUE_ID; expected a string value.",
+        );
+        assert.doesNotMatch(error.message, /leaked-optional-value/);
+        return true;
+      },
+    );
+    assert.throws(
+      () => renderDev(baseEnv({ PILOT_SLEEPER_LEAGUE_ID: 42 })),
+      (error) => {
+        assert.equal(
+          error.message,
+          "Invalid PILOT_SLEEPER_LEAGUE_ID; expected a string value.",
+        );
+        assert.doesNotMatch(error.message, /42/);
+        return true;
+      },
     );
   });
 

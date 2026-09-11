@@ -14,6 +14,8 @@ function normalizedSleeperPath(path: string): string {
     if ((segments[2] === "matchups" || segments[2] === "transactions") && segments[3]) {
       segments[3] = ":id";
     }
+  } else if (segments[0] !== "state" && segments[0] !== "players") {
+    return `/${segments[0] ?? ""}${segments.length > 1 ? "/:redacted" : ""}`;
   }
   return `/${segments.join("/")}`;
 }

@@ -15,6 +15,14 @@
  * Forward additive migrations (`0003_recap_attempt_backlog.sql`, `0004_explorer_origin_quota.sql`)
  * reapply with `pnpm run db:migrate:local`; a reset is only required when the local shape
  * predates those CREATE IF NOT EXISTS statements or a rewritten earlier migration.
+ *
+ * Residual symlink-replacement race (accepted): this script is local-only and never remote.
+ * Before rm, the walk lstats the derived repo root, `apps`, `apps/web`, then each
+ * LOCAL_D1_SEGMENTS component, and refuses any symbolic link in that chain. After that
+ * check, `fs.rm` still follows a path. A symlink swapped in between check and rm is a
+ * residual TOCTOU race. It is accepted because this is a developer-local wipe of the
+ * hardcoded Miniflare D1 directory and Node has no portable nofollow recursive rm.
+ * The exact production path guard and CLI entrypoint behavior are unchanged.
  */
 import { lstat, realpath, rm } from "node:fs/promises";
 import path from "node:path";
@@ -91,6 +99,9 @@ export async function assertLocalD1PathHasNoSymlinks(targetWebDir) {
   }
 }
 
+// Residual TOCTOU: the walk lstats the chain, then rm follows the path. A symlink
+// swapped in between those calls is accepted for this local-only wipe of the
+// hardcoded Miniflare D1 directory; Node fs.rm cannot take a nofollow handle.
 async function removeLocalD1Dir(targetDir) {
   const targetWebDir = resolveLocalD1WebDir(targetDir);
   await assertLocalD1PathHasNoSymlinks(targetWebDir);
@@ -135,8 +146,8 @@ export async function isSameRealPath(leftPath, rightPath) {
  */
 export async function isCliEntrypoint(argvPath, modulePath) {
   if (!argvPath) return false;
-  await realpath(argvPath);
-  return isSameRealPath(argvPath, modulePath);
+  const resolvedArgvPath = await realpath(argvPath);
+  return isSameRealPath(resolvedArgvPath, modulePath);
 }
 
 if (await isCliEntrypoint(process.argv[1], fileURLToPath(import.meta.url))) {

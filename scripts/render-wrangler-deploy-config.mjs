@@ -264,7 +264,12 @@ export async function resolveAndAssertOutputPath(
 }
 
 function getOptionalValue(name, env) {
-  return env[name]?.trim() || "";
+  const raw = env[name];
+  if (raw == null) return "";
+  if (typeof raw !== "string") {
+    throw new Error(`Invalid ${name}; expected a string value.`);
+  }
+  return raw.trim();
 }
 
 function getOptionalValidatedValue(name, env) {

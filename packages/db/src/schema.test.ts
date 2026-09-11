@@ -253,7 +253,11 @@ describe("SCHEMA_SQL", () => {
   });
 
   it("does not embed live Sleeper ids in migration SQL", () => {
-    const liveId = /\b[1-9]\d{10,}\b/;
+    const liveId = /(?<!\d)[1-9]\d{10,}(?!\d)/;
+    // Word-boundary `\b` misses a digit-run glued to an identifier (`legacy_123...`).
+    expect("legacy_12345678901").toMatch(liveId);
+    expect("id=12345678901").toMatch(liveId);
+    expect("v1").not.toMatch(liveId);
     expect(readMigration("0001_init.sql")).not.toMatch(liveId);
     expect(readMigration("0002_sleeper_onboarding.sql")).not.toMatch(liveId);
     expect(readMigration("0003_recap_attempt_backlog.sql")).not.toMatch(liveId);
