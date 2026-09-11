@@ -35,6 +35,11 @@ export const LEGACY_IMPORT_PENDING_MESSAGE = "League history import is pending";
 /** Thrown from readSettings when leagueId or sleeperLeagueId settings are missing. */
 export const UNBOOTSTRAPPED_MESSAGE = "Cutman is not bootstrapped";
 
+/** Thrown inside insertLegacyState when a PK already holds a different row. transactionSync rolls back. */
+const LEGACY_IMPORT_CONFLICT_MESSAGE = "Legacy import conflict";
+
+type LegacySqlValue = string | number | null;
+
 function bootstrapBibleEntry(name: string, tone: Tone): string {
   return `${name} is in the book. Tone: ${tone}.`;
 }
@@ -509,8 +514,8 @@ export class LeagueBrain extends DurableObject<Env> {
     // Already-initialized non-empty targets keep their rows. Bootstrap bible seed
     // alone is not history: a seed-only object must still export from the source.
     // A pending import with no history must retry; pending + existing rows still
-    // copy via INSERT OR IGNORE so a rejected export cannot be closed out by
-    // poll data.
+    // copy so a rejected export cannot be closed out by poll data. Each copied row
+    // must be newly inserted or proven identical; a differing PK rolls the copy back.
     if (!this.isLegacyImportPending() && this.hasHistoricalRows()) {
       this.ctx.storage.transactionSync(() => this.markLegacyImportComplete(input.sleeperLeagueId));
       return;
@@ -529,9 +534,9 @@ export class LeagueBrain extends DurableObject<Env> {
       return;
     }
 
-    // SqlStorage has no BEGIN/COMMIT. transactionSync batches the INSERT OR IGNORE
-    // writes; a throw rolls them back and the next bootstrap retries. Completion
-    // clears pending / failure count in the same transaction so a partial copy cannot look "done".
+    // SqlStorage has no BEGIN/COMMIT. transactionSync batches the copy; a throw
+    // rolls it back and the next bootstrap retries. Completion clears pending /
+    // failure count in the same transaction so a partial copy cannot look "done".
     this.ctx.storage.transactionSync(() => {
       if (legacy) this.insertLegacyState(legacy);
       this.markLegacyImportComplete(input.sleeperLeagueId);
@@ -652,45 +657,101 @@ export class LeagueBrain extends DurableObject<Env> {
     return bible.some((row) => !isBootstrapBibleSeed(row.entry, name, tone));
   }
 
+  /**
+   * Drop this object's exact bootstrap bible placeholder before copying source
+   * rows. Destination seed is typically id=1 and would otherwise collide with a
+   * source seed or first bible entry; INSERT OR IGNORE would keep the placeholder
+   * and lose source history. The delete is in the same transaction as the copy.
+   */
+  private removeDestinationBootstrapBibleSeed(): void {
+    const name = this.getSetting("name");
+    const tone = this.getSetting("tone");
+    if (!name || !tone || !isTone(tone)) return;
+    this.ctx.storage.sql.exec("DELETE FROM bible WHERE entry = ?", bootstrapBibleEntry(name, tone));
+  }
+
+  /**
+   * INSERT OR IGNORE, then require completeness: SqlStorageCursor.rowsWritten > 0
+   * means a new row; otherwise the conflicting PK must exist and match field-for-field
+   * (idempotent replay). Drain the cursor first — rowsWritten is billing metadata
+   * that may increase until the statement is fully consumed. A missing or differing
+   * conflict throws so transactionSync rolls back and markLegacyImportComplete is skipped.
+   */
+  private insertLegacyRowOrIdentical(
+    insertSql: string,
+    insertBindings: LegacySqlValue[],
+    selectSql: string,
+    selectBindings: LegacySqlValue[],
+    expected: Record<string, LegacySqlValue>,
+  ): void {
+    const cursor = this.ctx.storage.sql.exec(insertSql, ...insertBindings);
+    cursor.toArray();
+    if (cursor.rowsWritten > 0) return;
+    const existing = this.ctx.storage.sql.exec(selectSql, ...selectBindings).toArray()[0] as
+      | Record<string, LegacySqlValue>
+      | undefined;
+    if (!existing) throw new Error(LEGACY_IMPORT_CONFLICT_MESSAGE);
+    for (const [key, value] of Object.entries(expected)) {
+      if (existing[key] !== value) throw new Error(LEGACY_IMPORT_CONFLICT_MESSAGE);
+    }
+  }
+
   private insertLegacyState(legacy: LegacyBrainState): void {
+    this.removeDestinationBootstrapBibleSeed();
     for (const row of legacy.snapshots) {
-      this.ctx.storage.sql.exec(
+      this.insertLegacyRowOrIdentical(
         "INSERT OR IGNORE INTO snapshots (id, week, payload_hash, payload, created_at) VALUES (?, ?, ?, ?, ?)",
-        row.id,
-        row.week,
-        row.payloadHash,
-        row.payload,
-        row.createdAt,
+        [row.id, row.week, row.payloadHash, row.payload, row.createdAt],
+        "SELECT id, week, payload_hash AS payloadHash, payload, created_at AS createdAt FROM snapshots WHERE id = ?",
+        [row.id],
+        {
+          id: row.id,
+          week: row.week,
+          payloadHash: row.payloadHash,
+          payload: row.payload,
+          createdAt: row.createdAt,
+        },
       );
     }
     for (const row of legacy.beats) {
-      this.ctx.storage.sql.exec(
+      this.insertLegacyRowOrIdentical(
         "INSERT OR IGNORE INTO beats (id, kind, copy, facts, week, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-        row.id,
-        row.kind,
-        row.copy,
-        row.facts,
-        row.week,
-        row.createdAt,
+        [row.id, row.kind, row.copy, row.facts, row.week, row.createdAt],
+        "SELECT id, kind, copy, facts, week, created_at AS createdAt FROM beats WHERE id = ?",
+        [row.id],
+        {
+          id: row.id,
+          kind: row.kind,
+          copy: row.copy,
+          facts: row.facts,
+          week: row.week,
+          createdAt: row.createdAt,
+        },
       );
     }
     for (const row of legacy.bible) {
-      this.ctx.storage.sql.exec(
+      this.insertLegacyRowOrIdentical(
         "INSERT OR IGNORE INTO bible (id, entry, created_at) VALUES (?, ?, ?)",
-        row.id,
-        row.entry,
-        row.createdAt,
+        [row.id, row.entry, row.createdAt],
+        "SELECT id, entry, created_at AS createdAt FROM bible WHERE id = ?",
+        [row.id],
+        { id: row.id, entry: row.entry, createdAt: row.createdAt },
       );
     }
     for (const row of legacy.recaps) {
-      this.ctx.storage.sql.exec(
+      this.insertLegacyRowOrIdentical(
         "INSERT OR IGNORE INTO recaps (week, subject, body, facts, emailed_at, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-        row.week,
-        row.subject,
-        row.body,
-        row.facts,
-        row.emailedAt,
-        row.createdAt,
+        [row.week, row.subject, row.body, row.facts, row.emailedAt, row.createdAt],
+        "SELECT week, subject, body, facts, emailed_at AS emailedAt, created_at AS createdAt FROM recaps WHERE week = ?",
+        [row.week],
+        {
+          week: row.week,
+          subject: row.subject,
+          body: row.body,
+          facts: row.facts,
+          emailedAt: row.emailedAt,
+          createdAt: row.createdAt,
+        },
       );
     }
   }

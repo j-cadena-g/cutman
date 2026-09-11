@@ -2,8 +2,7 @@
 import { applyD1Migrations, env } from "cloudflare:test";
 import { EXAMPLE_SLEEPER_LEAGUE_ID, ensureSchema, getLeagueBySleeperId } from "@cutman/db";
 import { beforeAll, describe, expect, it } from "vitest";
-
-type D1Migration = { name: string; queries: string[] };
+import { type D1Migration, userTables } from "./d1-migration-test-helpers.ts";
 
 // Own isolate: @cloudflare/vitest-pool-workers isolates storage per test file by default
 // (vitest.config.ts does not set --no-isolate). A global COUNT(*) = 0 cannot live in
@@ -11,18 +10,6 @@ type D1Migration = { name: string; queries: string[] };
 beforeAll(async () => {
   await applyD1Migrations(env.DB, (env as Env & { TEST_MIGRATIONS: D1Migration[] }).TEST_MIGRATIONS);
 });
-
-async function userTables(): Promise<string[]> {
-  const result = await env.DB.prepare(
-    `SELECT name FROM sqlite_master
-     WHERE type = 'table'
-       AND name NOT LIKE 'sqlite_%'
-       AND name NOT LIKE '_cf_%'
-       AND name != 'd1_migrations'
-     ORDER BY name`,
-  ).all<{ name: string }>();
-  return result.results.map((row) => row.name);
-}
 
 describe("schema", () => {
   it("does not insert placeholder league rows", async () => {

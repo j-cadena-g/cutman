@@ -742,6 +742,89 @@ describe("handleScheduled recap backlog", () => {
     }
   });
 
+  it("on a poll hour with pending backlog, processes only that bounded page and does not advance the regular cursor", async () => {
+    const now = 1_805_814_000_000;
+    const backlogA = await seedLeague("poll_backlog_a", now, "active");
+    const backlogB = await seedLeague("poll_backlog_b", now + 1, "active");
+    const backlogC = await seedLeague("poll_backlog_c", now + 2, "active");
+    const outside = await seedLeague("poll_backlog_outside", now + 3, "active");
+    const oursIds = [backlogA.id, backlogB.id, backlogC.id, outside.id];
+    const backlogIds = [backlogA.id, backlogB.id, backlogC.id].sort();
+    const expectedPage = backlogIds.slice(0, 2);
+    const deferredBacklogId = backlogIds[2];
+    if (expectedPage.length !== 2 || deferredBacklogId === undefined) {
+      throw new Error("expected three backlog league ids");
+    }
+    const cursorBefore = JSON.stringify({ afterId: "cursor_must_not_move" });
+    await putAppState(SCHEDULED_LEAGUE_CURSOR_KEY, cursorBefore);
+
+    for (const league of [backlogA, backlogB, backlogC]) {
+      await env.DB.prepare(
+        `INSERT INTO recap_attempt_backlog (league_id, week_key, status, attempts, last_error, created_at, updated_at)
+         VALUES (?, ?, 'pending', 0, NULL, ?, ?)`,
+      )
+        .bind(league.id, RECAP_WEEK_KEY, now, now)
+        .run();
+    }
+
+    const polledIds: string[] = [];
+    const recapIds: string[] = [];
+    const originalPoll = LeagueBrain.prototype.poll;
+    const originalAttemptRecap = LeagueBrain.prototype.attemptRecap;
+    const originalWarn = console.warn;
+    const warnings: unknown[][] = [];
+    LeagueBrain.prototype.poll = async function (this: LeagueBrain) {
+      const dashboard = await this.getDashboard();
+      polledIds.push(dashboard.leagueId);
+      return { wroteBeat: false, hash: "test", facts: 0 };
+    };
+    LeagueBrain.prototype.attemptRecap = async function (this: LeagueBrain) {
+      const dashboard = await this.getDashboard();
+      recapIds.push(dashboard.leagueId);
+      return { status: "skipped_not_final" };
+    };
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args);
+    };
+
+    try {
+      const limit = 2;
+      const result = await handleScheduled(env, POLL_NOW, limit);
+      expect(result).toEqual({ polled: limit, recapped: 0 });
+      expect(polledIds).toEqual(expectedPage);
+      expect(recapIds).toEqual(expectedPage);
+      expect(polledIds).not.toContain(outside.id);
+      expect(polledIds).not.toContain(deferredBacklogId);
+
+      expect(await scheduledCursorValue()).toBe(cursorBefore);
+      expect(await env.PLAYERS.get(SCHEDULED_LEAGUE_CURSOR_KEY)).toBeNull();
+      expect(warnings).toEqual([]);
+
+      const rows = await backlogRows(RECAP_WEEK_KEY, oursIds);
+      expect(rows).toHaveLength(3);
+      expect(rows.find((row) => row.league_id === expectedPage[0])).toMatchObject({
+        status: "pending",
+        attempts: 1,
+        last_error: "skipped_not_final",
+      });
+      expect(rows.find((row) => row.league_id === expectedPage[1])).toMatchObject({
+        status: "pending",
+        attempts: 1,
+        last_error: "skipped_not_final",
+      });
+      expect(rows.find((row) => row.league_id === deferredBacklogId)).toMatchObject({
+        status: "pending",
+        attempts: 0,
+        last_error: null,
+      });
+      expect(rows.some((row) => row.league_id === outside.id)).toBe(false);
+    } finally {
+      LeagueBrain.prototype.poll = originalPoll;
+      LeagueBrain.prototype.attemptRecap = originalAttemptRecap;
+      console.warn = originalWarn;
+    }
+  });
+
   it("does not select pending rows at or above the attempt cap", async () => {
     const now = 1_805_813_000_000;
     const league = await seedLeague("backlog_at_cap", now, "active");

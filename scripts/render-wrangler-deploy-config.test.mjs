@@ -7,6 +7,7 @@ import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import {
   assertPathChainHasNoSymlinks,
+  isCliEntrypoint,
   isSameRealPath,
   PLACEHOLDER_EXPLORER_KV_ID,
   PLACEHOLDER_PILOT_ID,
@@ -354,6 +355,45 @@ describe("render-wrangler-deploy-config output path", () => {
       await isSameRealPath("/this/path/does/not/exist.mjs", scriptPath),
       false,
     );
+  });
+
+  it("treats an absent argv path as a safe non-entrypoint", async () => {
+    assert.equal(await isCliEntrypoint("", scriptPath), false);
+    assert.equal(await isCliEntrypoint(undefined, scriptPath), false);
+  });
+
+  it("fails loudly when argv is present but unresolvable", async () => {
+    await assert.rejects(
+      () => isCliEntrypoint("/this/path/does/not/exist.mjs", scriptPath),
+      { code: "ENOENT" },
+    );
+
+    const result = spawnSync(
+      process.execPath,
+      [
+        "--input-type=module",
+        "-e",
+        'process.argv[1] = "/this/path/does/not/exist.mjs"; await import("./scripts/render-wrangler-deploy-config.mjs");',
+      ],
+      {
+        cwd: repoRoot,
+        env: process.env,
+        encoding: "utf8",
+      },
+    );
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /ENOENT/);
+  });
+
+  it("treats a symlink to this module as the CLI entrypoint", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "cutman-wrangler-entrypoint-link-"));
+    const linkPath = path.join(dir, "render-wrangler-deploy-config.mjs");
+    try {
+      await symlink(scriptPath, linkPath);
+      assert.equal(await isCliEntrypoint(linkPath, scriptPath), true);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   it("selects the production default when injected env omits output even if process.env points elsewhere", async () => {

@@ -537,6 +537,50 @@ describe("LeagueBrain legacy Durable Object migration", () => {
     await insertBible(stub, `${name} is in the book. Tone: ${tone}.`);
   }
 
+  async function putLegacyImportPending(stub: DurableObjectStub<LeagueBrain>): Promise<void> {
+    await runInDurableObject(stub, async (instance) => {
+      const brain = instance as unknown as { putSetting(key: string, value: string): void };
+      brain.putSetting("legacyImportPending", "1");
+    });
+  }
+
+  async function seedIdenticalLegacyHistory(stub: DurableObjectStub<LeagueBrain>): Promise<void> {
+    await runInDurableObject(stub, async (_instance, state) => {
+      state.storage.sql.exec(
+        "INSERT INTO snapshots (id, week, payload_hash, payload, created_at) VALUES (?, ?, ?, ?, ?)",
+        7,
+        3,
+        "hash-legacy-snap",
+        JSON.stringify(LEGACY_SNAPSHOT),
+        SNAPSHOT_CREATED_AT,
+      );
+      state.storage.sql.exec(
+        "INSERT INTO beats (id, kind, copy, facts, week, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        4,
+        "trade",
+        "CeeDee walked so the chat could run.",
+        LEGACY_FACTS,
+        3,
+        BEAT_CREATED_AT,
+      );
+      state.storage.sql.exec(
+        "INSERT INTO bible (id, entry, created_at) VALUES (?, ?, ?)",
+        9,
+        "Week 2: the trade that split the group chat.",
+        BIBLE_CREATED_AT,
+      );
+      state.storage.sql.exec(
+        "INSERT INTO recaps (week, subject, body, facts, emailed_at, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        3,
+        "Week 3 belongs to Alex",
+        "CeeDee changed hands and the chat lost its mind.",
+        LEGACY_FACTS,
+        RECAP_EMAILED_AT,
+        RECAP_CREATED_AT,
+      );
+    });
+  }
+
   async function historicalRows(stub: DurableObjectStub<LeagueBrain>): Promise<boolean> {
     return runInDurableObject(stub, async (instance) => (instance as unknown as TestBrain).hasHistoricalRows());
   }
@@ -1458,11 +1502,15 @@ describe("LeagueBrain legacy Durable Object migration", () => {
     expect(migrated.recaps).toEqual([
       expect.objectContaining({ week: 3, subject: "Week 3 belongs to Alex" }),
     ]);
-    expect(migrated.bible).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ entry: "Cutman League is in the book. Tone: playful." }),
-        expect.objectContaining({ id: 9, entry: "Week 2: the trade that split the group chat." }),
-      ]),
+    expect(migrated.bible).toEqual([
+      {
+        id: 9,
+        entry: "Week 2: the trade that split the group chat.",
+        created_at: BIBLE_CREATED_AT,
+      },
+    ]);
+    expect(migrated.bible.some((row) => row.entry === "Cutman League is in the book. Tone: playful.")).toBe(
+      false,
     );
     expect(migrated.settings).toEqual(
       expect.arrayContaining([{ key: "legacyMigratedFrom", value: sleeperId }]),
@@ -1570,6 +1618,159 @@ describe("LeagueBrain legacy Durable Object migration", () => {
         { key: "legacyMigratedFrom", value: sleeperId },
       ]),
     );
+  });
+
+  it("rolls back every copied row and skips the completion marker when a PK already holds a different row", async () => {
+    const sleeperId = "900000000000000096";
+    const internalId = `legacy_${sleeperId}`;
+    await seedLegacyBrain(sleeperId, { leagueId: sleeperId, sleeperLeagueId: sleeperId });
+    const next = env.LEAGUE_BRAIN.getByName(internalId);
+    await seedExactBootstrapBible(next, "Cutman League", "playful");
+    await putLegacyImportPending(next);
+    await runInDurableObject(next, async (_instance, state) => {
+      state.storage.sql.exec(
+        "INSERT INTO recaps (week, subject, body, facts, emailed_at, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        3,
+        "Dest already wrote a different week 3 recap",
+        "This must not be overwritten, and source snapshots must not stick.",
+        LEGACY_FACTS,
+        RECAP_EMAILED_AT,
+        RECAP_CREATED_AT,
+      );
+    });
+    await instrumentLegacyExport(next);
+
+    await next.bootstrap({
+      leagueId: internalId,
+      sleeperLeagueId: sleeperId,
+      name: "Cutman League",
+      tone: "playful",
+    });
+
+    expect(await legacyExportCallCount(next)).toBe(1);
+    const rolledBack = await readBrainSql(next);
+    expect(rolledBack.snapshots).toEqual([]);
+    expect(rolledBack.beats).toEqual([]);
+    expect(rolledBack.bible).toEqual([
+      expect.objectContaining({ entry: "Cutman League is in the book. Tone: playful." }),
+    ]);
+    expect(rolledBack.recaps).toEqual([
+      expect.objectContaining({
+        week: 3,
+        subject: "Dest already wrote a different week 3 recap",
+      }),
+    ]);
+    expect(rolledBack.settings.some((row) => row.key === "legacyMigratedFrom")).toBe(false);
+    expect(rolledBack.settings).toEqual(
+      expect.arrayContaining([
+        { key: "legacyImportPending", value: "1" },
+        { key: "legacyImportFailureCount", value: "1" },
+      ]),
+    );
+  });
+
+  it("accepts an exact field-for-field replay of already-copied rows and marks import complete", async () => {
+    const sleeperId = "900000000000000097";
+    const internalId = `legacy_${sleeperId}`;
+    await seedLegacyBrain(sleeperId, { leagueId: sleeperId, sleeperLeagueId: sleeperId });
+    const next = env.LEAGUE_BRAIN.getByName(internalId);
+    await seedIdenticalLegacyHistory(next);
+    await putLegacyImportPending(next);
+    await instrumentLegacyExport(next);
+
+    await next.bootstrap({
+      leagueId: internalId,
+      sleeperLeagueId: sleeperId,
+      name: "Cutman League",
+      tone: "playful",
+    });
+
+    expect(await legacyExportCallCount(next)).toBe(1);
+    const migrated = await readBrainSql(next);
+    expect(migrated.snapshots).toEqual([
+      {
+        id: 7,
+        week: 3,
+        payload_hash: "hash-legacy-snap",
+        payload: JSON.stringify(LEGACY_SNAPSHOT),
+        created_at: SNAPSHOT_CREATED_AT,
+      },
+    ]);
+    expect(migrated.beats).toEqual([
+      {
+        id: 4,
+        kind: "trade",
+        copy: "CeeDee walked so the chat could run.",
+        facts: LEGACY_FACTS,
+        week: 3,
+        created_at: BEAT_CREATED_AT,
+      },
+    ]);
+    expect(migrated.bible).toEqual([
+      {
+        id: 9,
+        entry: "Week 2: the trade that split the group chat.",
+        created_at: BIBLE_CREATED_AT,
+      },
+    ]);
+    expect(migrated.recaps).toEqual([
+      {
+        week: 3,
+        subject: "Week 3 belongs to Alex",
+        body: "CeeDee changed hands and the chat lost its mind.",
+        facts: LEGACY_FACTS,
+        emailed_at: RECAP_EMAILED_AT,
+        created_at: RECAP_CREATED_AT,
+      },
+    ]);
+    expect(migrated.settings).toEqual(
+      expect.arrayContaining([{ key: "legacyMigratedFrom", value: sleeperId }]),
+    );
+    expect(migrated.settings.some((row) => row.key === "legacyImportPending")).toBe(false);
+  });
+
+  it("copies a seed-only source over a seed-only destination without losing source bible", async () => {
+    const sleeperId = "900000000000000098";
+    const internalId = `legacy_${sleeperId}`;
+    const source = env.LEAGUE_BRAIN.getByName(sleeperId);
+    await source.bootstrap({
+      leagueId: sleeperId,
+      sleeperLeagueId: sleeperId,
+      name: "Legacy League",
+      tone: "savage",
+    });
+    const sourceSql = await readBrainSql(source);
+    expect(sourceSql.bible).toEqual([
+      expect.objectContaining({ entry: "Legacy League is in the book. Tone: savage." }),
+    ]);
+
+    const next = env.LEAGUE_BRAIN.getByName(internalId);
+    await seedExactBootstrapBible(next, "Cutman League", "playful");
+    expect(await historicalRows(next)).toBe(false);
+    await instrumentLegacyExport(next);
+
+    await next.bootstrap({
+      leagueId: internalId,
+      sleeperLeagueId: sleeperId,
+      name: "Cutman League",
+      tone: "playful",
+    });
+
+    expect(await legacyExportCallCount(next)).toBe(1);
+    const migrated = await readBrainSql(next);
+    expect(migrated.snapshots).toEqual([]);
+    expect(migrated.beats).toEqual([]);
+    expect(migrated.recaps).toEqual([]);
+    expect(migrated.bible).toEqual([
+      expect.objectContaining({ entry: "Legacy League is in the book. Tone: savage." }),
+    ]);
+    expect(migrated.bible.some((row) => row.entry === "Cutman League is in the book. Tone: playful.")).toBe(
+      false,
+    );
+    expect(migrated.settings).toEqual(
+      expect.arrayContaining([{ key: "legacyMigratedFrom", value: sleeperId }]),
+    );
+    expect(migrated.settings.some((row) => row.key === "legacyImportPending")).toBe(false);
   });
 });
 
