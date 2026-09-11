@@ -236,6 +236,31 @@ type BoardPayload = {
   matchups: SleeperMatchup[];
 };
 
+async function explorerBoardFromCache(
+  deps: ExplorerDeps,
+  cached: CacheRead<BoardPayload> | null,
+  week: number,
+  stale: boolean,
+): Promise<ExplorerBoardResult | null> {
+  const payload = cached?.payload;
+  const league = payload?.league;
+  if (!league) return null;
+  const playersResult = await loadExplorerPlayers(deps);
+  if (playersResult.kind !== "ok") return playersResult;
+  return {
+    kind: "ok",
+    stale,
+    board: assembleExplorerBoard({
+      league,
+      week,
+      users: payload.users ?? [],
+      rosters: payload.rosters ?? [],
+      matchups: payload.matchups ?? [],
+      players: playersResult.players,
+    }),
+  };
+}
+
 function nflStateKey(): string {
   return "explore:nfl-state";
 }
@@ -419,38 +444,12 @@ export async function lookupExplorerBoard(
   const cached = await readCache<BoardPayload>(deps, boardKey(leagueId, week), BOARD_TTL_MS);
 
   if (cached?.fresh) {
-    if (!cached.payload.league) return { kind: "not_found" };
-    const playersResult = await loadExplorerPlayers(deps);
-    if (playersResult.kind !== "ok") return playersResult;
-    return {
-      kind: "ok",
-      stale: stateResult.stale,
-      board: assembleExplorerBoard({
-        ...cached.payload,
-        league: cached.payload.league,
-        week,
-        players: playersResult.players,
-      }),
-    };
+    return (await explorerBoardFromCache(deps, cached, week, stateResult.stale)) ?? { kind: "not_found" };
   }
 
   const allowed = await tryConsumeQuota(deps, input.clerkUserId, BOARD_MISS_ORIGIN_CHARGE);
   if (!allowed) {
-    if (cached?.payload.league) {
-      const playersResult = await loadExplorerPlayers(deps);
-      if (playersResult.kind !== "ok") return playersResult;
-      return {
-        kind: "ok",
-        stale: true,
-        board: assembleExplorerBoard({
-          ...cached.payload,
-          league: cached.payload.league,
-          week,
-          players: playersResult.players,
-        }),
-      };
-    }
-    return { kind: "quota_exceeded" };
+    return (await explorerBoardFromCache(deps, cached, week, true)) ?? { kind: "quota_exceeded" };
   }
 
   try {
@@ -491,20 +490,8 @@ export async function lookupExplorerBoard(
       }),
     };
   } catch (error) {
-    if (cached?.payload.league) {
-      const playersResult = await loadExplorerPlayers(deps);
-      if (playersResult.kind !== "ok") return playersResult;
-      return {
-        kind: "ok",
-        stale: true,
-        board: assembleExplorerBoard({
-          ...cached.payload,
-          league: cached.payload.league,
-          week,
-          players: playersResult.players,
-        }),
-      };
-    }
+    const fallback = await explorerBoardFromCache(deps, cached, week, true);
+    if (fallback) return fallback;
     if (isSleeperRateLimited(error)) return { kind: "rate_limited" };
     return { kind: "unavailable" };
   }

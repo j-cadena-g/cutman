@@ -65,7 +65,7 @@ export default function ExploreLeague({ loaderData }: Route.ComponentProps) {
 
   return (
     <main className="mx-auto max-w-5xl px-6 py-10">
-      <BrandNav exploreActive />
+      <BrandNav />
       {result.kind === "ok" ? (
         <>
           <p className="mt-3 text-xs font-semibold uppercase tracking-[0.18em] text-muted">Sleeper league</p>

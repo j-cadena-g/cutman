@@ -1346,6 +1346,82 @@ describe("lookupExplorerBoard", () => {
     expect(calls.getRosters).toBe(1);
     expect(calls.getMatchups).toBe(1);
   });
+
+  const FAKE_BOARD_LEAGUE_ID = "1";
+  const fakeCachedLeague: SleeperLeague = {
+    league_id: FAKE_BOARD_LEAGUE_ID,
+    name: "Cached Fake League",
+    season: "2026",
+    sport: "nfl",
+  };
+
+  it.each([
+    { name: "missing payload", entry: { fetchedAt: FIXED_NOW } },
+    { name: "undefined payload", entry: { fetchedAt: FIXED_NOW, payload: undefined } },
+    { name: "payload without league", entry: { fetchedAt: FIXED_NOW, payload: {} } },
+  ])("returns not_found for a fresh cache with $name instead of throwing", async ({ entry }) => {
+    const cache = createMemoryExplorerCache();
+    await seedFreshNflState(cache, FIXED_NOW);
+    await cache.putJson(`explore:board:${FAKE_BOARD_LEAGUE_ID}:1`, entry);
+    const { client, calls } = countingClient();
+    const result = await lookupExplorerBoard(
+      makeDeps({ sleeper: client, cache, now: () => FIXED_NOW }),
+      { sleeperLeagueId: FAKE_BOARD_LEAGUE_ID, clerkUserId: "clerk_1" },
+    );
+    expect(result).toEqual({ kind: "not_found" });
+    expect(calls.getLeague).toBe(0);
+    expect(calls.getLeagueUsers).toBe(0);
+    expect(calls.getRosters).toBe(0);
+    expect(calls.getMatchups).toBe(0);
+  });
+
+  it("returns quota_exceeded for a stale malformed cache with no payload when quota is spent", async () => {
+    const { originQuota, seed, used } = makeQuota();
+    seed("clerk_1", FIXED_NOW, ORIGIN_QUOTA_PER_HOUR);
+    const cache = createMemoryExplorerCache();
+    await seedFreshNflState(cache, FIXED_NOW);
+    await cache.putJson(`explore:board:${FAKE_BOARD_LEAGUE_ID}:1`, {
+      fetchedAt: FIXED_NOW - BOARD_TTL_MS - 1,
+    });
+    const { client, calls } = countingClient();
+    const result = await lookupExplorerBoard(
+      makeDeps({ sleeper: client, cache, originQuota, now: () => FIXED_NOW }),
+      { sleeperLeagueId: FAKE_BOARD_LEAGUE_ID, clerkUserId: "clerk_1" },
+    );
+    expect(result).toEqual({ kind: "quota_exceeded" });
+    expect(calls.getLeague).toBe(0);
+    expect(used("clerk_1", FIXED_NOW)).toBe(ORIGIN_QUOTA_PER_HOUR);
+  });
+
+  it("assembles a stale cache that has a league but missing users/rosters/matchups", async () => {
+    const { originQuota, seed } = makeQuota();
+    seed("clerk_1", FIXED_NOW, ORIGIN_QUOTA_PER_HOUR);
+    const cache = createMemoryExplorerCache();
+    await seedFreshNflState(cache, FIXED_NOW);
+    await cache.putJson(`explore:board:${FAKE_BOARD_LEAGUE_ID}:1`, {
+      fetchedAt: FIXED_NOW - BOARD_TTL_MS - 1,
+      payload: { league: fakeCachedLeague },
+    });
+    const { client, calls } = countingClient();
+    const result = await lookupExplorerBoard(
+      makeDeps({ sleeper: client, cache, originQuota, now: () => FIXED_NOW }),
+      { sleeperLeagueId: FAKE_BOARD_LEAGUE_ID, clerkUserId: "clerk_1" },
+    );
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") return;
+    expect(result.stale).toBe(true);
+    expect(result.board.league).toMatchObject({
+      sleeperLeagueId: FAKE_BOARD_LEAGUE_ID,
+      name: "Cached Fake League",
+    });
+    expect(result.board.standings).toEqual([]);
+    expect(result.board.matchups).toEqual([]);
+    expect(result.board.rosters).toEqual([]);
+    expect(calls.getLeague).toBe(0);
+    expect(calls.getLeagueUsers).toBe(0);
+    expect(calls.getRosters).toBe(0);
+    expect(calls.getMatchups).toBe(0);
+  });
 });
 
 describe("story dashboard isolation", () => {

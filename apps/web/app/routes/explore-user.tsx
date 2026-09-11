@@ -38,7 +38,7 @@ export default function ExploreUser({ loaderData }: Route.ComponentProps) {
 
   return (
     <main className="mx-auto max-w-2xl px-6 py-16">
-      <BrandNav exploreActive />
+      <BrandNav />
       {result.kind === "ok" ? (
         <>
           <p className="mt-3 text-xs font-semibold uppercase tracking-[0.18em] text-muted">Sleeper profile</p>

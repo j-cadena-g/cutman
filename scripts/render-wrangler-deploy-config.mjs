@@ -81,6 +81,17 @@ const requiredValues = {
 
 const ALL_ZERO_ID = /^0+$/;
 
+/**
+ * Match `"id"` inside the KV namespace object that declares `binding`, without
+ * requiring property order or forbidding a JSONC `//` comment between keys.
+ * Groups stay (prefix, current, suffix) so replaceConfigValue only splices the id.
+ */
+function kvNamespaceIdReplacementPattern(binding) {
+  return new RegExp(
+    `(\\{(?=[^{}]*"binding"\\s*:\\s*"${binding}")[^{}]*?"id"\\s*:\\s*")([^"]*)(")`,
+  );
+}
+
 const replacements = [
   {
     label: "account_id",
@@ -94,12 +105,12 @@ const replacements = [
   },
   {
     label: "PLAYERS kv namespace id",
-    pattern: /("binding"\s*:\s*"PLAYERS"\s*,\s*"id"\s*:\s*")([^"]*)(")/,
+    pattern: kvNamespaceIdReplacementPattern("PLAYERS"),
     envName: "CLOUDFLARE_KV_NAMESPACE_ID",
   },
   {
     label: "EXPLORER_CACHE kv namespace id",
-    pattern: /("binding"\s*:\s*"EXPLORER_CACHE"\s*,\s*"id"\s*:\s*")([^"]*)(")/,
+    pattern: kvNamespaceIdReplacementPattern("EXPLORER_CACHE"),
     envName: "CLOUDFLARE_EXPLORER_KV_NAMESPACE_ID",
   },
   {

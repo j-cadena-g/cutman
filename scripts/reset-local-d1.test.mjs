@@ -128,6 +128,19 @@ describe("reset-local-d1 path guards", () => {
     });
   });
 
+  it("treats a regular file where an intermediate directory should be as a missing tail", async () => {
+    await withTempRoot(async ({ root, webDir }) => {
+      await writeFile(path.join(root, "apps"), "not-a-directory");
+      await assertLocalD1PathHasNoSymlinks(webDir);
+    });
+
+    await withTempRoot(async ({ webDir }) => {
+      await mkdir(webDir, { recursive: true });
+      await writeFile(path.join(webDir, ".wrangler"), "not-a-directory");
+      await assertLocalD1PathHasNoSymlinks(webDir);
+    });
+  });
+
   for (const { name, linkIndex } of SYMLINK_CASES) {
     it(`rejects a symbolic link at ${name} before rm`, async () => {
       await withTempRoot(async ({ root, localD1Dir }) => {

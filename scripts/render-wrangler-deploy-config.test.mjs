@@ -41,12 +41,16 @@ function trackedTemplateString(name) {
   return match[1];
 }
 
+function kvNamespaceObjectPattern(binding) {
+  return new RegExp(`\\{(?=[^{}]*"binding"\\s*:\\s*"${binding}")[^{}]*\\}`);
+}
+
 function trackedTemplateKvId(binding) {
-  const match = template.match(
-    new RegExp(`"binding"\\s*:\\s*"${binding}"\\s*,\\s*"id"\\s*:\\s*"([^"]*)"`),
-  );
-  assert.ok(match, `tracked wrangler.jsonc is missing ${binding} kv id`);
-  return match[1];
+  const objectMatch = template.match(kvNamespaceObjectPattern(binding));
+  assert.ok(objectMatch, `tracked wrangler.jsonc is missing ${binding} kv object`);
+  const idMatch = objectMatch[0].match(/"id"\s*:\s*"([^"]*)"/);
+  assert.ok(idMatch, `tracked wrangler.jsonc is missing ${binding} kv id`);
+  return idMatch[1];
 }
 
 const trackedPilotId = trackedTemplateString("PILOT_SLEEPER_LEAGUE_ID");
@@ -55,7 +59,23 @@ const trackedPlayersKvId = trackedTemplateKvId("PLAYERS");
 const trackedExplorerKvId = trackedTemplateKvId("EXPLORER_CACHE");
 
 function kvBindingIdPattern(binding, id) {
-  return new RegExp(`"binding"\\s*:\\s*"${binding}"\\s*,\\s*"id"\\s*:\\s*"${id}"`);
+  return new RegExp(
+    `\\{(?=[^{}]*"binding"\\s*:\\s*"${binding}")(?=[^{}]*"id"\\s*:\\s*"${id}")[^{}]*\\}`,
+  );
+}
+
+function withKvNamespaces(objectsSource) {
+  return template.replace(
+    /"kv_namespaces"\s*:\s*\[[\s\S]*?\],/,
+    `"kv_namespaces": [\n${objectsSource}\n  ],`,
+  );
+}
+
+function assertMappedKvIds(rendered) {
+  assert.match(rendered, kvBindingIdPattern("PLAYERS", FAKE_PLAYERS_KV_ID));
+  assert.match(rendered, kvBindingIdPattern("EXPLORER_CACHE", FAKE_EXPLORER_KV_ID));
+  assert.doesNotMatch(rendered, kvBindingIdPattern("PLAYERS", FAKE_EXPLORER_KV_ID));
+  assert.doesNotMatch(rendered, kvBindingIdPattern("EXPLORER_CACHE", FAKE_PLAYERS_KV_ID));
 }
 
 function useSleeperFixturesPattern(value) {
@@ -815,6 +835,31 @@ describe("render-wrangler-deploy-config", () => {
     assert.match(rendered, kvBindingIdPattern("EXPLORER_CACHE", FAKE_EXPLORER_KV_ID));
     assert.doesNotMatch(rendered, kvBindingIdPattern("PLAYERS", FAKE_EXPLORER_KV_ID));
     assert.doesNotMatch(rendered, kvBindingIdPattern("EXPLORER_CACHE", FAKE_PLAYERS_KV_ID));
+  });
+
+  it("replaces PLAYERS id when id appears before binding in the enclosing object", () => {
+    const injected = withKvNamespaces(`    {
+      "id": "${PLACEHOLDER_PLAYERS_KV_ID}",
+      "binding": "PLAYERS"
+    },
+    {
+      "binding": "EXPLORER_CACHE",
+      "id": "${PLACEHOLDER_EXPLORER_KV_ID}"
+    }`);
+    assertMappedKvIds(renderWranglerConfig(injected, { isDevConfig: false, env: baseEnv() }));
+  });
+
+  it("replaces EXPLORER_CACHE id when a JSONC comment sits between binding and id", () => {
+    const injected = withKvNamespaces(`    {
+      "binding": "PLAYERS",
+      "id": "${PLACEHOLDER_PLAYERS_KV_ID}"
+    },
+    {
+      "binding": "EXPLORER_CACHE",
+      // explorer cache namespace
+      "id": "${PLACEHOLDER_EXPLORER_KV_ID}"
+    }`);
+    assertMappedKvIds(renderWranglerConfig(injected, { isDevConfig: false, env: baseEnv() }));
   });
 
   it("renders distinct local-dev KV placeholders without requiring env ids", () => {

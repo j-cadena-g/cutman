@@ -189,6 +189,7 @@ export default function League({ loaderData, actionData }: Route.ComponentProps)
                   name="tone"
                   value={option}
                   variant={tone === option ? "default" : "secondary"}
+                  aria-pressed={tone === option}
                   disabled={!isOwner || dashboard === null}
                 >
                   {toneLabel(option)}

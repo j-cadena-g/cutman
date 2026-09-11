@@ -27,7 +27,7 @@ export default function Explore({ actionData }: Route.ComponentProps) {
     actionData && "submittedUsername" in actionData ? actionData.submittedUsername : undefined;
   return (
     <main className="mx-auto max-w-xl px-6 py-16">
-      <BrandNav exploreActive />
+      <BrandNav />
       <h1 className="mt-3 font-display text-4xl">Explore Sleeper</h1>
       <p className="mt-2 text-muted">
         Look up any public Sleeper username. This is live league data from Sleeper, not a Cutman season book.
