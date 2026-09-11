@@ -276,11 +276,23 @@ describe("reset-local-d1 path guards", () => {
     });
   });
 
-  it("refuses a matching helper target whose realpath escapes tmpdir", async () => {
+  it("refuses a matching helper target whose realpath escapes tmpdir", async (t) => {
     const canonicalTmp = await realpath(os.tmpdir());
-    const outside = await mkdtemp(path.join(os.homedir(), "cutman-reset-d1-outside-"));
-    const wrapper = await mkdtemp(path.join(os.tmpdir(), "cutman-reset-d1-escape-"));
+    const canonicalRepoRoot = await realpath(repoRoot);
+    const relativeRepo = path.relative(canonicalTmp, canonicalRepoRoot);
+    if (
+      relativeRepo.length === 0 ||
+      (!relativeRepo.startsWith("..") && !path.isAbsolute(relativeRepo))
+    ) {
+      t.skip("repoRoot is inside tmpdir; cannot construct an outside-tmpdir path under the repo");
+      return;
+    }
+
+    let outside;
+    let wrapper;
     try {
+      outside = await mkdtemp(path.join(repoRoot, ".tmp-reset-d1-outside-"));
+      wrapper = await mkdtemp(path.join(os.tmpdir(), "cutman-reset-d1-escape-"));
       const outsideReal = await realpath(outside);
       const relativeOutside = path.relative(canonicalTmp, outsideReal);
       assert.ok(
@@ -294,7 +306,13 @@ describe("reset-local-d1 path guards", () => {
       await symlink(outside, linkRoot);
       const localD1Dir = path.join(linkRoot, "apps", "web", ...LOCAL_D1_SEGMENTS);
       const keepPath = await writeSentinel(path.join(outside, "apps", "web", ...LOCAL_D1_SEGMENTS));
-      assert.notEqual(path.resolve(keepPath), path.join(repoRoot, localD1Suffix, "keep-me"));
+      const realLocalD1 = path.join(canonicalRepoRoot, localD1Suffix);
+      assert.notEqual(path.resolve(keepPath), path.join(realLocalD1, "keep-me"));
+      const keepRelativeToRealD1 = path.relative(realLocalD1, path.resolve(keepPath));
+      assert.ok(
+        keepRelativeToRealD1.startsWith("..") || path.isAbsolute(keepRelativeToRealD1),
+        `sentinel ${keepPath} must not live under the real local D1 path ${realLocalD1}`,
+      );
 
       await assert.rejects(
         () => resetLocalD1MatchingExpected(localD1Dir, localD1Dir),
@@ -306,8 +324,8 @@ describe("reset-local-d1 path guards", () => {
       );
       await access(keepPath);
     } finally {
-      await rm(wrapper, { recursive: true, force: true });
-      await rm(outside, { recursive: true, force: true });
+      if (wrapper) await rm(wrapper, { recursive: true, force: true });
+      if (outside) await rm(outside, { recursive: true, force: true });
     }
   });
 });

@@ -81,14 +81,21 @@ const requiredValues = {
 
 const ALL_ZERO_ID = /^0+$/;
 
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 /**
  * Match `"id"` inside the KV namespace object that declares `binding`, without
  * requiring property order or forbidding a JSONC `//` comment between keys.
- * Groups stay (prefix, current, suffix) so replaceConfigValue only splices the id.
+ * The lookahead requires a closing quote after the binding name so `PLAYERS`
+ * cannot match a longer sibling such as `PLAYERS_FOO`. Groups stay
+ * (prefix, current, suffix) so replaceConfigValue only splices the id.
  */
 function kvNamespaceIdReplacementPattern(binding) {
+  const escapedBinding = escapeRegExp(binding);
   return new RegExp(
-    `(\\{(?=[^{}]*"binding"\\s*:\\s*"${binding}")[^{}]*?"id"\\s*:\\s*")([^"]*)(")`,
+    `(\\{(?=[^{}]*"binding"\\s*:\\s*"${escapedBinding}")[^{}]*?"id"\\s*:\\s*")([^"]*)(")`,
   );
 }
 

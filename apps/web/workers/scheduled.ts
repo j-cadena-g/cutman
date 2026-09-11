@@ -509,9 +509,7 @@ export async function handleScheduled(
   });
 
   let enrollment = await readRecapEnrollmentState(env.DB);
-  if (enrollment?.weekKey && enrollment.weekKey !== weekKey) {
-    await deleteStaleRecapAttempts(env.DB, weekKey);
-  }
+  await deleteStaleRecapAttempts(env.DB, weekKey);
   if (recapWindow) {
     if (enrollment?.weekKey !== weekKey) {
       enrollment = { weekKey, afterId: null, complete: false };

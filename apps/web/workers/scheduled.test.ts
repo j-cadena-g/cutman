@@ -1522,6 +1522,33 @@ describe("handleScheduled recap backlog", () => {
     }
   });
 
+  it("drops leftover previous-week backlog rows on an idle tick when enrollment state is missing", async () => {
+    const now = 1_805_832_000_000;
+    const league = await seedLeague("backlog_idle_missing_enroll", now, "active");
+    await insertPendingRecap(league.id, RECAP_WEEK_KEY, now);
+
+    const originalAttemptRecap = LeagueBrain.prototype.attemptRecap;
+    const recapCalls: string[] = [];
+    LeagueBrain.prototype.attemptRecap = async function (this: LeagueBrain) {
+      const dashboard = await this.getDashboard();
+      recapCalls.push(dashboard.leagueId);
+      return { status: "published", recap: { subject: "Should not recap", body: "Idle cleanup." } };
+    };
+
+    try {
+      expect(await recapEnrollmentState()).toBeNull();
+      expect(await backlogRows(RECAP_WEEK_KEY, [league.id])).toHaveLength(1);
+      const result = await handleScheduled(env, NEXT_IDLE_NOW);
+      expect(result).toEqual({ polled: 0, recapped: 0 });
+      expect(recapCalls).toEqual([]);
+      expect(await backlogRows(RECAP_WEEK_KEY, [league.id])).toEqual([]);
+      expect(await backlogCount(NEXT_RECAP_WEEK_KEY)).toBe(0);
+      expect(await recapEnrollmentState()).toBeNull();
+    } finally {
+      LeagueBrain.prototype.attemptRecap = originalAttemptRecap;
+    }
+  });
+
   it("enrolls at most maxLeagues per tick and continues until every active league is covered", async () => {
     const now = 1_805_900_000_000;
     const ours = [

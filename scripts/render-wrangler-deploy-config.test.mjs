@@ -450,12 +450,12 @@ describe("render-wrangler-deploy-config output path", () => {
   it("selects the production default when injected env omits output even if process.env points elsewhere", async () => {
     await withTempAllowedOutputs(async ({ dir, allowedOutputs }) => {
       const previousOutput = process.env.WRANGLER_RENDER_OUTPUT;
-      process.env.WRANGLER_RENDER_OUTPUT = WRANGLER_DEV_OUTPUT_PATH;
-      const env = baseEnv();
-      delete env.WRANGLER_RENDER_OUTPUT;
-      const before = await snapshotAllowedOutputs();
-
       try {
+        process.env.WRANGLER_RENDER_OUTPUT = WRANGLER_DEV_OUTPUT_PATH;
+        const env = baseEnv();
+        delete env.WRANGLER_RENDER_OUTPUT;
+        const before = await snapshotAllowedOutputs();
+
         await writeRenderedWranglerConfigForAllowedPaths({
           env,
           allowedOutputs,
@@ -843,6 +843,28 @@ describe("render-wrangler-deploy-config", () => {
       "id": "${PLACEHOLDER_EXPLORER_KV_ID}"
     }`);
     assertMappedKvIds(renderWranglerConfig(injected, { isDevConfig: false, env: baseEnv() }));
+  });
+
+  it("replaces only PLAYERS when a longer PLAYERS-prefixed binding is also present", () => {
+    const injected = withKvNamespaces(`    {
+      "binding": "PLAYERS_FOO",
+      "id": "${PLACEHOLDER_PLAYERS_KV_ID}"
+    },
+    {
+      "binding": "PLAYERS",
+      "id": "${PLACEHOLDER_PLAYERS_KV_ID}"
+    },
+    {
+      "binding": "EXPLORER_CACHE",
+      "id": "${PLACEHOLDER_EXPLORER_KV_ID}"
+    }`);
+    const rendered = renderWranglerConfig(injected, {
+      isDevConfig: false,
+      env: baseEnv(),
+    });
+    assertMappedKvIds(rendered);
+    assert.match(rendered, kvBindingIdPattern("PLAYERS_FOO", PLACEHOLDER_PLAYERS_KV_ID));
+    assert.doesNotMatch(rendered, kvBindingIdPattern("PLAYERS_FOO", FAKE_PLAYERS_KV_ID));
   });
 
   it("replaces EXPLORER_CACHE id when a JSONC comment sits between binding and id", () => {
