@@ -151,9 +151,9 @@ export class LeagueBrain extends DurableObject<Env> {
     try {
       await this.importLegacyStateIfNeeded(input);
     } catch (error) {
-      // Reason is only "error" | "unknown". Do not log name/message: RPC / storage
-      // errors can embed Durable Object and Sleeper ids.
-      this.recordLegacyImportRejection(input.leagueId, error instanceof Error ? "error" : "unknown");
+      // Reason is only "error" | "unknown". Do not log name/message or league/Sleeper
+      // ids: RPC / storage errors can embed Durable Object and Sleeper ids.
+      this.recordLegacyImportRejection(error instanceof Error ? "error" : "unknown");
     }
     this.putSetting("leagueId", input.leagueId);
     this.putSetting("sleeperLeagueId", input.sleeperLeagueId);
@@ -506,7 +506,7 @@ export class LeagueBrain extends DurableObject<Env> {
    * concurrent waiter at the export await cannot observe a half-updated pending/abandoned pair.
    * Skip if a sibling request already completed or abandoned the copy.
    */
-  private recordLegacyImportRejection(leagueId: string, reason: LegacyImportFailureReason): void {
+  private recordLegacyImportRejection(reason: LegacyImportFailureReason): void {
     let attempt = 0;
     this.ctx.storage.transactionSync(() => {
       if (this.getSetting(LEGACY_MIGRATED_FROM_KEY) || this.getSetting(LEGACY_IMPORT_ABANDONED_KEY)) {
@@ -522,21 +522,20 @@ export class LeagueBrain extends DurableObject<Env> {
       }
     });
     if (attempt === 0) return;
-    this.logLegacyImportEvent("league_brain.legacy_import_failed", leagueId, attempt, reason);
+    this.logLegacyImportEvent("league_brain.legacy_import_failed", attempt, reason);
     if (attempt >= LEGACY_IMPORT_MAX_ATTEMPTS) {
-      this.logLegacyImportEvent("league_brain.legacy_import_abandoned", leagueId, attempt, reason);
+      this.logLegacyImportEvent("league_brain.legacy_import_abandoned", attempt, reason);
     }
   }
 
   private logLegacyImportEvent(
     event: LegacyImportLogEvent,
-    leagueId: string,
     attempt: number,
     reason: LegacyImportFailureReason,
   ): void {
+    // Omit leagueId and Sleeper snowflakes. Operators get event, attempt, max, and a bounded reason only.
     const payload = JSON.stringify({
       event,
-      leagueId,
       attempt,
       max: LEGACY_IMPORT_MAX_ATTEMPTS,
       reason,

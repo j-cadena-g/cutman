@@ -32,10 +32,11 @@ describe("schema", () => {
     expect(await getLeagueBySleeperId(env.DB, EXAMPLE_SLEEPER_LEAGUE_ID)).toBeNull();
   });
 
-  it("yields the expected empty final schema after 0001, 0002, then 0003", async () => {
+  it("yields the expected empty final schema after 0001, 0002, 0003, then 0004", async () => {
     await ensureSchema(env.DB);
     expect(await userTables()).toEqual([
       "app_state",
+      "explorer_origin_quota",
       "league_members",
       "league_verifications",
       "leagues",
@@ -52,7 +53,8 @@ describe("schema", () => {
          (SELECT COUNT(*) FROM league_members) AS league_members,
          (SELECT COUNT(*) FROM league_verifications) AS league_verifications,
          (SELECT COUNT(*) FROM app_state) AS app_state,
-         (SELECT COUNT(*) FROM recap_attempt_backlog) AS recap_attempt_backlog`,
+         (SELECT COUNT(*) FROM recap_attempt_backlog) AS recap_attempt_backlog,
+         (SELECT COUNT(*) FROM explorer_origin_quota) AS explorer_origin_quota`,
     ).first<Record<string, number>>();
     expect(counts).toEqual({
       users: 0,
@@ -62,6 +64,7 @@ describe("schema", () => {
       league_verifications: 0,
       app_state: 0,
       recap_attempt_backlog: 0,
+      explorer_origin_quota: 0,
     });
 
     const indexes = await env.DB.prepare(
@@ -126,5 +129,16 @@ describe("schema", () => {
       "SELECT sql FROM sqlite_master WHERE name = 'recap_attempt_backlog_pending_week_idx'",
     ).first<{ sql: string }>();
     expect(backlogPendingIndex?.sql).toMatch(/WHERE\s+status\s*=\s*'pending'/i);
+
+    const quotaColumns = await env.DB.prepare("PRAGMA table_info(explorer_origin_quota)").all<{
+      name: string;
+      notnull: number;
+      pk: number;
+    }>();
+    expect(quotaColumns.results.map((column) => column.name)).toEqual(["clerk_user_id", "hour_key", "used"]);
+    expect(quotaColumns.results.every((column) => column.notnull === 1)).toBe(true);
+    expect(quotaColumns.results.filter((column) => column.pk > 0).map((column) => column.name)).toEqual([
+      "clerk_user_id",
+    ]);
   });
 });

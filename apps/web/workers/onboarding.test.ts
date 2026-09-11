@@ -650,79 +650,45 @@ describe("discoverLeagues", () => {
     expect(result.leagues[1]?.isOwner).toBe(false);
   });
 
-  it("reuses the same getLeagueUsers promise when current-season leagues omit the pilot", async () => {
-    const user = await seedUser("user_discover_reuse_omit", "discover-reuse-omit@example.test");
-    const pilotSleeperLeagueId = nextPilotLeagueId("discover_reuse_omit");
-    const sleeperClient = createFakeSleeperClient({
-      usersByLookup: { scout: { user_id: "sleeper_scout_reuse_omit", username: "scout", display_name: "Scout" } },
-      userLeagues: {
-        sleeper_scout_reuse_omit: [{ league_id: OTHER_LEAGUE_ID, name: "Someday League", season: "2026", sport: "nfl" }],
-      },
-      leaguesById: {
-        [pilotSleeperLeagueId]: {
-          league_id: pilotSleeperLeagueId,
-          name: "The Pilot",
-          season: "2026",
-          sport: "nfl",
-        },
-      },
-      leagueUsersById: {
-        [pilotSleeperLeagueId]: [
-          { user_id: "sleeper_scout_reuse_omit", username: "scout", display_name: "Scout", is_owner: true },
-        ],
-      },
-    });
-    await connectSleeperAccount(makeDeps({ sleeperClient, pilotSleeperLeagueId }), {
-      clerkUserId: user.id,
-      usernameInput: "scout",
-    });
-    sleeperClient.calls.getLeagueUsers = 0;
-    sleeperClient.calls.getLeague = 0;
-
-    const result = await discoverLeagues(makeDeps({ sleeperClient, pilotSleeperLeagueId }), { clerkUserId: user.id });
-
-    expect(result.ok).toBe(true);
-    if (!result.ok) throw new Error("expected ok");
-    expect(sleeperClient.calls.getLeagueUsers).toBe(1);
-    expect(sleeperClient.calls.getLeague).toBe(1);
-    expect(result.leagues.map((league) => league.sleeperLeagueId)).toEqual([pilotSleeperLeagueId, OTHER_LEAGUE_ID]);
-  });
-
-  it("classifies other leagues while the pilot roster lookup is still in flight", async () => {
-    const user = await seedUser("user_discover_overlap", "discover-overlap@example.test");
-    const pilotSleeperLeagueId = nextPilotLeagueId("discover_overlap");
-    let rosterResolved = false;
-    let readComingSoonWhileRosterInFlight = false;
-    const rosterCalls: string[] = [];
+  it("calls getLeagueUsers exactly once and overlaps getLeague when current-season leagues omit the pilot", async () => {
+    const user = await seedUser("user_discover_omit_once", "discover-omit-once@example.test");
+    const pilotSleeperLeagueId = nextPilotLeagueId("discover_omit_once");
+    let inFlight = 0;
+    let maxInFlight = 0;
+    let getLeagueCalls = 0;
+    let getLeagueUsersCalls = 0;
     const sleeperClient: SleeperClient = {
       async getNflState() {
         return { week: 1, season_type: "regular", season: "2026", league_season: "2026" };
       },
       async getUser() {
-        return { user_id: "sleeper_scout_overlap", username: "scout", display_name: "Scout" };
+        return { user_id: "sleeper_scout_omit_once", username: "scout", display_name: "Scout" };
       },
       async getUserLeagues() {
-        return [
-          { league_id: pilotSleeperLeagueId, name: "The Pilot", season: "2026", sport: "nfl" },
-          {
-            league_id: OTHER_LEAGUE_ID,
-            season: "2026",
-            sport: "nfl",
-            get name() {
-              if (!rosterResolved) readComingSoonWhileRosterInFlight = true;
-              return "Someday League";
-            },
-          },
-        ];
+        return [{ league_id: OTHER_LEAGUE_ID, name: "Someday League", season: "2026", sport: "nfl" }];
       },
-      async getLeague() {
-        throw new Error("getLeague should not run when the pilot is already in current-season leagues");
+      async getLeague(leagueId) {
+        getLeagueCalls += 1;
+        inFlight += 1;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await Promise.resolve();
+        inFlight -= 1;
+        expect(leagueId).toBe(pilotSleeperLeagueId);
+        return {
+          league_id: pilotSleeperLeagueId,
+          name: "The Pilot",
+          season: "2026",
+          sport: "nfl",
+        };
       },
       async getLeagueUsers(leagueId) {
-        rosterCalls.push(leagueId);
+        getLeagueUsersCalls += 1;
+        inFlight += 1;
+        maxInFlight = Math.max(maxInFlight, inFlight);
         await Promise.resolve();
-        rosterResolved = true;
-        return [{ user_id: "sleeper_scout_overlap", username: "scout", display_name: "Scout", is_owner: true }];
+        inFlight -= 1;
+        expect(leagueId).toBe(pilotSleeperLeagueId);
+        return [{ user_id: "sleeper_scout_omit_once", username: "scout", display_name: "Scout", is_owner: true }];
       },
       async getRosters() {
         return [];
@@ -741,17 +707,20 @@ describe("discoverLeagues", () => {
       clerkUserId: user.id,
       usernameInput: "scout",
     });
+    getLeagueCalls = 0;
+    getLeagueUsersCalls = 0;
+    maxInFlight = 0;
 
     const result = await discoverLeagues(makeDeps({ sleeperClient, pilotSleeperLeagueId }), { clerkUserId: user.id });
 
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("expected ok");
-    expect(readComingSoonWhileRosterInFlight).toBe(true);
-    expect(rosterCalls).toEqual([pilotSleeperLeagueId]);
-    expect(result.leagues.map((league) => [league.sleeperLeagueId, league.classification, league.isOwner])).toEqual([
-      [pilotSleeperLeagueId, "pilot", true],
-      [OTHER_LEAGUE_ID, "coming_soon", false],
-    ]);
+    expect(getLeagueUsersCalls).toBe(1);
+    expect(getLeagueCalls).toBe(1);
+    expect(maxInFlight).toBe(2);
+    expect(result.leagues.map((league) => league.sleeperLeagueId)).toEqual([pilotSleeperLeagueId, OTHER_LEAGUE_ID]);
+    expect(result.leagues[0]?.isOwner).toBe(true);
+    expect(result.leagues[1]?.isOwner).toBe(false);
   });
 
   it("propagates a pilot roster lookup failure instead of returning a partial league list", async () => {

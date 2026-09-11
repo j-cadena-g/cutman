@@ -12,7 +12,7 @@ Licensing is TBD.
 - Commissioner authority comes only from Sleeper ownership verification: a team-name challenge, then LeagueBrain provision. Once the league is active, members join without a challenge. No allowlist, claim flow, FF-XXXX, or magic-link
 - One configured pilot Sleeper league (`PILOT_SLEEPER_LEAGUE_ID`). Other discovered leagues show Coming soon. D1 already models many leagues; one LeagueBrain Durable Object per internal `leagues.id`
 - Dashboard reads the Durable Object snapshot (bible, timeline, recaps). It does not hit Sleeper on every page load
-- D1 holds Clerk users, leagues, and per-league membership / recap opt-in. `PLAYERS` KV holds the NFL player map; `EXPLORER_CACHE` KV holds explorer lookup cache and origin quota
+- D1 holds Clerk users, leagues, per-league membership / recap opt-in, and per-Clerk-user explorer origin quota (one current-hour row per user). `PLAYERS` KV holds the NFL player map; `EXPLORER_CACHE` KV holds explorer lookup cache
 - Cron is hourly UTC; the handler uses `America/New_York`. Poll every 3 hours. One idempotent Tuesday recap at 9:00
 - Default tone is playful when unset
 
@@ -90,9 +90,9 @@ Current Worker bindings in the public `apps/web/wrangler.jsonc` template:
 
 | Binding | Type | Purpose |
 | --- | --- | --- |
-| `DB` | D1 | Clerk users, leagues, memberships, recap opt-in, scheduled rotation cursor |
+| `DB` | D1 | Clerk users, leagues, memberships, recap opt-in, scheduled rotation cursor, one-row-per-user explorer origin quota |
 | `PLAYERS` | KV | NFL player map, fetched at most once per day |
-| `EXPLORER_CACHE` | KV | Explorer lookup cache and origin quota (independent of `PLAYERS`) |
+| `EXPLORER_CACHE` | KV | Explorer lookup cache (independent of `PLAYERS`) |
 | `LEAGUE_BRAIN` | SQLite Durable Object | Snapshots, beats, bible, recaps. id = internal `leagues.id` |
 | `AI` | Workers AI | `@cf/google/gemma-4-26b-a4b-it` only |
 | `EMAIL` | Email Service | `env.EMAIL.send` for Tuesday recaps. From-name is **Cutman** |
@@ -101,7 +101,8 @@ Current Worker bindings in the public `apps/web/wrangler.jsonc` template:
 The worker applies D1 migrations `0001_init.sql` (the original deployed schema) then
 `0002_sleeper_onboarding.sql` (internal league ids, sleeper accounts, verifications, and
 commissioner/member roles), then `0003_recap_attempt_backlog.sql` (per-league/per-week
-Tuesday recap attempt backlog). Leagues are created during commissioner onboarding, not
+Tuesday recap attempt backlog), then `0004_explorer_origin_quota.sql` (one current-hour explorer origin
+quota row per Clerk user). Leagues are created during commissioner onboarding, not
 auto-seeded. Production renders require `PILOT_SLEEPER_LEAGUE_ID` so the fake placeholder
 from `wrangler.jsonc` cannot ship. For a CLI-managed local D1:
 
@@ -112,14 +113,16 @@ pnpm run db:migrate:local
 If your local D1 predates the current schema — including a local database that applied this
 branch's rewritten `0001` before `0002` existed — reset it. Reset is **local-only**: it
 deletes `apps/web/.wrangler/state/v3/d1` and nothing else, then reapplies `0001_init.sql`,
-`0002_sleeper_onboarding.sql`, and `0003_recap_attempt_backlog.sql`. It never touches remote D1.
+`0002_sleeper_onboarding.sql`, `0003_recap_attempt_backlog.sql`, and
+`0004_explorer_origin_quota.sql`. It never touches remote D1.
 
 ```bash
 pnpm run db:reset:local
 ```
 
 Remote D1 that already applied the original (legacy) `0001_init.sql` picks up
-`0002_sleeper_onboarding.sql` and `0003_recap_attempt_backlog.sql` on the next
+`0002_sleeper_onboarding.sql`, `0003_recap_attempt_backlog.sql`, and
+`0004_explorer_origin_quota.sql` on the next
 `pnpm run deploy` / `db:migrate:remote`. No remote wipe is required for that
 legacy schema. `ensureSchema` remains additive only
 (`CREATE TABLE/INDEX IF NOT EXISTS`) and does not migrate leftover shapes at runtime.

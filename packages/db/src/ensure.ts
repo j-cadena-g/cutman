@@ -84,6 +84,13 @@ CREATE TABLE IF NOT EXISTS recap_attempt_backlog (
 CREATE INDEX IF NOT EXISTS recap_attempt_backlog_pending_week_idx
   ON recap_attempt_backlog (week_key, league_id)
   WHERE status = 'pending';
+
+CREATE TABLE IF NOT EXISTS explorer_origin_quota (
+  clerk_user_id TEXT NOT NULL CHECK (clerk_user_id != ''),
+  hour_key INTEGER NOT NULL CHECK (hour_key >= 0),
+  used INTEGER NOT NULL CHECK (used >= 0),
+  PRIMARY KEY (clerk_user_id)
+);
 `;
 
 const applying = new WeakMap<D1Database, Promise<void>>();

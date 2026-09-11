@@ -4,7 +4,7 @@ import { Button } from "~/components/ui/button";
 import { Card, CardDescription, CardTitle } from "~/components/ui/card";
 import { Input } from "~/components/ui/input";
 import { Label } from "~/components/ui/label";
-import { describeExplorerError, isValidExplorerUsername, normalizeExplorerUsername } from "~/lib/sleeper-explorer";
+import { parseExplorerUsernameForm } from "~/lib/sleeper-explorer";
 import { requireUser } from "~/lib/session.server";
 import type { Route } from "./+types/explore";
 
@@ -16,13 +16,15 @@ export async function loader(args: Route.LoaderArgs) {
 export async function action(args: Route.ActionArgs) {
   await requireUser(args);
   const form = await args.request.formData();
-  const username = normalizeExplorerUsername(String(form.get("username") ?? ""));
-  if (!isValidExplorerUsername(username)) return { error: describeExplorerError("invalid_username") };
-  throw redirect(`/explore/u/${encodeURIComponent(username)}`);
+  const parsed = parseExplorerUsernameForm(String(form.get("username") ?? ""));
+  if (!parsed.ok) return { error: parsed.error, submittedUsername: parsed.submittedUsername };
+  throw redirect(`/explore/u/${encodeURIComponent(parsed.username)}`);
 }
 
 export default function Explore({ actionData }: Route.ComponentProps) {
   const error = actionData && "error" in actionData ? actionData.error : undefined;
+  const submittedUsername =
+    actionData && "submittedUsername" in actionData ? actionData.submittedUsername : undefined;
   return (
     <main className="mx-auto max-w-xl px-6 py-16">
       <BrandNav exploreActive />
@@ -41,6 +43,7 @@ export default function Explore({ actionData }: Route.ComponentProps) {
             placeholder="sleeper_handle"
             autoComplete="off"
             required
+            defaultValue={submittedUsername}
             aria-invalid={error ? true : undefined}
             aria-describedby={error ? "username-error" : undefined}
           />

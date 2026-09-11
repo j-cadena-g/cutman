@@ -204,11 +204,11 @@ export async function discoverLeagues(
   const sleeperLeagues = await deps.sleeperClient.getUserLeagues(account.sleeper_user_id, season);
 
   // Ownership is only consumed for the configured pilot league. Coming-soon cards never show
-  // owner, so skip their roster reads. Start the one `getLeagueUsers` immediately so it
-  // overlaps classification mapping — never await it inside the list walk. One call per
-  // discovery request; if Sleeper omits the pilot from current-season leagues, reuse that
-  // same lookup with getLeague to confirm membership before treating the user as not a member.
-  const membersPromise = deps.sleeperClient.getLeagueUsers(deps.pilotSleeperLeagueId);
+  // owner, so skip their roster reads. Classify current-season leagues synchronously — never
+  // await a roster lookup inside the list walk — then start Sleeper calls on the chosen
+  // branch so a rejected getLeagueUsers cannot become an unhandled promise. One roster call
+  // per discovery request: found-pilot awaits getLeagueUsers; omitted-pilot overlaps
+  // getLeague and getLeagueUsers to confirm membership before treating the user as absent.
   const classified: Omit<DiscoveredLeague, "isOwner">[] = sleeperLeagues.map((league) => {
     const isPilot = league.league_id === deps.pilotSleeperLeagueId;
     return {
@@ -223,7 +223,7 @@ export async function discoverLeagues(
   if (!foundPilot) {
     const [pilotLeague, members] = await Promise.all([
       deps.sleeperClient.getLeague(deps.pilotSleeperLeagueId),
-      membersPromise,
+      deps.sleeperClient.getLeagueUsers(deps.pilotSleeperLeagueId),
     ]);
     const entry = members.find((member) => member.user_id === account.sleeper_user_id);
     const leagues: DiscoveredLeague[] = classified.map((league) => ({
@@ -242,7 +242,7 @@ export async function discoverLeagues(
     return { ok: true, season, leagues };
   }
 
-  const members = await membersPromise;
+  const members = await deps.sleeperClient.getLeagueUsers(deps.pilotSleeperLeagueId);
   const isOwner = Boolean(members.find((member) => member.user_id === account.sleeper_user_id)?.is_owner);
   return {
     ok: true,

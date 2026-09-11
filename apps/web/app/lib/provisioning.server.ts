@@ -75,6 +75,10 @@ export function provisioningDepsFromEnv(env: Env, leagueId: string, now: () => n
     db: env.DB,
     brain: env.LEAGUE_BRAIN.get(env.LEAGUE_BRAIN.idFromName(leagueId)),
     now,
+    // Same function as persistence timestamps so injected fake time also drives the
+    // bootstrap/poll deadline. Tests that need a distinct deadline clock construct
+    // ProvisioningDeps directly.
+    clock: now,
   };
 }
 

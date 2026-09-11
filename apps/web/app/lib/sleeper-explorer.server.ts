@@ -10,6 +10,10 @@ import {
   type SleeperUser,
 } from "@cutman/sleeper";
 import {
+  d1ExplorerOriginQuota,
+  type ExplorerOriginQuota,
+} from "./explorer-origin-quota.server.ts";
+import {
   assembleExplorerBoard,
   isValidExplorerLeagueId,
   isValidExplorerUsername,
@@ -27,7 +31,6 @@ export const USER_TTL_MS = 60 * 60 * 1000;
 export const LEAGUES_TTL_MS = 15 * 60 * 1000;
 export const BOARD_TTL_MS = 5 * 60 * 1000;
 export const ORIGIN_QUOTA_PER_HOUR = 30;
-const HOUR_MS = 60 * 60 * 1000;
 /** Board miss: getLeague, getLeagueUsers, getRosters, getMatchups, and getPlayers. */
 const BOARD_MISS_ORIGIN_CHARGE = 5;
 
@@ -47,6 +50,7 @@ export type ExplorerDeps = {
   getPlayers: () => Promise<PlayerMap>;
   now: () => number;
   quotaPerHour?: number;
+  originQuota: ExplorerOriginQuota;
 };
 
 export function createMemoryExplorerCache(store = new Map<string, string>()): ExplorerCache {
@@ -80,6 +84,7 @@ export function explorerDepsFromEnv(env: Env): ExplorerDeps {
     cache: kvExplorerCache(env.EXPLORER_CACHE),
     getPlayers: () => getPlayerMap(env, sleeper),
     now: () => Date.now(),
+    originQuota: d1ExplorerOriginQuota(env.DB),
   };
 }
 
@@ -119,19 +124,13 @@ async function writeCache<T>(deps: ExplorerDeps, key: string, payload: T, ttlMs:
   );
 }
 
-function quotaKey(clerkUserId: string, now: number): string {
-  return `explore:quota:${clerkUserId}:${Math.floor(now / HOUR_MS)}`;
-}
-
-// Advisory only: KV get-then-put is eventually consistent, so concurrent requests can exceed the hour budget. Strict enforcement needs an atomic serialized counter before public rollout.
 async function tryConsumeQuota(deps: ExplorerDeps, clerkUserId: string, charge: number): Promise<boolean> {
-  const key = quotaKey(clerkUserId, deps.now());
-  const entry = await readJsonOrNull<{ count: number }>(deps.cache, key);
-  const count = entry?.count ?? 0;
-  const limit = deps.quotaPerHour ?? ORIGIN_QUOTA_PER_HOUR;
-  if (count + charge > limit) return false;
-  await deps.cache.putJson(key, { count: count + charge }, { expirationTtl: 2 * 60 * 60 });
-  return true;
+  return deps.originQuota.tryConsume({
+    clerkUserId,
+    charge,
+    now: deps.now(),
+    limit: deps.quotaPerHour ?? ORIGIN_QUOTA_PER_HOUR,
+  });
 }
 
 function plannedUserOriginCharge(

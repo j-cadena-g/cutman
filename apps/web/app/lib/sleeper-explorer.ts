@@ -344,3 +344,19 @@ const EXPLORER_ERROR_MESSAGES = {
 export function describeExplorerError(kind: ExplorerErrorKind): string {
   return EXPLORER_ERROR_MESSAGES[kind];
 }
+
+export type ExplorerUsernameFormResult =
+  | { ok: true; username: string }
+  | { ok: false; error: string; submittedUsername: string };
+
+export function parseExplorerUsernameForm(rawInput: string): ExplorerUsernameFormResult {
+  const username = normalizeExplorerUsername(rawInput);
+  if (!isValidExplorerUsername(username)) {
+    return {
+      ok: false,
+      error: describeExplorerError("invalid_username"),
+      submittedUsername: rawInput,
+    };
+  }
+  return { ok: true, username };
+}

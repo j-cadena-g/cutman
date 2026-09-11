@@ -12,6 +12,9 @@
  * Use this when local D1 predates a schema change (e.g. Task 1's clean rebuild of `leagues`,
  * `league_members`, `league_verifications`, `sleeper_accounts`) and `ensureSchema`'s
  * purely-additive `CREATE TABLE IF NOT EXISTS` can't reconcile the old shape on its own.
+ * Forward additive migrations (`0003_recap_attempt_backlog.sql`, `0004_explorer_origin_quota.sql`)
+ * reapply with `pnpm run db:migrate:local`; a reset is only required when the local shape
+ * predates those CREATE IF NOT EXISTS statements or a rewritten earlier migration.
  */
 import { lstat, realpath, rm } from "node:fs/promises";
 import path from "node:path";

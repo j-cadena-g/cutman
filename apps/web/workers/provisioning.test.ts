@@ -101,6 +101,15 @@ function injectableClock(start = 0): { clock: () => number; elapse: (ms: number)
   };
 }
 
+describe("provisioningDepsFromEnv", () => {
+  it("uses the injected now for both persistence timestamps and the bootstrap/poll deadline clock", () => {
+    const now = () => 1_804_000_000_000;
+    const deps = provisioningDepsFromEnv(env, "league_clock_wire", now);
+    expect(deps.now).toBe(now);
+    expect(deps.clock).toBe(now);
+  });
+});
+
 describe("provisionAndActivateLeague", () => {
   it("bootstraps the Durable Object by internal id, polls once, and activates the D1 row", async () => {
     const now = 1_804_000_000_000;

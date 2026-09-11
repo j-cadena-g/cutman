@@ -100,19 +100,28 @@ describe("SCHEMA_SQL", () => {
     expect(statements(SCHEMA_SQL)).not.toEqual(statements(init));
   });
 
-  it("covers every final CREATE TABLE/INDEX except users across 0002 then 0003", () => {
+  it("covers every final CREATE TABLE/INDEX except users across 0002 then 0003 then 0004", () => {
     const onboarding = readMigration("0002_sleeper_onboarding.sql");
     const backlog = readMigration("0003_recap_attempt_backlog.sql");
+    const quota = readMigration("0004_explorer_origin_quota.sql");
     const finalWithoutUsers = schemaFinalWithoutUsers();
-    const migrationStatements = [...statements(onboarding), ...statements(backlog)];
-    const migrationCreates = [...migrationFinalCreates(onboarding), ...migrationFinalCreates(backlog)];
+    const migrationStatements = [...statements(onboarding), ...statements(backlog), ...statements(quota)];
+    const migrationCreates = [
+      ...migrationFinalCreates(onboarding),
+      ...migrationFinalCreates(backlog),
+      ...migrationFinalCreates(quota),
+    ];
     expect(finalWithoutUsers.length).toBeGreaterThan(0);
     for (const statement of finalWithoutUsers) {
       expect(migrationStatements).toContainEqual(statement);
     }
     expect(sorted(migrationCreates)).toEqual(sorted(finalWithoutUsers));
     expect(onboarding).not.toMatch(/recap_attempt_backlog/);
+    expect(onboarding).not.toMatch(/explorer_origin_quota/);
     expect(backlog).toMatch(/CREATE TABLE IF NOT EXISTS recap_attempt_backlog\b/);
+    expect(backlog).not.toMatch(/explorer_origin_quota/);
+    expect(quota).toMatch(/CREATE TABLE IF NOT EXISTS explorer_origin_quota\b/);
+    expect(quota).not.toMatch(/recap_attempt_backlog/);
   });
 
   it("keeps 0003 additive (CREATE IF NOT EXISTS only, no DROP or ALTER)", () => {
@@ -120,6 +129,17 @@ describe("SCHEMA_SQL", () => {
     expect(backlog).not.toMatch(/\bDROP\b/i);
     expect(backlog).not.toMatch(/\bALTER\b/i);
     const creates = migrationFinalCreates(backlog);
+    expect(creates.length).toBeGreaterThan(0);
+    for (const statement of creates) {
+      expect(statement).toMatch(/^CREATE (UNIQUE INDEX|INDEX|TABLE) IF NOT EXISTS\b/i);
+    }
+  });
+
+  it("keeps 0004 additive (CREATE IF NOT EXISTS only, no DROP or ALTER)", () => {
+    const quota = readMigration("0004_explorer_origin_quota.sql");
+    expect(quota).not.toMatch(/\bDROP\b/i);
+    expect(quota).not.toMatch(/\bALTER\b/i);
+    const creates = migrationFinalCreates(quota);
     expect(creates.length).toBeGreaterThan(0);
     for (const statement of creates) {
       expect(statement).toMatch(/^CREATE (UNIQUE INDEX|INDEX|TABLE) IF NOT EXISTS\b/i);
@@ -199,5 +219,6 @@ describe("SCHEMA_SQL", () => {
     expect(readMigration("0001_init.sql")).not.toMatch(liveId);
     expect(readMigration("0002_sleeper_onboarding.sql")).not.toMatch(liveId);
     expect(readMigration("0003_recap_attempt_backlog.sql")).not.toMatch(liveId);
+    expect(readMigration("0004_explorer_origin_quota.sql")).not.toMatch(liveId);
   });
 });

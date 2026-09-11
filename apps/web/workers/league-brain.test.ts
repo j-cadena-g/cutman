@@ -345,14 +345,12 @@ describe("LeagueBrain legacy Durable Object migration", () => {
   };
 
   function legacyImportFailedLog(
-    leagueId: string,
     attempt: number,
     reason: "error" | "unknown" = "error",
   ): unknown[] {
     return [
       JSON.stringify({
         event: "league_brain.legacy_import_failed",
-        leagueId,
         attempt,
         max: LEGACY_IMPORT_MAX_ATTEMPTS,
         reason,
@@ -361,14 +359,12 @@ describe("LeagueBrain legacy Durable Object migration", () => {
   }
 
   function legacyImportAbandonedLog(
-    leagueId: string,
     attempt: number,
     reason: "error" | "unknown" = "error",
   ): unknown[] {
     return [
       JSON.stringify({
         event: "league_brain.legacy_import_abandoned",
-        leagueId,
         attempt,
         max: LEGACY_IMPORT_MAX_ATTEMPTS,
         reason,
@@ -381,17 +377,16 @@ describe("LeagueBrain legacy Durable Object migration", () => {
     for (const token of forbidden) {
       expect(serialized).not.toContain(token);
     }
+    expect(serialized).not.toMatch(/\d{6,}/);
     const payloads = (Array.isArray(logged) ? logged : []).flat();
+    expect(payloads.length).toBeGreaterThan(0);
     for (const payload of payloads) {
       if (typeof payload !== "string") continue;
       const parsed = JSON.parse(payload) as Record<string, unknown>;
-      expect(Object.keys(parsed).sort()).toEqual([
-        "attempt",
-        "event",
-        "leagueId",
-        "max",
-        "reason",
-      ]);
+      expect(Object.keys(parsed).sort()).toEqual(["attempt", "event", "max", "reason"]);
+      expect(["league_brain.legacy_import_failed", "league_brain.legacy_import_abandoned"]).toContain(parsed.event);
+      expect(typeof parsed.attempt).toBe("number");
+      expect(parsed.max).toBe(LEGACY_IMPORT_MAX_ATTEMPTS);
       expect(parsed.reason === "error" || parsed.reason === "unknown").toBe(true);
     }
   }
@@ -807,8 +802,8 @@ describe("LeagueBrain legacy Durable Object migration", () => {
       return events;
     });
 
-    expect(logged).toEqual([legacyImportFailedLog(internalId, 1, "unknown")]);
-    expectSafeLegacyImportLogs(logged, ["rpc rejected", "durable-object-id-secret"]);
+    expect(logged).toEqual([legacyImportFailedLog(1, "unknown")]);
+    expectSafeLegacyImportLogs(logged, [internalId, sleeperId, "rpc rejected", "durable-object-id-secret"]);
     const pending = await readBrainSql(next);
     expect(pending.settings).toEqual(
       expect.arrayContaining([
@@ -859,9 +854,8 @@ describe("LeagueBrain legacy Durable Object migration", () => {
       return events;
     });
 
-    expect(logged).toEqual([legacyImportFailedLog(retryInternalId, 1)]);
-    // leagueId is `legacy_${sleeper}` (allowed). Forbid leak tokens, not the snowflake substring.
-    expectSafeLegacyImportLogs(logged, ["rpc rejected", "durable-object-id-secret"]);
+    expect(logged).toEqual([legacyImportFailedLog(1)]);
+    expectSafeLegacyImportLogs(logged, [retryInternalId, retrySleeperId, "rpc rejected", "durable-object-id-secret"]);
 
     const pending = await readBrainSql(next);
     expect(pending.snapshots).toEqual([]);
@@ -1022,12 +1016,12 @@ describe("LeagueBrain legacy Durable Object migration", () => {
       };
     });
 
-    const forbidden = ["rpc rejected", "durable-object-id-secret"];
+    const forbidden = [abandonInternalId, abandonSleeperId, "rpc rejected", "durable-object-id-secret"];
     const exportCalls = (): Promise<number> =>
       runInDurableObject(next, async (instance) => (instance as unknown as TestBrain).legacyExportCalls ?? 0);
 
     const first = await captureBootstrapLogs(next, input);
-    expect(first.errors).toEqual([legacyImportFailedLog(abandonInternalId, 1)]);
+    expect(first.errors).toEqual([legacyImportFailedLog(1)]);
     expect(first.warns).toEqual([]);
     expectSafeLegacyImportLogs(first.errors, forbidden);
     const afterFirst = await readBrainSql(next);
@@ -1056,7 +1050,7 @@ describe("LeagueBrain legacy Durable Object migration", () => {
     expect(await exportCalls()).toBe(1);
 
     const second = await captureBootstrapLogs(next, input);
-    expect(second.errors).toEqual([legacyImportFailedLog(abandonInternalId, 2)]);
+    expect(second.errors).toEqual([legacyImportFailedLog(2)]);
     expect(second.warns).toEqual([]);
     expectSafeLegacyImportLogs(second.errors, forbidden);
     const afterSecond = await readBrainSql(next);
@@ -1084,8 +1078,8 @@ describe("LeagueBrain legacy Durable Object migration", () => {
     expect(await exportCalls()).toBe(2);
 
     const third = await captureBootstrapLogs(next, input);
-    expect(third.errors).toEqual([legacyImportFailedLog(abandonInternalId, LEGACY_IMPORT_MAX_ATTEMPTS)]);
-    expect(third.warns).toEqual([legacyImportAbandonedLog(abandonInternalId, LEGACY_IMPORT_MAX_ATTEMPTS)]);
+    expect(third.errors).toEqual([legacyImportFailedLog(LEGACY_IMPORT_MAX_ATTEMPTS)]);
+    expect(third.warns).toEqual([legacyImportAbandonedLog(LEGACY_IMPORT_MAX_ATTEMPTS)]);
     expectSafeLegacyImportLogs([...third.errors, ...third.warns], forbidden);
     const afterThird = await readBrainSql(next);
     expect(afterThird.snapshots).toEqual([]);
