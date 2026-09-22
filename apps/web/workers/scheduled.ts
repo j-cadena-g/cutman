@@ -191,6 +191,7 @@ function recapAttemptReason(result: RecapAttemptResult): RecapAttemptReason {
     case "skipped_not_final":
     case "model_error":
     case "blank":
+    case "email_pending":
       return status;
     default: {
       const _exhaustive: never = status;
@@ -206,6 +207,7 @@ function recapAttemptIsTerminal(reason: RecapAttemptReason): boolean {
     case "blank":
       return true;
     case "skipped_not_final":
+    case "email_pending":
     case "model_error":
     case "thrown":
       return false;
@@ -366,6 +368,7 @@ async function deleteStaleRecapAttempts(db: D1Database, weekKey: string): Promis
        WHERE rowid IN (
          SELECT rowid FROM recap_attempt_backlog
          WHERE week_key != ?
+           AND (status != 'pending' OR last_error IS NULL OR last_error != 'email_pending')
          ORDER BY rowid ASC
          LIMIT ?
        )`,
@@ -480,6 +483,17 @@ async function settleRecapAttempt(
   db: D1Database,
   input: { leagueId: string; weekKey: string; reason: RecapAttemptReason; now: number },
 ): Promise<void> {
+  if (input.reason === "skipped_not_final" || input.reason === "email_pending") {
+    await db
+      .prepare(
+        `UPDATE recap_attempt_backlog
+         SET last_error = ?, updated_at = ?
+         WHERE league_id = ? AND week_key = ? AND status = 'pending'`,
+      )
+      .bind(input.reason, input.now, input.leagueId, input.weekKey)
+      .run();
+    return;
+  }
   const lastError = input.reason === "published" ? null : input.reason;
   const terminal = recapAttemptIsTerminal(input.reason) ? 1 : 0;
   await db

@@ -1084,7 +1084,7 @@ describe("handleScheduled recap backlog", () => {
       const dashboard = await this.getDashboard();
       recapCalls.push(dashboard.leagueId);
       if (!oursIds.has(dashboard.leagueId)) {
-        return { status: "skipped_not_final" };
+        return { status: "skipped_already" };
       }
       if (published.has(dashboard.leagueId)) {
         return { status: "skipped_already" };
@@ -1130,7 +1130,8 @@ describe("handleScheduled recap backlog", () => {
       expect(rowsAfterDrain.every((row) => row.last_error === null)).toBe(true);
 
       while (ticks < maxTicks + 20) {
-        if ((await pendingBelowCapCount(RECAP_WEEK_KEY)) === 0) break;
+        const enrollment = await recapEnrollmentState();
+        if ((await pendingBelowCapCount(RECAP_WEEK_KEY)) === 0 && enrollment?.complete) break;
         const later = await handleScheduled(env, IDLE_NOW, limit);
         expect(later.recapped).toBe(0);
         ticks += 1;
@@ -1158,7 +1159,7 @@ describe("handleScheduled recap backlog", () => {
       recapCalls.push(dashboard.leagueId);
       if (dashboard.leagueId === blank.id) return { status: "blank" };
       if (dashboard.leagueId === already.id) return { status: "skipped_already" };
-      return { status: "skipped_not_final" };
+      return { status: "skipped_already" };
     };
 
     try {
@@ -1213,23 +1214,25 @@ describe("handleScheduled recap backlog", () => {
       if (dashboard.leagueId === notFinal.id) {
         return { status: "skipped_not_final" };
       }
-      return { status: "skipped_not_final" };
+      return { status: "skipped_already" };
     };
     console.error = (...args: unknown[]) => {
       errors.push(args);
     };
 
     try {
-      const limit = 2;
       const targetIds = [notFinal.id, failing.id, modelError.id];
-      const first = await handleScheduled(env, RECAP_NOW, limit);
-      expect(first.recapped).toBe(0);
+      const activeCount = (await listActiveLeagues(env.DB)).length;
+      const ticks = MAX_RECAP_ATTEMPTS + 2;
+      for (let tick = 0; tick < ticks; tick += 1) {
+        const result = await handleScheduled(env, tick === 0 ? RECAP_NOW : IDLE_NOW, activeCount);
+        expect(result.recapped).toBe(0);
+      }
 
-      const attempted = () => recapCalls.filter((id) => targetIds.includes(id));
-      await drainUntilBacklogDone(RECAP_WEEK_KEY, targetIds, limit, IDLE_NOW);
-
-      expect(new Set(attempted()).size).toBe(3);
-      expect(attempted()).toHaveLength(MAX_RECAP_ATTEMPTS * 3);
+      const callsFor = (id: string) => recapCalls.filter((call) => call === id);
+      expect(callsFor(failing.id)).toHaveLength(MAX_RECAP_ATTEMPTS);
+      expect(callsFor(modelError.id)).toHaveLength(MAX_RECAP_ATTEMPTS);
+      expect(callsFor(notFinal.id).length).toBeGreaterThan(MAX_RECAP_ATTEMPTS);
       expect(errors.length).toBeGreaterThanOrEqual(1);
       for (const entry of errors) {
         const payload = JSON.parse(String(entry[0])) as Record<string, unknown>;
@@ -1243,8 +1246,8 @@ describe("handleScheduled recap backlog", () => {
 
       const rows = await backlogRows(RECAP_WEEK_KEY, targetIds);
       expect(rows.find((row) => row.league_id === notFinal.id)).toMatchObject({
-        status: "done",
-        attempts: MAX_RECAP_ATTEMPTS,
+        status: "pending",
+        attempts: 0,
         last_error: "skipped_not_final",
       });
       expect(rows.find((row) => row.league_id === failing.id)).toMatchObject({
@@ -1257,16 +1260,20 @@ describe("handleScheduled recap backlog", () => {
         attempts: MAX_RECAP_ATTEMPTS,
         last_error: "model_error",
       });
-      expect(rows.every((row) => row.attempts === MAX_RECAP_ATTEMPTS)).toBe(true);
       const serialized = JSON.stringify(rows);
       expect(serialized).not.toContain("recap boom");
       expect(serialized).not.toContain("secret detail");
       expect(serialized).not.toContain("gemma failed");
       expect(serialized).not.toContain("prompt leak");
 
-      const extra = await handleScheduled(env, IDLE_NOW, limit);
+      const notFinalCalls = callsFor(notFinal.id).length;
+      const extra = await handleScheduled(env, IDLE_NOW, activeCount);
       expect(extra.recapped).toBe(0);
-      expect(attempted()).toHaveLength(MAX_RECAP_ATTEMPTS * 3);
+      expect(callsFor(notFinal.id)).toHaveLength(notFinalCalls + 1);
+      expect(callsFor(failing.id)).toHaveLength(MAX_RECAP_ATTEMPTS);
+      expect(callsFor(modelError.id)).toHaveLength(MAX_RECAP_ATTEMPTS);
+      const [still] = await backlogRows(RECAP_WEEK_KEY, [notFinal.id]);
+      expect(still).toMatchObject({ status: "pending", attempts: 0, last_error: "skipped_not_final" });
     } finally {
       LeagueBrain.prototype.attemptRecap = originalAttemptRecap;
       console.error = originalError;
@@ -1301,12 +1308,12 @@ describe("handleScheduled recap backlog", () => {
       const [afterRetryable] = await backlogRows(RECAP_WEEK_KEY, [league.id]);
       expect(afterRetryable).toMatchObject({
         status: "pending",
-        attempts: 1,
+        attempts: 0,
         last_error: "skipped_not_final",
       });
 
       weekFinal = true;
-      const limit = 2;
+      const limit = activeCount;
       const maxTicks = drainTickBudget((await listActiveLeagues(env.DB)).length, limit);
       let recappedTotal = 0;
       for (let ticks = 0; ticks < maxTicks && (await pendingBelowCapCount(RECAP_WEEK_KEY, [league.id])) > 0; ticks += 1) {
@@ -1316,11 +1323,62 @@ describe("handleScheduled recap backlog", () => {
       expect(recappedTotal).toBe(1);
       expect(published).toEqual(new Set([league.id]));
       const [done] = await backlogRows(RECAP_WEEK_KEY, [league.id]);
-      expect(done).toMatchObject({ status: "done", attempts: 2, last_error: null });
+      expect(done).toMatchObject({ status: "done", attempts: 1, last_error: null });
 
       const extra = await handleScheduled(env, IDLE_NOW, limit);
       expect(extra.recapped).toBe(0);
       expect(recapCalls.filter((id) => id === league.id)).toHaveLength(2);
+    } finally {
+      LeagueBrain.prototype.attemptRecap = originalAttemptRecap;
+    }
+  });
+
+  it("keeps email_pending retries off the model cap and past the next Tuesday until the send lands", async () => {
+    const now = 1_805_812_500_000;
+    const league = await seedLeague("backlog_email_pending", now, "active");
+    const recapCalls: string[] = [];
+    let mode: "email_pending" | "published" | "skipped_already" = "email_pending";
+
+    const originalAttemptRecap = LeagueBrain.prototype.attemptRecap;
+    LeagueBrain.prototype.attemptRecap = async function (this: LeagueBrain) {
+      const dashboard = await this.getDashboard();
+      if (dashboard.leagueId !== league.id) return { status: "skipped_already" };
+      recapCalls.push(dashboard.leagueId);
+      if (mode === "email_pending") return { status: "email_pending" };
+      if (mode === "published") {
+        mode = "skipped_already";
+        return { status: "published", recap: { subject: "Week recap", body: "Delivered." } };
+      }
+      return { status: "skipped_already" };
+    };
+
+    try {
+      const activeCount = (await listActiveLeagues(env.DB)).length;
+      for (let tick = 0; tick < MAX_RECAP_ATTEMPTS + 2; tick += 1) {
+        const result = await handleScheduled(env, tick === 0 ? RECAP_NOW : IDLE_NOW, activeCount);
+        expect(result.recapped).toBe(0);
+      }
+      const [pending] = await backlogRows(RECAP_WEEK_KEY, [league.id]);
+      expect(pending).toMatchObject({ status: "pending", attempts: 0, last_error: "email_pending" });
+      expect(recapCalls.length).toBeGreaterThan(MAX_RECAP_ATTEMPTS);
+
+      await handleScheduled(env, NEXT_RECAP_NOW, activeCount);
+      const [kept] = await backlogRows(RECAP_WEEK_KEY, [league.id]);
+      expect(kept).toMatchObject({ status: "pending", attempts: 0, last_error: "email_pending" });
+      const callsAfterSweep = recapCalls.length;
+      expect(callsAfterSweep).toBeGreaterThan(MAX_RECAP_ATTEMPTS);
+
+      mode = "published";
+      let recappedTotal = 0;
+      const maxTicks = drainTickBudget(activeCount, activeCount);
+      for (let tick = 0; tick < maxTicks && recappedTotal === 0; tick += 1) {
+        const later = await handleScheduled(env, NEXT_IDLE_NOW, activeCount);
+        recappedTotal += later.recapped;
+      }
+      expect(recappedTotal).toBe(1);
+      const stopped = await handleScheduled(env, NEXT_IDLE_NOW, activeCount);
+      expect(stopped.recapped).toBe(0);
+      expect(mode).toBe("skipped_already");
     } finally {
       LeagueBrain.prototype.attemptRecap = originalAttemptRecap;
     }
@@ -1387,7 +1445,7 @@ describe("handleScheduled recap backlog", () => {
       expect(rows).toHaveLength(3);
       expect(rows.find((row) => row.league_id === expectedBacklogId)).toMatchObject({
         status: "pending",
-        attempts: 1,
+        attempts: 0,
         last_error: "skipped_not_final",
       });
       for (const deferredId of deferredBacklogIds) {
@@ -1443,7 +1501,7 @@ describe("handleScheduled recap backlog", () => {
       const [row] = await backlogRows(RECAP_WEEK_KEY, [league.id]);
       expect(row).toMatchObject({
         status: "pending",
-        attempts: 1,
+        attempts: 0,
         last_error: "skipped_not_final",
       });
     } finally {
@@ -1659,7 +1717,7 @@ describe("handleScheduled recap backlog", () => {
       const [retryPending] = await backlogRows(RECAP_WEEK_KEY, [retryable.id]);
       expect(retryPending).toMatchObject({
         status: "pending",
-        attempts: 1,
+        attempts: 0,
         last_error: "skipped_not_final",
       });
 
@@ -1668,7 +1726,7 @@ describe("handleScheduled recap backlog", () => {
       expect(recapIds.filter((id) => id === retryable.id)).toHaveLength(2);
       expect(published).toEqual(new Set([publisher.id, retryable.id]));
       const [retryDone] = await backlogRows(RECAP_WEEK_KEY, [retryable.id]);
-      expect(retryDone).toMatchObject({ status: "done", attempts: 2, last_error: null });
+      expect(retryDone).toMatchObject({ status: "done", attempts: 1, last_error: null });
 
       const extraIdle = await handleScheduled(env, IDLE_NOW, limit);
       expect(extraIdle).toEqual({ polled: 0, recapped: 0 });
