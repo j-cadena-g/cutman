@@ -722,7 +722,7 @@ export async function handleScheduled(
           await settleRecapAttempt(env.DB, {
             leagueId: league.id,
             weekKey: settleWeekKey,
-            reason: "thrown",
+            reason: retainedDelivery ? "email_pending" : "thrown",
             now: nowMs,
           });
         } catch (settleError) {

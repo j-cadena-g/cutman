@@ -1503,6 +1503,42 @@ describe("handleScheduled recap backlog", () => {
     }
   });
 
+  it("keeps a thrown retained delivery eligible as email_pending", async () => {
+    const league = await seedLeague("retained_throw", 1, "active");
+    await env.DB.prepare(
+      `INSERT INTO recap_attempt_backlog (league_id, week_key, status, attempts, last_error, created_at, updated_at)
+       VALUES (?, ?, 'pending', 0, 'email_pending', ?, ?)`,
+    )
+      .bind(league.id, RECAP_WEEK_KEY, 1, 1)
+      .run();
+
+    let calls = 0;
+    const originalPoll = LeagueBrain.prototype.poll;
+    const originalAttemptRecap = LeagueBrain.prototype.attemptRecap;
+    LeagueBrain.prototype.poll = async () => ({ wroteBeat: false, hash: "test", facts: 0 });
+    LeagueBrain.prototype.attemptRecap = async function (this: LeagueBrain) {
+      const dashboard = await this.getDashboard();
+      if (dashboard.leagueId !== league.id) return { status: "skipped_already" };
+      calls += 1;
+      throw new Error("delivery boom");
+    };
+
+    try {
+      await handleScheduled(env, NEXT_IDLE_NOW, 1);
+      const [row] = await backlogRows(RECAP_WEEK_KEY, [league.id]);
+      expect(row).toMatchObject({ status: "pending", attempts: 0, last_error: "email_pending" });
+      expect(calls).toBe(1);
+
+      await handleScheduled(env, NEXT_IDLE_NOW, 1);
+      expect(calls).toBe(2);
+      const [still] = await backlogRows(RECAP_WEEK_KEY, [league.id]);
+      expect(still).toMatchObject({ status: "pending", attempts: 0, last_error: "email_pending" });
+    } finally {
+      LeagueBrain.prototype.poll = originalPoll;
+      LeagueBrain.prototype.attemptRecap = originalAttemptRecap;
+    }
+  });
+
   it("on a poll hour with pending backlog, splits work, polls the rotation page, and advances the regular cursor", async () => {
     const now = 1_805_814_000_000;
     const backlogA = await seedLeague("poll_backlog_a", now, "active");
