@@ -1376,6 +1376,8 @@ describe("handleScheduled recap backlog", () => {
         recappedTotal += later.recapped;
       }
       expect(recappedTotal).toBe(1);
+      const [delivered] = await backlogRows(RECAP_WEEK_KEY, [league.id]);
+      expect(delivered).toMatchObject({ status: "done", attempts: 1, last_error: null });
       const stopped = await handleScheduled(env, NEXT_IDLE_NOW, activeCount);
       expect(stopped.recapped).toBe(0);
       expect(mode).toBe("skipped_already");

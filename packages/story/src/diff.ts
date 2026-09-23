@@ -74,14 +74,29 @@ function clauseList(parts: string[]): string {
   return parts.filter((part) => part.length > 0).join(" ");
 }
 
+function receivedByRoster(
+  adds: Record<string, number> | null | undefined,
+  next: LeagueSnapshot,
+  players: PlayerMap,
+): string[] {
+  const received = new Map<number, string[]>();
+  for (const [playerId, rosterId] of Object.entries(adds ?? {})) {
+    const roster = Number(rosterId);
+    const list = received.get(roster) ?? [];
+    list.push(playerLabel(playerId, players));
+    received.set(roster, list);
+  }
+  return [...received.entries()]
+    .sort((left, right) => left[0] - right[0])
+    .map(([rosterId, list]) => `${teamLabel(next.users, next.rosters, rosterId)} received ${list.join(", ")}.`);
+}
+
 function tradeCopy(
   names: string[],
   tx: LeagueSnapshot["transactions"][number],
   next: LeagueSnapshot,
   players: PlayerMap,
 ): string {
-  const adds = Object.keys(tx.adds ?? {}).map((id) => playerLabel(id, players));
-  const drops = Object.keys(tx.drops ?? {}).map((id) => playerLabel(id, players));
   const picks = (tx.draft_picks ?? []).map((pick) => {
     const from = teamLabel(next.users, next.rosters, Number(pick.previous_owner_id));
     const to = teamLabel(next.users, next.rosters, Number(pick.owner_id));
@@ -94,8 +109,7 @@ function tradeCopy(
   });
   return clauseList([
     `${names.join(" and ")} completed a trade.`,
-    adds.length > 0 ? `Received ${adds.join(", ")}.` : "",
-    drops.length > 0 ? `Sent ${drops.join(", ")}.` : "",
+    ...receivedByRoster(tx.adds, next, players),
     ...picks,
     ...faab,
   ]);

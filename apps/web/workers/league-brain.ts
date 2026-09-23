@@ -387,6 +387,9 @@ export class LeagueBrain extends DurableObject<Env> {
   }
 
   async attemptRecap(): Promise<RecapAttemptResult> {
+    const unsent = this.oldestUnemailedRecap();
+    if (unsent) return this.sendStoredRecap(unsent);
+
     const settings = this.readSettings();
     const state = await this.loadNflState();
     const current = await this.loadRecapWeek(settings.sleeperLeagueId, state.week);
@@ -516,8 +519,10 @@ export class LeagueBrain extends DurableObject<Env> {
         now,
       );
       for (const fact of facts) {
-        if (fact.kind === "trade" || fact.kind === "rivalry") {
+        if (fact.kind === "trade") {
           this.insertBibleIfNew(fact.copy, now);
+        } else if (fact.kind === "rivalry") {
+          this.insertBibleIfNew(`Week ${snapshot.week}: ${fact.copy}`, now);
         }
       }
     });
@@ -537,6 +542,13 @@ export class LeagueBrain extends DurableObject<Env> {
     const existing = this.ctx.storage.sql.exec("SELECT id FROM bible WHERE entry = ? LIMIT 1", entry).toArray();
     if (existing.length > 0) return;
     this.ctx.storage.sql.exec("INSERT INTO bible (entry, created_at) VALUES (?, ?)", entry, now);
+  }
+
+  private oldestUnemailedRecap(): { week: number; subject: string; body: string } | null {
+    const row = this.ctx.storage.sql
+      .exec("SELECT week, subject, body FROM recaps WHERE emailed_at IS NULL ORDER BY week ASC LIMIT 1")
+      .toArray()[0] as { week: number; subject: string; body: string } | undefined;
+    return row ?? null;
   }
 
   private readRecap(week: number): { week: number; subject: string; body: string; emailedAt: number | null } | null {

@@ -121,7 +121,7 @@ function tradeSnapshot(transaction: SleeperTransaction): LeagueSnapshot {
 }
 
 describe("trade copy and bench shame", () => {
-  it("names adds, drops, picks, and FAAB on a trade", () => {
+  it("names which team received each player, plus picks and FAAB", () => {
     const facts = diffSnapshots(
       null,
       tradeSnapshot({
@@ -129,8 +129,8 @@ describe("trade copy and bench shame", () => {
         transaction_id: "tx-full",
         status: "complete",
         roster_ids: [1, 2],
-        adds: { "4984": 1 },
-        drops: { "9226": 1 },
+        adds: { "4984": 1, "9226": 2 },
+        drops: { "4984": 2, "9226": 1 },
         draft_picks: [{ season: "2027", round: 2, roster_id: 1, previous_owner_id: 2, owner_id: 1 }],
         waiver_budget: [{ sender: 1, receiver: 2, amount: 15 }],
       }),
@@ -138,8 +138,9 @@ describe("trade copy and bench shame", () => {
     );
     const trade = facts.find((fact) => fact.kind === "trade");
     expect(trade?.copy).toContain("Purdy Please and Zero RB Forever completed a trade.");
-    expect(trade?.copy).toContain("Received CeeDee Lamb.");
-    expect(trade?.copy).toContain("Sent A.J. Brown.");
+    expect(trade?.copy).toContain("Purdy Please received CeeDee Lamb.");
+    expect(trade?.copy).toContain("Zero RB Forever received A.J. Brown.");
+    expect(trade?.copy).not.toContain("Received CeeDee Lamb, A.J. Brown.");
     expect(trade?.copy).toContain("Picks: 2027 round 2 from Zero RB Forever to Purdy Please.");
     expect(trade?.copy).toContain("FAAB: Purdy Please sent 15 to Zero RB Forever.");
   });

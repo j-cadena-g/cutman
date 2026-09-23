@@ -278,6 +278,55 @@ describe("LeagueBrain Durable Object", () => {
     expect(await stub.listRecaps()).toHaveLength(1);
   });
 
+  it("delivers the oldest unsent recap before archiving a later played week", async () => {
+    const stub = await boot("recap-unsent-older");
+    let generated = 0;
+    let stateLoads = 0;
+    await runInDurableObject(stub, async (instance, state) => {
+      const brain = instance as unknown as {
+        loadNflState(): Promise<{ week: number }>;
+        loadRecapWeek(
+          sleeperLeagueId: string,
+          week: number,
+        ): Promise<{ matchups: typeof fixtureMatchupsFinal; transactions: [] }>;
+        generateRecapDraft(): Promise<{ subject: string; body: string }>;
+      };
+      brain.loadNflState = async () => {
+        stateLoads += 1;
+        return { week: 4 };
+      };
+      brain.loadRecapWeek = async (_sleeperLeagueId, week) => {
+        if (week === 4) return { matchups: fixtureMatchupsFinal, transactions: [] };
+        throw new Error(`unexpected recap week ${week}`);
+      };
+      brain.generateRecapDraft = async () => {
+        generated += 1;
+        return { subject: "Week 4 recap", body: "The later week can wait." };
+      };
+      state.storage.sql.exec(
+        "INSERT INTO recaps (week, subject, body, facts, emailed_at, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        3,
+        "Week 3 still unsent",
+        "Delivery first.",
+        "[]",
+        null,
+        1_700_000_000_000,
+      );
+    });
+
+    const first = await stub.attemptRecap();
+    expect(first.status).toBe("published");
+    expect(generated).toBe(0);
+    expect(stateLoads).toBe(0);
+    expect(await stub.listRecaps()).toEqual([expect.objectContaining({ week: 3, subject: "Week 3 still unsent" })]);
+
+    const second = await stub.attemptRecap();
+    expect(second.status).toBe("published");
+    expect(generated).toBe(1);
+    expect(stateLoads).toBe(1);
+    expect((await stub.listRecaps()).map((recap) => recap.week)).toEqual([3, 4]);
+  });
+
   it("keeps one rivalry bible row and one trade bible row across close-score polls", async () => {
     const stub = await boot("bible-once");
     const first = snapshot();
@@ -312,14 +361,38 @@ describe("LeagueBrain Durable Object", () => {
       return state.storage.sql.exec("SELECT entry FROM bible").toArray() as Array<{ entry: string }>;
     });
     const entries = bible.map((row) => row.entry);
-    expect(entries.filter((entry) => entry.includes("one-score game"))).toHaveLength(1);
+    expect(entries.filter((entry) => entry.includes("one-score game"))).toEqual([
+      expect.stringContaining("Week 3:"),
+    ]);
     expect(entries.filter((entry) => entry.includes("completed a trade"))).toHaveLength(1);
+    expect(entries.filter((entry) => entry.includes("completed a trade"))[0]?.startsWith("Week ")).toBe(false);
+
+    const rematch = {
+      ...second,
+      week: 4,
+      matchups: second.matchups.map((matchup) =>
+        matchup.matchup_id === 2 && typeof matchup.points === "number"
+          ? { ...matchup, points: matchup.points + 0.4 }
+          : matchup,
+      ),
+    };
+    const later = await stub.ingestSnapshot(rematch, fixturePlayers);
+    expect(later.wroteBeat).toBe(true);
+    const afterRematch = await runInDurableObject(stub, async (_instance, state) => {
+      return state.storage.sql.exec("SELECT entry FROM bible").toArray() as Array<{ entry: string }>;
+    });
+    const rematchEntries = afterRematch.map((row) => row.entry);
+    const rivalryLines = rematchEntries.filter((entry) => entry.includes("one-score game"));
+    expect(rivalryLines).toHaveLength(2);
+    expect(rivalryLines.some((entry) => entry.startsWith("Week 3:"))).toBe(true);
+    expect(rivalryLines.some((entry) => entry.startsWith("Week 4:"))).toBe(true);
+    expect(rematchEntries.filter((entry) => entry.includes("completed a trade"))).toHaveLength(1);
     expect(entries.filter((entry) => entry.startsWith("Week 3 recap:"))).toEqual([
       "Week 3 recap: Week 3 belongs to Alex",
     ]);
     expect(entries.some((entry) => entry.includes("on the pine") || entry.includes("hit the wire"))).toBe(false);
     const beats = await stub.listBeats();
-    expect(beats).toHaveLength(2);
+    expect(beats).toHaveLength(3);
   });
 
   it("retries a failed recap send without a second model call", async () => {

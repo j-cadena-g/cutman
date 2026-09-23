@@ -429,6 +429,42 @@ async function enrollRecapBacklogPage(
   return next;
 }
 
+type RetainedEmailPending = { league: LeagueRow; weekKey: string };
+
+/** email_pending rows kept across the Tuesday sweep. Settle these with their stored week_key. */
+async function listRetainedEmailPending(
+  db: D1Database,
+  currentWeekKey: string,
+  limit: number,
+): Promise<RetainedEmailPending[]> {
+  const result = await db
+    .prepare(
+      `SELECT leagues.id, leagues.sleeper_league_id, leagues.name, leagues.season, leagues.status,
+              leagues.tone, leagues.created_at, leagues.activated_at, leagues.provisioning_error,
+              leagues.provisioning_started_at,
+              recap_attempt_backlog.week_key AS backlog_week_key
+       FROM recap_attempt_backlog
+       INNER JOIN leagues ON leagues.id = recap_attempt_backlog.league_id
+       WHERE recap_attempt_backlog.week_key != ?
+         AND recap_attempt_backlog.status = 'pending'
+         AND recap_attempt_backlog.last_error = 'email_pending'
+         AND leagues.status = 'active'
+       ORDER BY recap_attempt_backlog.week_key ASC, leagues.id ASC
+       LIMIT ?`,
+    )
+    .bind(currentWeekKey, limit)
+    .all<LeagueRow & { backlog_week_key: string }>();
+  const seen = new Set<string>();
+  const rows: RetainedEmailPending[] = [];
+  for (const row of result.results) {
+    if (seen.has(row.id)) continue;
+    seen.add(row.id);
+    const { backlog_week_key: storedWeekKey, ...league } = row;
+    rows.push({ league, weekKey: storedWeekKey });
+  }
+  return rows;
+}
+
 async function listPendingRecapLeagues(db: D1Database, weekKey: string, limit: number): Promise<LeagueRow[]> {
   const result = await db
     .prepare(
@@ -566,20 +602,21 @@ export async function handleScheduled(
   }
 
   const enrollmentForWeek = enrollment?.weekKey === weekKey ? enrollment : null;
+  const retained = await listRetainedEmailPending(env.DB, weekKey, maxLeagues);
 
   let pending: LeagueRow[] = [];
   if (!recapWindow) {
-    if (!poll && !enrollmentForWeek) {
+    if (!poll && !enrollmentForWeek && retained.length === 0) {
       return { polled: 0, recapped: 0 };
     }
-    if (!poll && enrollmentForWeek?.complete) {
+    if (!poll && enrollmentForWeek?.complete && retained.length === 0) {
       if (!(await hasPendingRecapAttempts(env.DB, weekKey))) {
         return { polled: 0, recapped: 0 };
       }
     }
     if (!poll) {
       pending = await listPendingRecapLeagues(env.DB, weekKey, maxLeagues);
-      if (pending.length === 0) {
+      if (pending.length === 0 && retained.length === 0) {
         return { polled: 0, recapped: 0 };
       }
     }
@@ -616,6 +653,13 @@ export async function handleScheduled(
     recapIds = new Set(work.map((league) => league.id));
   }
 
+  const retainedWeekKey = new Map<string, string>();
+  for (const row of retained) {
+    if (!retainedWeekKey.has(row.league.id)) retainedWeekKey.set(row.league.id, row.weekKey);
+    recapIds.add(row.league.id);
+    if (!work.some((league) => league.id === row.league.id)) work.push(row.league);
+  }
+
   let polled = 0;
   let recapped = 0;
   for (const league of work) {
@@ -636,7 +680,7 @@ export async function handleScheduled(
         const result = await stub.attemptRecap();
         await settleRecapAttempt(env.DB, {
           leagueId: league.id,
-          weekKey,
+          weekKey: retainedWeekKey.get(league.id) ?? weekKey,
           reason: recapAttemptReason(result),
           now: nowMs,
         });
@@ -648,7 +692,7 @@ export async function handleScheduled(
         try {
           await settleRecapAttempt(env.DB, {
             leagueId: league.id,
-            weekKey,
+            weekKey: retainedWeekKey.get(league.id) ?? weekKey,
             reason: "thrown",
             now: nowMs,
           });
