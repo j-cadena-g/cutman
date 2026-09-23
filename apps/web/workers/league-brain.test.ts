@@ -67,6 +67,68 @@ describe("LeagueBrain Durable Object", () => {
     expect(second.facts).toBe(0);
   });
 
+  it("leaves the previous hash in place when the beat draft fails, then writes one beat", async () => {
+    const stub = await boot("beat-retry");
+    let calls = 0;
+    await runInDurableObject(stub, async (instance) => {
+      const brain = instance as unknown as {
+        generateBeatDraft(week: number, facts: unknown[]): Promise<{ copy: string }>;
+      };
+      brain.generateBeatDraft = async () => {
+        calls += 1;
+        if (calls === 1) throw new Error("gemma down");
+        return { copy: "Alex fleeced the chat." };
+      };
+    });
+
+    const payload = snapshot();
+    const first = await stub.ingestSnapshot(payload, fixturePlayers);
+    const afterFailure = await runInDurableObject(stub, async (_instance, state) => ({
+      snapshots: state.storage.sql.exec("SELECT id FROM snapshots").toArray().length,
+      beats: state.storage.sql.exec("SELECT id FROM beats").toArray().length,
+    }));
+    expect(first.wroteBeat).toBe(false);
+    expect(first.facts).toBeGreaterThan(0);
+    expect(afterFailure).toEqual({ snapshots: 0, beats: 0 });
+
+    const second = await stub.ingestSnapshot(payload, fixturePlayers);
+    const afterWrite = await runInDurableObject(stub, async (_instance, state) => ({
+      snapshots: state.storage.sql.exec("SELECT id FROM snapshots").toArray().length,
+      beats: state.storage.sql.exec("SELECT copy FROM beats").toArray() as Array<{ copy: string }>,
+    }));
+    expect(second.wroteBeat).toBe(true);
+    expect(afterWrite.snapshots).toBe(1);
+    expect(afterWrite.beats).toEqual([{ copy: "Alex fleeced the chat." }]);
+
+    const third = await stub.ingestSnapshot(payload, fixturePlayers);
+    const afterRepeat = await runInDurableObject(stub, async (_instance, state) =>
+      state.storage.sql.exec("SELECT id FROM beats").toArray().length,
+    );
+    expect(third.facts).toBe(0);
+    expect(third.wroteBeat).toBe(false);
+    expect(afterRepeat).toBe(1);
+  });
+
+  it("stores a snapshot when the hash changes but the diff has no facts", async () => {
+    const stub = await boot("fact-free");
+    const first = snapshot();
+    await stub.ingestSnapshot(first, fixturePlayers);
+    const renamed = {
+      ...first,
+      users: first.users.map((user, index) => (index === 0 ? { ...user, display_name: "Alexandra" } : user)),
+      matchups: first.matchups.map((matchup) => ({ ...matchup, players_points: null })),
+    };
+    const second = await stub.ingestSnapshot(renamed, fixturePlayers);
+    const counts = await runInDurableObject(stub, async (_instance, state) => ({
+      snapshots: state.storage.sql.exec("SELECT id FROM snapshots").toArray().length,
+      beats: state.storage.sql.exec("SELECT id FROM beats").toArray().length,
+    }));
+    expect(second.wroteBeat).toBe(false);
+    expect(second.facts).toBe(0);
+    expect(counts.snapshots).toBe(2);
+    expect(counts.beats).toBe(1);
+  });
+
   it("skips Tuesday recap when the week is not final", async () => {
     const stub = await boot("not-final");
     await stub.ingestSnapshot(snapshot(fixtureMatchupsInProgress), fixturePlayers);
@@ -112,6 +174,344 @@ describe("LeagueBrain Durable Object", () => {
     });
     expect(result.status).toBe("model_error");
     expect(await stub.listRecaps()).toEqual([]);
+  });
+
+  it("recaps the played fixture week with player names", async () => {
+    const stub = env.LEAGUE_BRAIN.getByName("recap-player-names");
+    await stub.bootstrap({
+      leagueId: "lg-recap-player-names",
+      sleeperLeagueId: V1_LEAGUE_ID,
+      name: "Pilot League",
+      tone: "playful",
+    });
+    const prompts: string[] = [];
+    await runInDurableObject(stub, async (instance) => {
+      const brain = instance as unknown as {
+        generateRecapDraft(prompt: { system: string; user: string }): Promise<{ subject: string; body: string }>;
+      };
+      brain.generateRecapDraft = async (prompt) => {
+        prompts.push(prompt.user);
+        return { subject: "Week 1 recap", body: "The opener is in the book." };
+      };
+    });
+
+    const result = await stub.attemptRecap();
+    expect(result.status).toBe("published");
+    const recaps = await stub.listRecaps();
+    expect(recaps).toEqual([expect.objectContaining({ week: 1, subject: "Week 1 recap" })]);
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]).toContain("Patrick Mahomes");
+    expect(prompts[0]).not.toContain("Player 4046");
+  });
+
+  it("archives the previous played week when the current NFL week is all zeros", async () => {
+    const stub = await boot("recap-rollover");
+    const zeros = fixtureMatchupsFinal.map((matchup) => ({
+      ...matchup,
+      points: 0,
+      players_points: Object.fromEntries(Object.keys(matchup.players_points ?? {}).map((id) => [id, 0])),
+    }));
+    await runInDurableObject(stub, async (instance) => {
+      const brain = instance as unknown as {
+        loadNflState(): Promise<{ week: number }>;
+        loadRecapWeek(
+          sleeperLeagueId: string,
+          week: number,
+        ): Promise<{ matchups: typeof fixtureMatchupsFinal; transactions: [] }>;
+        generateRecapDraft(prompt: { user: string }): Promise<{ subject: string; body: string }>;
+      };
+      brain.loadNflState = async () => ({ week: 4 });
+      brain.loadRecapWeek = async (_sleeperLeagueId, week) => {
+        if (week === 4) return { matchups: zeros, transactions: [] };
+        if (week === 3) return { matchups: fixtureMatchupsFinal, transactions: [] };
+        throw new Error(`unexpected recap week ${week}`);
+      };
+      brain.generateRecapDraft = async () => ({ subject: "Week 3 recap", body: "Last week counted." });
+    });
+
+    const result = await stub.attemptRecap();
+    expect(result.status).toBe("published");
+    expect(await stub.listRecaps()).toEqual([expect.objectContaining({ week: 3, subject: "Week 3 recap" })]);
+  });
+
+  it("does not generate when the selected week is already archived", async () => {
+    const stub = await boot("recap-already");
+    let generated = 0;
+    await runInDurableObject(stub, async (instance, state) => {
+      const brain = instance as unknown as {
+        loadNflState(): Promise<{ week: number }>;
+        loadRecapWeek(
+          sleeperLeagueId: string,
+          week: number,
+        ): Promise<{ matchups: typeof fixtureMatchupsFinal; transactions: [] }>;
+        generateRecapDraft(): Promise<{ subject: string; body: string }>;
+      };
+      brain.loadNflState = async () => ({ week: 4 });
+      brain.loadRecapWeek = async (_sleeperLeagueId, week) => {
+        if (week === 4) {
+          return {
+            matchups: fixtureMatchupsFinal.map((matchup) => ({ ...matchup, points: 0, players_points: null })),
+            transactions: [],
+          };
+        }
+        if (week === 3) return { matchups: fixtureMatchupsFinal, transactions: [] };
+        throw new Error(`unexpected recap week ${week}`);
+      };
+      brain.generateRecapDraft = async () => {
+        generated += 1;
+        return { subject: "should not run", body: "nope" };
+      };
+      state.storage.sql.exec(
+        "INSERT INTO recaps (week, subject, body, facts, emailed_at, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        3,
+        "Week 3 already",
+        "Archived.",
+        "[]",
+        1_700_000_000_000,
+        1_700_000_000_000,
+      );
+    });
+
+    const result = await stub.attemptRecap();
+    expect(result.status).toBe("skipped_already");
+    expect(generated).toBe(0);
+    expect(await stub.listRecaps()).toHaveLength(1);
+  });
+
+  it("delivers the oldest unsent recap before archiving a later played week", async () => {
+    const stub = await boot("recap-unsent-older");
+    let generated = 0;
+    let stateLoads = 0;
+    await runInDurableObject(stub, async (instance, state) => {
+      const brain = instance as unknown as {
+        loadNflState(): Promise<{ week: number }>;
+        loadRecapWeek(
+          sleeperLeagueId: string,
+          week: number,
+        ): Promise<{ matchups: typeof fixtureMatchupsFinal; transactions: [] }>;
+        generateRecapDraft(): Promise<{ subject: string; body: string }>;
+      };
+      brain.loadNflState = async () => {
+        stateLoads += 1;
+        return { week: 4 };
+      };
+      brain.loadRecapWeek = async (_sleeperLeagueId, week) => {
+        if (week === 4) return { matchups: fixtureMatchupsFinal, transactions: [] };
+        throw new Error(`unexpected recap week ${week}`);
+      };
+      brain.generateRecapDraft = async () => {
+        generated += 1;
+        return { subject: "Week 4 recap", body: "The later week can wait." };
+      };
+      state.storage.sql.exec(
+        "INSERT INTO recaps (week, subject, body, facts, emailed_at, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        3,
+        "Week 3 still unsent",
+        "Delivery first.",
+        "[]",
+        null,
+        1_700_000_000_000,
+      );
+    });
+
+    const first = await stub.attemptRecap();
+    expect(first.status).toBe("published");
+    expect(generated).toBe(0);
+    expect(stateLoads).toBe(0);
+    expect(await stub.listRecaps()).toEqual([expect.objectContaining({ week: 3, subject: "Week 3 still unsent" })]);
+
+    const second = await stub.attemptRecap();
+    expect(second.status).toBe("published");
+    expect(generated).toBe(1);
+    expect(stateLoads).toBe(1);
+    expect((await stub.listRecaps()).map((recap) => recap.week)).toEqual([3, 4]);
+  });
+
+  it("keeps one rivalry bible row and one trade bible row across close-score polls", async () => {
+    const stub = await boot("bible-once");
+    const first = snapshot();
+    const second = snapshot(
+      fixtureMatchupsFinal.map((matchup) =>
+        matchup.matchup_id === 2 && typeof matchup.points === "number"
+          ? { ...matchup, points: matchup.points + 0.4 }
+          : matchup,
+      ),
+    );
+    const opening = await stub.ingestSnapshot(first, fixturePlayers);
+    const follow = await stub.ingestSnapshot(second, fixturePlayers);
+    expect(opening.wroteBeat).toBe(true);
+    expect(follow.wroteBeat).toBe(true);
+
+    const firstRecap = await runInDurableObject(stub, async (instance) => {
+      return (instance as LeagueBrain).attemptRecapWithGenerator(fixtureMatchupsFinal, [], async () => ({
+        subject: "Week 3 belongs to Alex",
+        body: "One line in the bible.",
+      }));
+    });
+    const secondRecap = await runInDurableObject(stub, async (instance) => {
+      return (instance as LeagueBrain).attemptRecapWithGenerator(fixtureMatchupsFinal, [], async () => ({
+        subject: "Week 3 belongs to Alex",
+        body: "Should not add another line.",
+      }));
+    });
+    expect(firstRecap.status).toBe("published");
+    expect(secondRecap.status).toBe("skipped_already");
+
+    const bible = await runInDurableObject(stub, async (_instance, state) => {
+      return state.storage.sql.exec("SELECT entry FROM bible").toArray() as Array<{ entry: string }>;
+    });
+    const entries = bible.map((row) => row.entry);
+    expect(entries.filter((entry) => entry.includes("one-score game"))).toEqual([
+      expect.stringContaining("Week 3:"),
+    ]);
+    expect(entries.filter((entry) => entry.includes("completed a trade"))).toHaveLength(1);
+    expect(entries.filter((entry) => entry.includes("completed a trade"))[0]?.startsWith("Week ")).toBe(false);
+
+    const rematch = {
+      ...second,
+      week: 4,
+      matchups: second.matchups.map((matchup) =>
+        matchup.matchup_id === 2 && typeof matchup.points === "number"
+          ? { ...matchup, points: matchup.points + 0.4 }
+          : matchup,
+      ),
+    };
+    const later = await stub.ingestSnapshot(rematch, fixturePlayers);
+    expect(later.wroteBeat).toBe(true);
+    const afterRematch = await runInDurableObject(stub, async (_instance, state) => {
+      return state.storage.sql.exec("SELECT entry FROM bible").toArray() as Array<{ entry: string }>;
+    });
+    const rematchEntries = afterRematch.map((row) => row.entry);
+    const rivalryLines = rematchEntries.filter((entry) => entry.includes("one-score game"));
+    expect(rivalryLines).toHaveLength(2);
+    expect(rivalryLines.some((entry) => entry.startsWith("Week 3:"))).toBe(true);
+    expect(rivalryLines.some((entry) => entry.startsWith("Week 4:"))).toBe(true);
+    expect(rematchEntries.filter((entry) => entry.includes("completed a trade"))).toHaveLength(1);
+    expect(entries.filter((entry) => entry.startsWith("Week 3 recap:"))).toEqual([
+      "Week 3 recap: Week 3 belongs to Alex",
+    ]);
+    expect(entries.some((entry) => entry.includes("on the pine") || entry.includes("hit the wire"))).toBe(false);
+    const beats = await stub.listBeats();
+    expect(beats).toHaveLength(3);
+  });
+
+  it("retries a failed recap send without a second model call", async () => {
+    const leagueId = "lg-email-pending";
+    await ensureSchema(env.DB);
+    const now = 1_806_100_000_000;
+    await createLeague(env.DB, {
+      id: leagueId,
+      sleeperLeagueId: "sleeper-email-pending",
+      name: "Email League",
+      season: "2026",
+      now,
+    });
+    await activateLeague(env.DB, leagueId, now + 1);
+    const user = await upsertUserByClerkId(env.DB, {
+      id: "user_email_pending",
+      email: "email-pending@example.test",
+      now,
+    });
+    await upsertLeagueMember(env.DB, { leagueId, userId: user.id, role: "member", now });
+    await setRecapOptIn(env.DB, leagueId, user.id, true);
+
+    const stub = env.LEAGUE_BRAIN.getByName("email-pending");
+    await stub.bootstrap({
+      leagueId,
+      sleeperLeagueId: "sleeper-email-pending",
+      name: "Email League",
+      tone: "playful",
+    });
+    await stub.ingestSnapshot(snapshot(), fixturePlayers);
+
+    const first = await runInDurableObject(stub, async (instance) => {
+      const brain = instance as unknown as {
+        generateCount: number;
+        env: { EMAIL: { send(): Promise<unknown> } };
+        attemptRecapWithGenerator: LeagueBrain["attemptRecapWithGenerator"];
+      };
+      brain.generateCount = 0;
+      brain.env.EMAIL = {
+        async send() {
+          throw new Error("smtp down");
+        },
+      };
+      const result = await brain.attemptRecapWithGenerator(fixtureMatchupsFinal, [], async () => {
+        brain.generateCount += 1;
+        return { subject: "Week 3 belongs to Alex", body: "Delivery can wait." };
+      });
+      return { result, generateCount: brain.generateCount };
+    });
+    expect(first.result.status).toBe("email_pending");
+    expect(first.generateCount).toBe(1);
+    const afterFailure = await runInDurableObject(stub, async (_instance, state) => {
+      return state.storage.sql.exec("SELECT week, emailed_at FROM recaps").toArray() as Array<{
+        week: number;
+        emailed_at: number | null;
+      }>;
+    });
+    expect(afterFailure).toEqual([{ week: 3, emailed_at: null }]);
+
+    const second = await runInDurableObject(stub, async (instance) => {
+      const brain = instance as unknown as {
+        generateCount: number;
+        env: { EMAIL: { send(): Promise<unknown> } };
+        attemptRecapWithGenerator: LeagueBrain["attemptRecapWithGenerator"];
+      };
+      brain.env.EMAIL = {
+        async send() {
+          return {};
+        },
+      };
+      const result = await brain.attemptRecapWithGenerator(fixtureMatchupsFinal, [], async () => {
+        brain.generateCount += 1;
+        return { subject: "Week 3 again", body: "Should not generate." };
+      });
+      return { result, generateCount: brain.generateCount };
+    });
+    expect(second.result.status).toBe("published");
+    expect(second.generateCount).toBe(1);
+    const afterSend = await runInDurableObject(stub, async (_instance, state) => {
+      const recaps = state.storage.sql.exec("SELECT week, emailed_at FROM recaps").toArray() as Array<{
+        week: number;
+        emailed_at: number | null;
+      }>;
+      const bible = state.storage.sql.exec("SELECT entry FROM bible").toArray() as Array<{ entry: string }>;
+      return { recaps, bible: bible.map((row) => row.entry).filter((entry) => entry.startsWith("Week 3 recap:")) };
+    });
+    expect(afterSend.recaps).toHaveLength(1);
+    expect(afterSend.recaps[0]?.emailed_at).not.toBeNull();
+    expect(afterSend.bible).toEqual(["Week 3 recap: Week 3 belongs to Alex"]);
+  });
+
+  it("marks a recap emailed when nobody is opted in and does not send", async () => {
+    const stub = await boot("recap-no-recipients");
+    await stub.ingestSnapshot(snapshot(), fixturePlayers);
+    const result = await runInDurableObject(stub, async (instance, state) => {
+      const brain = instance as unknown as {
+        sends: number;
+        env: { EMAIL: { send(): Promise<unknown> } };
+        attemptRecapWithGenerator: LeagueBrain["attemptRecapWithGenerator"];
+      };
+      brain.sends = 0;
+      brain.env.EMAIL = {
+        async send() {
+          brain.sends += 1;
+          throw new Error("should not send");
+        },
+      };
+      const status = await brain.attemptRecapWithGenerator(fixtureMatchupsFinal, [], async () => ({
+        subject: "Week 3 belongs to Alex",
+        body: "Nobody asked for mail.",
+      }));
+      const row = state.storage.sql.exec("SELECT emailed_at FROM recaps WHERE week = 3").toArray()[0] as
+        | { emailed_at: number | null }
+        | undefined;
+      return { status, sends: brain.sends, emailed: row?.emailed_at ?? null };
+    });
+    expect(result.status.status).toBe("published");
+    expect(result.sends).toBe(0);
+    expect(result.emailed).not.toBeNull();
   });
 });
 

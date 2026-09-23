@@ -11,4 +11,4 @@ export { canonicalJson, hashPayload, hashSnapshot } from "./snapshot.ts";
 export type { LeagueSnapshot } from "./snapshot.ts";
 export { isTone, parseTone, toneBlurb, toneLabel, toneOrPlayful, TONES } from "./tone.ts";
 export type { Tone } from "./tone.ts";
-export { hasFinitePoints, hasPlayerPoints, isWeekFinal } from "./week.ts";
+export { hasFinitePoints, hasPlayerPoints, isPlayedWeek, isWeekFinal, selectRecapWeek } from "./week.ts";

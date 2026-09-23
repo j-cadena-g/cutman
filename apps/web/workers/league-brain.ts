@@ -2,15 +2,18 @@ import { DurableObject } from "cloudflare:workers";
 import { generateBeat, generateRecap, type WorkersAi } from "@cutman/ai";
 import { getLeague, listRecapRecipients, setLeagueTone } from "@cutman/db";
 import { recapEmail, sendEmail } from "@cutman/email";
-import type { PlayerMap, SleeperMatchup } from "@cutman/sleeper";
+import type { NflState, PlayerMap, SleeperMatchup, SleeperTransaction } from "@cutman/sleeper";
 import {
   beatPrompt,
   diffSnapshots,
   factsIfChanged,
   hashSnapshot,
+  isBlankBeat,
+  isPlayedWeek,
   isTone,
   recapPrompt,
   runRecapAttempt,
+  selectRecapWeek,
   toneOrPlayful,
   type BeatDraft,
   type LeagueSnapshot,
@@ -42,6 +45,13 @@ type LegacySqlValue = string | number | null;
 
 function bootstrapBibleEntry(name: string, tone: Tone): string {
   return `${name} is in the book. Tone: ${tone}.`;
+}
+
+function isBrainGateError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    (error.message === UNBOOTSTRAPPED_MESSAGE || error.message === LEGACY_IMPORT_PENDING_MESSAGE)
+  );
 }
 
 type LegacyImportLogEvent = "league_brain.legacy_import_failed" | "league_brain.legacy_import_abandoned";
@@ -322,93 +332,162 @@ export class LeagueBrain extends DurableObject<Env> {
     const hash = await hashSnapshot(snapshot);
     const last = this.latestSnapshot();
     const facts = await factsIfChanged(last?.hash ?? null, hash, last?.snapshot ?? null, snapshot, players);
-    this.ctx.storage.sql.exec(
-      "INSERT INTO snapshots (week, payload_hash, payload, created_at) VALUES (?, ?, ?, ?)",
-      snapshot.week,
-      hash,
-      JSON.stringify(snapshot),
-      Date.now(),
-    );
     if (facts.length === 0) {
+      this.insertSnapshot(snapshot, hash);
       return { wroteBeat: false, hash, facts: 0 };
     }
-    const wroteBeat = await this.publishBeat(snapshot.week, facts);
-    return { wroteBeat, hash, facts: facts.length };
+    let draft: BeatDraft;
+    try {
+      draft = await this.generateBeatDraft(snapshot.week, facts);
+    } catch (error) {
+      if (isBrainGateError(error)) throw error;
+      return { wroteBeat: false, hash, facts: facts.length };
+    }
+    if (isBlankBeat(draft)) {
+      return { wroteBeat: false, hash, facts: facts.length };
+    }
+    this.publishBeat(snapshot, hash, facts, draft);
+    return { wroteBeat: true, hash, facts: facts.length };
+  }
+
+  /** Test seam. Default calls Gemma. A throw or blank copy writes nothing. */
+  private async generateBeatDraft(week: number, facts: StoryFact[]): Promise<BeatDraft> {
+    const settings = this.readSettings();
+    const prompt = beatPrompt({
+      tone: settings.tone,
+      leagueName: settings.name,
+      week,
+      bible: this.bibleLines(),
+      facts,
+    });
+    return generateBeat(this.env.AI as WorkersAi, prompt.system, prompt.user);
+  }
+
+  /** Test seam. Default calls Gemma for the recap prompt the caller already built. */
+  private async generateRecapDraft(prompt: { system: string; user: string }): Promise<RecapDraft> {
+    return generateRecap(this.env.AI as WorkersAi, prompt.system, prompt.user);
+  }
+
+  /** Test seam. Fixtures ignore the week argument, so tests return matchups per week. */
+  private async loadRecapWeek(
+    sleeperLeagueId: string,
+    week: number,
+  ): Promise<{ matchups: SleeperMatchup[]; transactions: SleeperTransaction[] }> {
+    const sleeper = sleeperFromEnv(this.env);
+    const [matchups, transactions] = await Promise.all([
+      sleeper.getMatchups(sleeperLeagueId, week),
+      sleeper.getTransactions(sleeperLeagueId, week),
+    ]);
+    return { matchups, transactions };
+  }
+
+  /** Test seam. Fixture NFL state is pinned to week 1, so rollover tests replace this. */
+  private async loadNflState(): Promise<NflState> {
+    return sleeperFromEnv(this.env).getNflState();
   }
 
   async attemptRecap(): Promise<RecapAttemptResult> {
-    const last = this.latestSnapshot();
-    const matchups = last?.snapshot.matchups ?? [];
-    const facts = last
-      ? diffSnapshots(null, last.snapshot)
-      : [];
-    return this.attemptRecapWithGenerator(matchups, facts, async (storyFacts) => {
-      const settings = this.readSettings();
-      const prompt = recapPrompt({
-        tone: settings.tone,
-        leagueName: settings.name,
-        week: last?.week ?? 0,
-        bible: this.bibleLines(),
-        facts: storyFacts,
-      });
-      return generateRecap(this.env.AI as WorkersAi, prompt.system, prompt.user);
+    const unsent = this.oldestUnemailedRecap();
+    if (unsent) return this.sendStoredRecap(unsent);
+
+    const settings = this.readSettings();
+    const state = await this.loadNflState();
+    const current = await this.loadRecapWeek(settings.sleeperLeagueId, state.week);
+    const selected = selectRecapWeek({
+      nflWeek: state.week,
+      currentWeekPlayed: isPlayedWeek(current.matchups),
     });
+    if (selected == null) return { status: "skipped_not_final" };
+
+    let weekBundle = current;
+    if (selected !== state.week) {
+      weekBundle = await this.loadRecapWeek(settings.sleeperLeagueId, selected);
+      if (!isPlayedWeek(weekBundle.matchups)) return { status: "skipped_not_final" };
+    }
+
+    const existing = this.readRecap(selected);
+    if (existing) {
+      if (existing.emailedAt != null) return { status: "skipped_already" };
+      return this.sendStoredRecap(existing);
+    }
+
+    const sleeper = sleeperFromEnv(this.env);
+    const [users, rosters, players] = await Promise.all([
+      sleeper.getLeagueUsers(settings.sleeperLeagueId),
+      sleeper.getRosters(settings.sleeperLeagueId),
+      getPlayerMap(this.env, sleeper),
+    ]);
+    const snapshot: LeagueSnapshot = {
+      leagueId: settings.leagueId,
+      week: selected,
+      users,
+      rosters,
+      matchups: weekBundle.matchups,
+      transactions: weekBundle.transactions,
+    };
+    const facts = diffSnapshots(null, snapshot, players);
+    return this.attemptRecapWithGenerator(
+      weekBundle.matchups,
+      facts,
+      async (storyFacts) => {
+        const prompt = recapPrompt({
+          tone: settings.tone,
+          leagueName: settings.name,
+          week: selected,
+          bible: this.bibleLines(),
+          facts: storyFacts,
+        });
+        return this.generateRecapDraft(prompt);
+      },
+      selected,
+    );
   }
 
   async attemptRecapWithGenerator(
     matchups: SleeperMatchup[],
     facts: StoryFact[],
     generate: (facts: StoryFact[]) => Promise<RecapDraft>,
+    week = this.latestSnapshot()?.week ?? 0,
   ): Promise<RecapAttemptResult> {
-    const last = this.latestSnapshot();
-    const week = last?.week ?? 0;
-    const existingRow =
-      (this.ctx.storage.sql.exec("SELECT subject, body FROM recaps WHERE week = ?", week).toArray()[0] as
-        | { subject: string; body: string }
-        | undefined) ?? null;
-    const settings = this.readSettings();
-    return runRecapAttempt({
-      week,
-      matchups,
-      existingRecap: existingRow,
-      facts,
-      generate,
-      archive: async (recap) => {
-        this.ctx.storage.sql.exec(
-          "INSERT INTO recaps (week, subject, body, facts, emailed_at, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-          week,
-          recap.subject,
-          recap.body,
-          JSON.stringify(facts),
-          Date.now(),
-          Date.now(),
-        );
-        this.ctx.storage.sql.exec(
-          "INSERT INTO bible (entry, created_at) VALUES (?, ?)",
-          `Week ${week} recap: ${recap.subject}`,
-          Date.now(),
-        );
-      },
-      email: async (recap) => {
-        try {
-          const recipients = await listRecapRecipients(this.env.DB, settings.leagueId);
-          if (recipients.length === 0) return;
-          const message = recapEmail(recap);
-          await Promise.all(
-            recipients.map((recipient) =>
-              sendEmail(this.env.EMAIL, {
-                from: this.env.EMAIL_FROM,
-                to: recipient.email,
-                subject: message.subject,
-                text: message.text,
-              }),
-            ),
-          );
-        } catch (error) {
-          console.error("recap email failed after archive", error);
-        }
-      },
-    });
+    const existing = this.readRecap(week);
+    if (existing) {
+      if (existing.emailedAt != null) return { status: "skipped_already" };
+      return this.sendStoredRecap(existing);
+    }
+    try {
+      return await runRecapAttempt({
+        week,
+        matchups,
+        existingRecap: null,
+        facts,
+        generate,
+        archive: async (recap) => {
+          const now = Date.now();
+          this.ctx.storage.transactionSync(() => {
+            this.ctx.storage.sql.exec(
+              "INSERT INTO recaps (week, subject, body, facts, emailed_at, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+              week,
+              recap.subject,
+              recap.body,
+              JSON.stringify(facts),
+              null,
+              now,
+            );
+            this.insertBibleIfNew(`Week ${week} recap: ${recap.subject}`, now);
+          });
+        },
+        email: async (recap) => {
+          await this.deliverRecap(week, recap);
+        },
+      });
+    } catch (error) {
+      const row = this.readRecap(week);
+      if (row && row.emailedAt == null) {
+        console.error("recap email failed after archive", error);
+        return { status: "email_pending" };
+      }
+      throw error;
+    }
   }
 
   async listRecaps(): Promise<Array<{ week: number; subject: string; body: string }>> {
@@ -426,34 +505,101 @@ export class LeagueBrain extends DurableObject<Env> {
     }>;
   }
 
-  private async publishBeat(week: number, facts: StoryFact[]): Promise<boolean> {
-    const settings = this.readSettings();
-    let draft: BeatDraft;
-    try {
-      const prompt = beatPrompt({
-        tone: settings.tone,
-        leagueName: settings.name,
-        week,
-        bible: this.bibleLines(),
-        facts,
-      });
-      draft = await generateBeat(this.env.AI as WorkersAi, prompt.system, prompt.user);
-    } catch {
-      return false;
-    }
-    if (!draft.copy.trim()) return false;
+  private publishBeat(snapshot: LeagueSnapshot, hash: string, facts: StoryFact[], draft: BeatDraft): void {
+    const now = Date.now();
+    const kind = facts[0].kind;
+    this.ctx.storage.transactionSync(() => {
+      this.insertSnapshot(snapshot, hash, now);
+      this.ctx.storage.sql.exec(
+        "INSERT INTO beats (kind, copy, facts, week, created_at) VALUES (?, ?, ?, ?, ?)",
+        kind,
+        draft.copy,
+        JSON.stringify(facts),
+        snapshot.week,
+        now,
+      );
+      for (const fact of facts) {
+        if (fact.kind === "trade") {
+          this.insertBibleIfNew(fact.copy, now);
+        } else if (fact.kind === "rivalry") {
+          this.insertBibleIfNew(`Week ${snapshot.week}: ${fact.copy}`, now);
+        }
+      }
+    });
+  }
+
+  private insertSnapshot(snapshot: LeagueSnapshot, hash: string, now = Date.now()): void {
     this.ctx.storage.sql.exec(
-      "INSERT INTO beats (kind, copy, facts, week, created_at) VALUES (?, ?, ?, ?, ?)",
-      facts[0]?.kind ?? "scoreboard",
-      draft.copy,
-      JSON.stringify(facts),
-      week,
-      Date.now(),
+      "INSERT INTO snapshots (week, payload_hash, payload, created_at) VALUES (?, ?, ?, ?)",
+      snapshot.week,
+      hash,
+      JSON.stringify(snapshot),
+      now,
     );
-    for (const fact of facts.filter((entry) => entry.kind === "trade" || entry.kind === "rivalry")) {
-      this.ctx.storage.sql.exec("INSERT INTO bible (entry, created_at) VALUES (?, ?)", fact.copy, Date.now());
+  }
+
+  private insertBibleIfNew(entry: string, now = Date.now()): void {
+    const existing = this.ctx.storage.sql.exec("SELECT id FROM bible WHERE entry = ? LIMIT 1", entry).toArray();
+    if (existing.length > 0) return;
+    this.ctx.storage.sql.exec("INSERT INTO bible (entry, created_at) VALUES (?, ?)", entry, now);
+  }
+
+  private oldestUnemailedRecap(): { week: number; subject: string; body: string } | null {
+    const row = this.ctx.storage.sql
+      .exec("SELECT week, subject, body FROM recaps WHERE emailed_at IS NULL ORDER BY week ASC LIMIT 1")
+      .toArray()[0] as { week: number; subject: string; body: string } | undefined;
+    return row ?? null;
+  }
+
+  private readRecap(week: number): { week: number; subject: string; body: string; emailedAt: number | null } | null {
+    const row = this.ctx.storage.sql
+      .exec("SELECT week, subject, body, emailed_at AS emailedAt FROM recaps WHERE week = ?", week)
+      .toArray()[0] as { week: number; subject: string; body: string; emailedAt: number | null } | undefined;
+    return row ?? null;
+  }
+
+  private async sendStoredRecap(row: {
+    week: number;
+    subject: string;
+    body: string;
+  }): Promise<RecapAttemptResult> {
+    const recap = { subject: row.subject, body: row.body };
+    try {
+      await this.deliverRecap(row.week, recap);
+      return { status: "published", recap };
+    } catch (error) {
+      console.error("recap email failed after archive", error);
+      return { status: "email_pending" };
     }
-    return true;
+  }
+
+  private async deliverRecap(week: number, recap: RecapDraft): Promise<void> {
+    const settings = this.readSettings();
+    const recipients = await listRecapRecipients(this.env.DB, settings.leagueId);
+    if (recipients.length === 0) {
+      this.markRecapEmailed(week);
+      return;
+    }
+    const message = recapEmail(recap);
+    await Promise.all(
+      recipients.map((recipient) =>
+        sendEmail(this.env.EMAIL, {
+          from: this.env.EMAIL_FROM,
+          to: recipient.email,
+          subject: message.subject,
+          text: message.text,
+        }),
+      ),
+    );
+    this.markRecapEmailed(week);
+  }
+
+  private markRecapEmailed(week: number): void {
+    this.ctx.storage.sql.exec(
+      "UPDATE recaps SET emailed_at = ? WHERE week = ? AND emailed_at IS NULL",
+      Date.now(),
+      week,
+    );
   }
 
   private bibleLines(): string[] {

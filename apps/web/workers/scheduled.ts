@@ -191,6 +191,7 @@ function recapAttemptReason(result: RecapAttemptResult): RecapAttemptReason {
     case "skipped_not_final":
     case "model_error":
     case "blank":
+    case "email_pending":
       return status;
     default: {
       const _exhaustive: never = status;
@@ -206,6 +207,7 @@ function recapAttemptIsTerminal(reason: RecapAttemptReason): boolean {
     case "blank":
       return true;
     case "skipped_not_final":
+    case "email_pending":
     case "model_error":
     case "thrown":
       return false;
@@ -366,6 +368,7 @@ async function deleteStaleRecapAttempts(db: D1Database, weekKey: string): Promis
        WHERE rowid IN (
          SELECT rowid FROM recap_attempt_backlog
          WHERE week_key != ?
+           AND (status != 'pending' OR last_error IS NULL OR last_error != 'email_pending')
          ORDER BY rowid ASC
          LIMIT ?
        )`,
@@ -426,6 +429,44 @@ async function enrollRecapBacklogPage(
   return next;
 }
 
+type RetainedEmailPending = { league: LeagueRow; weekKey: string };
+
+/** email_pending rows kept across the Tuesday sweep. Settle these with their stored week_key. */
+async function listRetainedEmailPending(
+  db: D1Database,
+  currentWeekKey: string,
+  limit: number,
+): Promise<RetainedEmailPending[]> {
+  const result = await db
+    .prepare(
+      `SELECT leagues.id, leagues.sleeper_league_id, leagues.name, leagues.season, leagues.status,
+              leagues.tone, leagues.created_at, leagues.activated_at, leagues.provisioning_error,
+              leagues.provisioning_started_at,
+              recap_attempt_backlog.week_key AS backlog_week_key
+       FROM recap_attempt_backlog
+       INNER JOIN leagues ON leagues.id = recap_attempt_backlog.league_id
+       WHERE recap_attempt_backlog.week_key != ?
+         AND recap_attempt_backlog.status = 'pending'
+         AND recap_attempt_backlog.last_error = 'email_pending'
+         AND leagues.status = 'active'
+       ORDER BY recap_attempt_backlog.updated_at ASC,
+                recap_attempt_backlog.week_key ASC,
+                leagues.id ASC
+       LIMIT ?`,
+    )
+    .bind(currentWeekKey, limit)
+    .all<LeagueRow & { backlog_week_key: string }>();
+  const seen = new Set<string>();
+  const rows: RetainedEmailPending[] = [];
+  for (const row of result.results) {
+    if (seen.has(row.id)) continue;
+    seen.add(row.id);
+    const { backlog_week_key: storedWeekKey, ...league } = row;
+    rows.push({ league, weekKey: storedWeekKey });
+  }
+  return rows;
+}
+
 async function listPendingRecapLeagues(db: D1Database, weekKey: string, limit: number): Promise<LeagueRow[]> {
   const result = await db
     .prepare(
@@ -435,7 +476,16 @@ async function listPendingRecapLeagues(db: D1Database, weekKey: string, limit: n
          AND recap_attempt_backlog.status = 'pending'
          AND recap_attempt_backlog.attempts < ?
          AND leagues.status = 'active'
-       ORDER BY recap_attempt_backlog.league_id ASC
+       ORDER BY
+         CASE
+           WHEN recap_attempt_backlog.last_error IN ('email_pending', 'skipped_not_final') THEN 1
+           ELSE 0
+         END ASC,
+         CASE
+           WHEN recap_attempt_backlog.last_error IN ('email_pending', 'skipped_not_final') THEN recap_attempt_backlog.updated_at
+           ELSE 0
+         END ASC,
+         recap_attempt_backlog.league_id ASC
        LIMIT ?`,
     )
     .bind(weekKey, MAX_RECAP_ATTEMPTS, limit)
@@ -480,6 +530,17 @@ async function settleRecapAttempt(
   db: D1Database,
   input: { leagueId: string; weekKey: string; reason: RecapAttemptReason; now: number },
 ): Promise<void> {
+  if (input.reason === "skipped_not_final" || input.reason === "email_pending") {
+    await db
+      .prepare(
+        `UPDATE recap_attempt_backlog
+         SET last_error = ?, updated_at = ?
+         WHERE league_id = ? AND week_key = ? AND status = 'pending'`,
+      )
+      .bind(input.reason, input.now, input.leagueId, input.weekKey)
+      .run();
+    return;
+  }
   const lastError = input.reason === "published" ? null : input.reason;
   const terminal = recapAttemptIsTerminal(input.reason) ? 1 : 0;
   await db
@@ -552,20 +613,21 @@ export async function handleScheduled(
   }
 
   const enrollmentForWeek = enrollment?.weekKey === weekKey ? enrollment : null;
+  const retained = await listRetainedEmailPending(env.DB, weekKey, maxLeagues);
 
   let pending: LeagueRow[] = [];
   if (!recapWindow) {
-    if (!poll && !enrollmentForWeek) {
+    if (!poll && !enrollmentForWeek && retained.length === 0) {
       return { polled: 0, recapped: 0 };
     }
-    if (!poll && enrollmentForWeek?.complete) {
+    if (!poll && enrollmentForWeek?.complete && retained.length === 0) {
       if (!(await hasPendingRecapAttempts(env.DB, weekKey))) {
         return { polled: 0, recapped: 0 };
       }
     }
     if (!poll) {
       pending = await listPendingRecapLeagues(env.DB, weekKey, maxLeagues);
-      if (pending.length === 0) {
+      if (pending.length === 0 && retained.length === 0) {
         return { polled: 0, recapped: 0 };
       }
     }
@@ -602,10 +664,22 @@ export async function handleScheduled(
     recapIds = new Set(work.map((league) => league.id));
   }
 
+  const retainedWeekKey = new Map<string, string>();
+  for (const row of retained) {
+    if (!retainedWeekKey.has(row.league.id)) retainedWeekKey.set(row.league.id, row.weekKey);
+    recapIds.add(row.league.id);
+    if (!work.some((league) => league.id === row.league.id)) work.push(row.league);
+  }
+  const rotationIds = new Set(poll && page ? page.leagues.map((league) => league.id) : []);
+
   let polled = 0;
   let recapped = 0;
   for (const league of work) {
     const shouldRecap = recapIds.has(league.id);
+    const retainedDelivery = retainedWeekKey.has(league.id);
+    const independentPoll = rotationIds.has(league.id);
+    const settleWeekKey = retainedWeekKey.get(league.id) ?? weekKey;
+    let settled = false;
     try {
       const stub = env.LEAGUE_BRAIN.get(env.LEAGUE_BRAIN.idFromName(league.id));
       await stub.bootstrap({
@@ -614,33 +688,55 @@ export async function handleScheduled(
         name: league.name,
         tone: toneOrPlayful(league.tone),
       });
-      if (poll || shouldRecap) {
+      if (retainedDelivery) {
+        if (shouldRecap) {
+          const result = await stub.attemptRecap();
+          await settleRecapAttempt(env.DB, {
+            leagueId: league.id,
+            weekKey: settleWeekKey,
+            reason: recapAttemptReason(result),
+            now: nowMs,
+          });
+          settled = true;
+          if (result.status === "published") recapped += 1;
+        }
+      } else if (poll || shouldRecap) {
         await stub.poll();
         polled += 1;
-      }
-      if (shouldRecap) {
-        const result = await stub.attemptRecap();
-        await settleRecapAttempt(env.DB, {
-          leagueId: league.id,
-          weekKey,
-          reason: recapAttemptReason(result),
-          now: nowMs,
-        });
-        if (result.status === "published") recapped += 1;
+        if (shouldRecap) {
+          const result = await stub.attemptRecap();
+          await settleRecapAttempt(env.DB, {
+            leagueId: league.id,
+            weekKey: settleWeekKey,
+            reason: recapAttemptReason(result),
+            now: nowMs,
+          });
+          settled = true;
+          if (result.status === "published") recapped += 1;
+        }
       }
     } catch (error) {
       logScheduledLeagueFailure(error);
-      if (shouldRecap) {
+      if (shouldRecap && !settled) {
         try {
           await settleRecapAttempt(env.DB, {
             leagueId: league.id,
-            weekKey,
-            reason: "thrown",
+            weekKey: settleWeekKey,
+            reason: retainedDelivery ? "email_pending" : "thrown",
             now: nowMs,
           });
         } catch (settleError) {
           logScheduledLeagueFailure(settleError);
         }
+      }
+    }
+    if (retainedDelivery && independentPoll) {
+      try {
+        const stub = env.LEAGUE_BRAIN.get(env.LEAGUE_BRAIN.idFromName(league.id));
+        await stub.poll();
+        polled += 1;
+      } catch (error) {
+        logScheduledLeagueFailure(error);
       }
     }
   }
