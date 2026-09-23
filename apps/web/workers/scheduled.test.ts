@@ -1386,6 +1386,61 @@ describe("handleScheduled recap backlog", () => {
     }
   });
 
+  it("sends a retained email_pending recap without polling unless that league is already on the poll page", async () => {
+    const now = 1_805_812_800_000;
+    const deliveryOnly = await seedLeague("backlog_email_no_poll", now, "active");
+    const onPollPage = await seedLeague("backlog_email_with_poll", now + 1, "active");
+    await env.DB.prepare(
+      `INSERT INTO recap_attempt_backlog (league_id, week_key, status, attempts, last_error, created_at, updated_at)
+       VALUES (?, ?, 'pending', 0, 'email_pending', ?, ?)`,
+    )
+      .bind(deliveryOnly.id, RECAP_WEEK_KEY, now, now)
+      .run();
+
+    const order: string[] = [];
+    const originalPoll = LeagueBrain.prototype.poll;
+    const originalAttemptRecap = LeagueBrain.prototype.attemptRecap;
+    LeagueBrain.prototype.poll = async function (this: LeagueBrain) {
+      const dashboard = await this.getDashboard();
+      order.push(`${dashboard.leagueId}:poll`);
+      return { wroteBeat: false, hash: "test", facts: 0 };
+    };
+    LeagueBrain.prototype.attemptRecap = async function (this: LeagueBrain) {
+      const dashboard = await this.getDashboard();
+      order.push(`${dashboard.leagueId}:recap`);
+      if (dashboard.leagueId === deliveryOnly.id || dashboard.leagueId === onPollPage.id) {
+        return { status: "email_pending" };
+      }
+      return { status: "skipped_already" };
+    };
+
+    try {
+      const activeCount = (await listActiveLeagues(env.DB)).length;
+      const idle = await handleScheduled(env, NEXT_IDLE_NOW, activeCount);
+      expect(idle.polled).toBe(0);
+      expect(order.filter((entry) => entry.startsWith(deliveryOnly.id))).toEqual([`${deliveryOnly.id}:recap`]);
+      expect(order.some((entry) => entry.startsWith(onPollPage.id))).toBe(false);
+
+      await env.DB.prepare(
+        `INSERT INTO recap_attempt_backlog (league_id, week_key, status, attempts, last_error, created_at, updated_at)
+         VALUES (?, ?, 'pending', 0, 'email_pending', ?, ?)`,
+      )
+        .bind(onPollPage.id, "2026-09-01", now, now)
+        .run();
+      order.length = 0;
+      await setCursorBeforeLeague(onPollPage.id);
+      const polled = await handleScheduled(env, POLL_NOW, 1);
+      expect(polled.polled).toBe(1);
+      expect(order.filter((entry) => entry.startsWith(onPollPage.id))).toEqual([
+        `${onPollPage.id}:recap`,
+        `${onPollPage.id}:poll`,
+      ]);
+    } finally {
+      LeagueBrain.prototype.poll = originalPoll;
+      LeagueBrain.prototype.attemptRecap = originalAttemptRecap;
+    }
+  });
+
   it("on a poll hour with pending backlog, splits work, polls the rotation page, and advances the regular cursor", async () => {
     const now = 1_805_814_000_000;
     const backlogA = await seedLeague("poll_backlog_a", now, "active");

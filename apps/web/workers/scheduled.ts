@@ -659,11 +659,16 @@ export async function handleScheduled(
     recapIds.add(row.league.id);
     if (!work.some((league) => league.id === row.league.id)) work.push(row.league);
   }
+  const rotationIds = new Set(poll && page ? page.leagues.map((league) => league.id) : []);
 
   let polled = 0;
   let recapped = 0;
   for (const league of work) {
     const shouldRecap = recapIds.has(league.id);
+    const retainedDelivery = retainedWeekKey.has(league.id);
+    const independentPoll = rotationIds.has(league.id);
+    const settleWeekKey = retainedWeekKey.get(league.id) ?? weekKey;
+    let settled = false;
     try {
       const stub = env.LEAGUE_BRAIN.get(env.LEAGUE_BRAIN.idFromName(league.id));
       await stub.bootstrap({
@@ -672,33 +677,55 @@ export async function handleScheduled(
         name: league.name,
         tone: toneOrPlayful(league.tone),
       });
-      if (poll || shouldRecap) {
+      if (retainedDelivery) {
+        if (shouldRecap) {
+          const result = await stub.attemptRecap();
+          await settleRecapAttempt(env.DB, {
+            leagueId: league.id,
+            weekKey: settleWeekKey,
+            reason: recapAttemptReason(result),
+            now: nowMs,
+          });
+          settled = true;
+          if (result.status === "published") recapped += 1;
+        }
+      } else if (poll || shouldRecap) {
         await stub.poll();
         polled += 1;
-      }
-      if (shouldRecap) {
-        const result = await stub.attemptRecap();
-        await settleRecapAttempt(env.DB, {
-          leagueId: league.id,
-          weekKey: retainedWeekKey.get(league.id) ?? weekKey,
-          reason: recapAttemptReason(result),
-          now: nowMs,
-        });
-        if (result.status === "published") recapped += 1;
+        if (shouldRecap) {
+          const result = await stub.attemptRecap();
+          await settleRecapAttempt(env.DB, {
+            leagueId: league.id,
+            weekKey: settleWeekKey,
+            reason: recapAttemptReason(result),
+            now: nowMs,
+          });
+          settled = true;
+          if (result.status === "published") recapped += 1;
+        }
       }
     } catch (error) {
       logScheduledLeagueFailure(error);
-      if (shouldRecap) {
+      if (shouldRecap && !settled) {
         try {
           await settleRecapAttempt(env.DB, {
             leagueId: league.id,
-            weekKey: retainedWeekKey.get(league.id) ?? weekKey,
+            weekKey: settleWeekKey,
             reason: "thrown",
             now: nowMs,
           });
         } catch (settleError) {
           logScheduledLeagueFailure(settleError);
         }
+      }
+    }
+    if (retainedDelivery && independentPoll) {
+      try {
+        const stub = env.LEAGUE_BRAIN.get(env.LEAGUE_BRAIN.idFromName(league.id));
+        await stub.poll();
+        polled += 1;
+      } catch (error) {
+        logScheduledLeagueFailure(error);
       }
     }
   }
