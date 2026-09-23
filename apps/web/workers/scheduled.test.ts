@@ -1441,6 +1441,68 @@ describe("handleScheduled recap backlog", () => {
     }
   });
 
+  it("tries a fresh backlog row before repeating skipped_not_final or email_pending", async () => {
+    const now = 1_805_813_200_000;
+    const stuck = await seedLeague("queue_a_stuck", now, "active");
+    const fresh = await seedLeague("queue_b_fresh", now + 1, "active");
+    expect(stuck.id < fresh.id).toBe(true);
+    await insertPendingRecap(stuck.id, RECAP_WEEK_KEY, now);
+    await insertPendingRecap(fresh.id, RECAP_WEEK_KEY, now + 1);
+    await completeRecapEnrollment(RECAP_WEEK_KEY);
+
+    const recapIds: string[] = [];
+    const originalPoll = LeagueBrain.prototype.poll;
+    const originalAttemptRecap = LeagueBrain.prototype.attemptRecap;
+    LeagueBrain.prototype.poll = async () => ({ wroteBeat: false, hash: "test", facts: 0 });
+    LeagueBrain.prototype.attemptRecap = async function (this: LeagueBrain) {
+      const dashboard = await this.getDashboard();
+      recapIds.push(dashboard.leagueId);
+      if (dashboard.leagueId === stuck.id) return { status: "skipped_not_final" };
+      if (dashboard.leagueId === fresh.id) {
+        return { status: "published", recap: { subject: "Week recap", body: "Fresh league." } };
+      }
+      return { status: "skipped_already" };
+    };
+
+    try {
+      const first = await handleScheduled(env, IDLE_NOW, 1);
+      expect(first.recapped).toBe(0);
+      expect(recapIds).toEqual([stuck.id]);
+      const second = await handleScheduled(env, IDLE_NOW, 1);
+      expect(second.recapped).toBe(1);
+      expect(recapIds).toEqual([stuck.id, fresh.id]);
+    } finally {
+      LeagueBrain.prototype.poll = originalPoll;
+      LeagueBrain.prototype.attemptRecap = originalAttemptRecap;
+    }
+
+    const older = await seedLeague("queue_c_older", now + 2, "active");
+    const later = await seedLeague("queue_d_later", now + 3, "active");
+    expect(older.id < later.id).toBe(true);
+    await env.DB.prepare(
+      `INSERT INTO recap_attempt_backlog (league_id, week_key, status, attempts, last_error, created_at, updated_at)
+       VALUES (?, ?, 'pending', 0, 'email_pending', ?, ?), (?, ?, 'pending', 0, 'email_pending', ?, ?)`,
+    )
+      .bind(older.id, RECAP_WEEK_KEY, 1, 1, later.id, RECAP_WEEK_KEY, 1, 2)
+      .run();
+
+    const retainedIds: string[] = [];
+    LeagueBrain.prototype.poll = async () => ({ wroteBeat: false, hash: "test", facts: 0 });
+    LeagueBrain.prototype.attemptRecap = async function (this: LeagueBrain) {
+      const dashboard = await this.getDashboard();
+      retainedIds.push(dashboard.leagueId);
+      return { status: "email_pending" };
+    };
+    try {
+      await handleScheduled(env, NEXT_IDLE_NOW, 1);
+      await handleScheduled(env, NEXT_IDLE_NOW, 1);
+      expect(retainedIds.filter((id) => id === older.id || id === later.id)).toEqual([older.id, later.id]);
+    } finally {
+      LeagueBrain.prototype.poll = originalPoll;
+      LeagueBrain.prototype.attemptRecap = originalAttemptRecap;
+    }
+  });
+
   it("on a poll hour with pending backlog, splits work, polls the rotation page, and advances the regular cursor", async () => {
     const now = 1_805_814_000_000;
     const backlogA = await seedLeague("poll_backlog_a", now, "active");

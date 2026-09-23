@@ -449,7 +449,9 @@ async function listRetainedEmailPending(
          AND recap_attempt_backlog.status = 'pending'
          AND recap_attempt_backlog.last_error = 'email_pending'
          AND leagues.status = 'active'
-       ORDER BY recap_attempt_backlog.week_key ASC, leagues.id ASC
+       ORDER BY recap_attempt_backlog.updated_at ASC,
+                recap_attempt_backlog.week_key ASC,
+                leagues.id ASC
        LIMIT ?`,
     )
     .bind(currentWeekKey, limit)
@@ -474,7 +476,16 @@ async function listPendingRecapLeagues(db: D1Database, weekKey: string, limit: n
          AND recap_attempt_backlog.status = 'pending'
          AND recap_attempt_backlog.attempts < ?
          AND leagues.status = 'active'
-       ORDER BY recap_attempt_backlog.league_id ASC
+       ORDER BY
+         CASE
+           WHEN recap_attempt_backlog.last_error IN ('email_pending', 'skipped_not_final') THEN 1
+           ELSE 0
+         END ASC,
+         CASE
+           WHEN recap_attempt_backlog.last_error IN ('email_pending', 'skipped_not_final') THEN recap_attempt_backlog.updated_at
+           ELSE 0
+         END ASC,
+         recap_attempt_backlog.league_id ASC
        LIMIT ?`,
     )
     .bind(weekKey, MAX_RECAP_ATTEMPTS, limit)
