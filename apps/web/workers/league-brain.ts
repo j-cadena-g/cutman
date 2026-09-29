@@ -100,6 +100,7 @@ export type LegacyBrainState = {
     createdAt: number;
   }>;
   recapDeliveries: Array<{ week: number; email: string; sentAt: number }>;
+  recapDeliveryFailures: Array<{ week: number; email: string; failures: number }>;
 };
 
 export type Dashboard = {
@@ -121,7 +122,8 @@ export class LeagueBrain extends DurableObject<Env> {
   // await, so each mutation must finish (including rollback) before the next captures
   // prior tone. Hibernation drops this queue only when no request is in flight.
   private toneMutationMutex: Promise<void> = Promise.resolve();
-  // In-flight recap delivery per week. See deliverRecap.
+  // In-flight recap attempt and delivery per week. See attemptRecapWithGenerator and deliverRecap.
+  private readonly recapAttempts = new Map<number, Promise<RecapAttemptResult>>();
   private readonly recapDeliveries = new Map<number, Promise<void>>();
 
   constructor(ctx: DurableObjectState, env: Env) {
@@ -243,6 +245,9 @@ export class LeagueBrain extends DurableObject<Env> {
       recapDeliveries: this.ctx.storage.sql
         .exec("SELECT week, email, sent_at AS sentAt FROM recap_deliveries ORDER BY week, email")
         .toArray() as LegacyBrainState["recapDeliveries"],
+      recapDeliveryFailures: this.ctx.storage.sql
+        .exec("SELECT week, email, failures FROM recap_delivery_failures ORDER BY week, email")
+        .toArray() as LegacyBrainState["recapDeliveryFailures"],
     };
   }
 
@@ -373,8 +378,8 @@ export class LeagueBrain extends DurableObject<Env> {
     if (isBlankBeat(draft)) {
       return { wroteBeat: false, hash, facts: facts.length };
     }
-    this.publishBeat(snapshot, hash, facts, draft);
-    return { wroteBeat: true, hash, facts: facts.length };
+    const wroteBeat = this.publishBeat(snapshot, hash, facts, draft, last?.hash ?? null);
+    return { wroteBeat, hash, facts: facts.length };
   }
 
   /** Test seam. Default calls Gemma. A throw or blank copy writes nothing. */
@@ -479,6 +484,23 @@ export class LeagueBrain extends DurableObject<Env> {
     generate: (facts: StoryFact[]) => Promise<RecapDraft>,
     week = this.latestSnapshot()?.week ?? 0,
   ): Promise<RecapAttemptResult> {
+    // RPCs interleave while the model drafts. Callers for the same week share one attempt
+    // so a week is drafted and archived once.
+    const inFlight = this.recapAttempts.get(week);
+    if (inFlight) return inFlight;
+    const attempt = this.runRecapAttemptForWeek(matchups, facts, generate, week).finally(() => {
+      this.recapAttempts.delete(week);
+    });
+    this.recapAttempts.set(week, attempt);
+    return attempt;
+  }
+
+  private async runRecapAttemptForWeek(
+    matchups: SleeperMatchup[],
+    facts: StoryFact[],
+    generate: (facts: StoryFact[]) => Promise<RecapDraft>,
+    week: number,
+  ): Promise<RecapAttemptResult> {
     const existing = this.readRecap(week);
     if (existing) {
       if (existing.emailedAt != null) return { status: "skipped_already" };
@@ -535,10 +557,22 @@ export class LeagueBrain extends DurableObject<Env> {
     }>;
   }
 
-  private publishBeat(snapshot: LeagueSnapshot, hash: string, facts: StoryFact[], draft: BeatDraft): void {
+  /**
+   * Publishes only if the latest snapshot is still the one the facts were diffed against.
+   * RPCs interleave while the model drafts, so an overlapping poll may already have
+   * published this payload or a newer one.
+   */
+  private publishBeat(
+    snapshot: LeagueSnapshot,
+    hash: string,
+    facts: StoryFact[],
+    draft: BeatDraft,
+    baseHash: string | null,
+  ): boolean {
     const now = Date.now();
     const kind = facts[0].kind;
-    this.ctx.storage.transactionSync(() => {
+    return this.ctx.storage.transactionSync(() => {
+      if ((this.latestSnapshot()?.hash ?? null) !== baseHash) return false;
       this.insertSnapshot(snapshot, hash, now);
       this.ctx.storage.sql.exec(
         "INSERT INTO beats (kind, copy, facts, week, created_at) VALUES (?, ?, ?, ?, ?)",
@@ -555,6 +589,7 @@ export class LeagueBrain extends DurableObject<Env> {
           this.insertBibleIfNew(`Week ${snapshot.week}: ${fact.copy}`, now);
         }
       }
+      return true;
     });
   }
 
@@ -1020,6 +1055,15 @@ export class LeagueBrain extends DurableObject<Env> {
         "SELECT week, email, sent_at AS sentAt FROM recap_deliveries WHERE week = ? AND email = ?",
         [row.week, row.email],
         { week: row.week, email: row.email, sentAt: row.sentAt },
+      );
+    }
+    for (const row of legacy.recapDeliveryFailures) {
+      this.insertLegacyRowOrIdentical(
+        "INSERT OR IGNORE INTO recap_delivery_failures (week, email, failures) VALUES (?, ?, ?)",
+        [row.week, row.email, row.failures],
+        "SELECT week, email, failures FROM recap_delivery_failures WHERE week = ? AND email = ?",
+        [row.week, row.email],
+        { week: row.week, email: row.email, failures: row.failures },
       );
     }
   }

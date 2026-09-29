@@ -115,6 +115,32 @@ describe("LeagueBrain Durable Object", () => {
     expect(afterRepeat).toBe(1);
   });
 
+  it("publishes one beat when two polls of the same payload overlap", async () => {
+    const stub = await boot("beat-overlap");
+    const run = await runInDurableObject(stub, async (instance, state) => {
+      const brain = instance as unknown as {
+        generateBeatDraft(week: number, facts: unknown[]): Promise<{ copy: string }>;
+        ingestSnapshot: LeagueBrain["ingestSnapshot"];
+      };
+      brain.generateBeatDraft = async () => {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        return { copy: "Alex fleeced the chat." };
+      };
+      const results = await Promise.all([
+        brain.ingestSnapshot(snapshot(), fixturePlayers),
+        brain.ingestSnapshot(snapshot(), fixturePlayers),
+      ]);
+      return {
+        wrote: results.map((result) => result.wroteBeat),
+        snapshots: state.storage.sql.exec("SELECT id FROM snapshots").toArray().length,
+        beats: state.storage.sql.exec("SELECT id FROM beats").toArray().length,
+      };
+    });
+    expect([...run.wrote].sort()).toEqual([false, true]);
+    expect(run.snapshots).toBe(1);
+    expect(run.beats).toBe(1);
+  });
+
   it("stores a snapshot when the hash changes but the diff has no facts", async () => {
     const stub = await boot("fact-free");
     const first = snapshot();
@@ -673,6 +699,30 @@ describe("LeagueBrain Durable Object", () => {
     expect(run.emailed).not.toBeNull();
   });
 
+  it("drafts a new week once when two recap attempts overlap", async () => {
+    const stub = await boot("recap-overlap");
+    await stub.ingestSnapshot(snapshot(), fixturePlayers);
+    const run = await runInDurableObject(stub, async (instance) => {
+      const brain = instance as unknown as {
+        attemptRecapWithGenerator: LeagueBrain["attemptRecapWithGenerator"];
+      };
+      let drafts = 0;
+      const generate = async () => {
+        drafts += 1;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        return { subject: "Week 3 belongs to Alex", body: "Drafted once." };
+      };
+      const results = await Promise.all([
+        brain.attemptRecapWithGenerator(fixtureMatchupsFinal, [], generate, 3),
+        brain.attemptRecapWithGenerator(fixtureMatchupsFinal, [], generate, 3),
+      ]);
+      return { statuses: results.map((result) => result.status), drafts };
+    });
+    expect(run.statuses).toEqual(["published", "published"]);
+    expect(run.drafts).toBe(1);
+    expect(await stub.listRecaps()).toHaveLength(1);
+  });
+
   it("marks a recap emailed when nobody is opted in and does not send", async () => {
     const stub = await boot("recap-no-recipients");
     await stub.ingestSnapshot(snapshot(), fixturePlayers);
@@ -917,6 +967,7 @@ describe("LeagueBrain legacy Durable Object migration", () => {
       created_at: number;
     }>;
     recapDeliveries: Array<{ week: number; email: string; sent_at: number }>;
+    recapDeliveryFailures: Array<{ week: number; email: string; failures: number }>;
     settings: Array<{ key: string; value: string }>;
   };
 
@@ -1046,6 +1097,9 @@ describe("LeagueBrain legacy Durable Object migration", () => {
         recapDeliveries: state.storage.sql
           .exec("SELECT week, email, sent_at FROM recap_deliveries ORDER BY week, email")
           .toArray() as BrainSql["recapDeliveries"],
+        recapDeliveryFailures: state.storage.sql
+          .exec("SELECT week, email, failures FROM recap_delivery_failures ORDER BY week, email")
+          .toArray() as BrainSql["recapDeliveryFailures"],
         settings: state.storage.sql
           .exec("SELECT key, value FROM settings ORDER BY key")
           .toArray() as BrainSql["settings"],
@@ -1100,6 +1154,12 @@ describe("LeagueBrain legacy Durable Object migration", () => {
         3,
         "alex@legacy.example.test",
         RECAP_EMAILED_AT,
+      );
+      state.storage.sql.exec(
+        "INSERT INTO recap_delivery_failures (week, email, failures) VALUES (?, ?, ?)",
+        3,
+        "sam@legacy.example.test",
+        23,
       );
     });
     return stub;
@@ -1259,6 +1319,9 @@ describe("LeagueBrain legacy Durable Object migration", () => {
     expect(migrated.recapDeliveries).toEqual([
       { week: 3, email: "alex@legacy.example.test", sent_at: RECAP_EMAILED_AT },
     ]);
+    expect(migrated.recapDeliveryFailures).toEqual([
+      { week: 3, email: "sam@legacy.example.test", failures: 23 },
+    ]);
     expect(migrated.settings).toEqual(
       expect.arrayContaining([
         { key: "leagueId", value: INTERNAL_ID },
@@ -1311,6 +1374,7 @@ describe("LeagueBrain legacy Durable Object migration", () => {
     expect(exported?.bible).toHaveLength(1);
     expect(exported?.recaps).toHaveLength(1);
     expect(exported?.recapDeliveries).toHaveLength(1);
+    expect(exported?.recapDeliveryFailures).toHaveLength(1);
 
     const leftover = await readBrainSql(legacy);
     expect(leftover.snapshots).toHaveLength(1);
