@@ -2546,6 +2546,32 @@ describe("LeagueBrain legacy Durable Object migration", () => {
     expect(migrated.settings.some((row) => row.key === "legacyImportPending")).toBe(false);
   });
 
+  it("imports an export from a source that predates recap delivery tracking", async () => {
+    const oldSleeperId = "900000000000000077";
+    const oldInternalId = `legacy_${oldSleeperId}`;
+    await seedLegacyBrain(oldSleeperId, { leagueId: oldSleeperId, sleeperLeagueId: oldSleeperId });
+    const next = env.LEAGUE_BRAIN.getByName(oldInternalId);
+    await runInDurableObject(next, async (instance) => {
+      const brain = instance as unknown as TestBrain;
+      const original = brain.exportLegacyStateFromSource.bind(brain);
+      // During a gradual deploy the source can still run code without these fields.
+      brain.exportLegacyStateFromSource = async (sleeperLeagueId, callerInternalLeagueId) => {
+        const exported = await original(sleeperLeagueId, callerInternalLeagueId);
+        if (!exported) return exported;
+        const { recapDeliveries: _deliveries, recapDeliveryFailures: _failures, ...older } = exported;
+        return older;
+      };
+    });
+
+    await next.bootstrap({ leagueId: oldInternalId, sleeperLeagueId: oldSleeperId, name: "Cutman League", tone: "playful" });
+
+    const migrated = await readBrainSql(next);
+    expect(migrated.recaps).toEqual([expect.objectContaining({ week: 3, emailed_at: RECAP_EMAILED_AT })]);
+    expect(migrated.recapDeliveries).toEqual([]);
+    expect(migrated.recapDeliveryFailures).toEqual([]);
+    expect(migrated.settings).toEqual(expect.arrayContaining([{ key: "legacyMigratedFrom", value: oldSleeperId }]));
+  });
+
   it("copies a seed-only source over a seed-only destination without losing source bible", async () => {
     const sleeperId = "900000000000000098";
     const internalId = `legacy_${sleeperId}`;

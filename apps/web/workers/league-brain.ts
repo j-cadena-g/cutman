@@ -99,8 +99,9 @@ export type LegacyBrainState = {
     emailedAt: number | null;
     createdAt: number;
   }>;
-  recapDeliveries: Array<{ week: number; email: string; sentAt: number }>;
-  recapDeliveryFailures: Array<{ week: number; email: string; failures: number }>;
+  // Optional: during a gradual deploy the source can still run code that predates these tables.
+  recapDeliveries?: Array<{ week: number; email: string; sentAt: number }>;
+  recapDeliveryFailures?: Array<{ week: number; email: string; failures: number }>;
 };
 
 export type Dashboard = {
@@ -244,10 +245,10 @@ export class LeagueBrain extends DurableObject<Env> {
         .toArray() as LegacyBrainState["recaps"],
       recapDeliveries: this.ctx.storage.sql
         .exec("SELECT week, email, sent_at AS sentAt FROM recap_deliveries ORDER BY week, email")
-        .toArray() as LegacyBrainState["recapDeliveries"],
+        .toArray() as NonNullable<LegacyBrainState["recapDeliveries"]>,
       recapDeliveryFailures: this.ctx.storage.sql
         .exec("SELECT week, email, failures FROM recap_delivery_failures ORDER BY week, email")
-        .toArray() as LegacyBrainState["recapDeliveryFailures"],
+        .toArray() as NonNullable<LegacyBrainState["recapDeliveryFailures"]>,
     };
   }
 
@@ -1048,7 +1049,7 @@ export class LeagueBrain extends DurableObject<Env> {
         },
       );
     }
-    for (const row of legacy.recapDeliveries) {
+    for (const row of legacy.recapDeliveries ?? []) {
       this.insertLegacyRowOrIdentical(
         "INSERT OR IGNORE INTO recap_deliveries (week, email, sent_at) VALUES (?, ?, ?)",
         [row.week, row.email, row.sentAt],
@@ -1057,7 +1058,7 @@ export class LeagueBrain extends DurableObject<Env> {
         { week: row.week, email: row.email, sentAt: row.sentAt },
       );
     }
-    for (const row of legacy.recapDeliveryFailures) {
+    for (const row of legacy.recapDeliveryFailures ?? []) {
       this.insertLegacyRowOrIdentical(
         "INSERT OR IGNORE INTO recap_delivery_failures (week, email, failures) VALUES (?, ?, ?)",
         [row.week, row.email, row.failures],
