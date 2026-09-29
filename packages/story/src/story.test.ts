@@ -14,7 +14,7 @@ import {
 import { describe, expect, it } from "vitest";
 import { diffSnapshots, factsIfChanged } from "./diff.ts";
 import { runRecapAttempt } from "./recap.ts";
-import { shouldAttemptTuesdayRecap, shouldPoll } from "./schedule.ts";
+import { canRecapCurrentWeek, easternParts, shouldAttemptTuesdayRecap, shouldPoll } from "./schedule.ts";
 import { hashSnapshot, type LeagueSnapshot } from "./snapshot.ts";
 import { isPlayedWeek, isWeekFinal, selectRecapWeek } from "./week.ts";
 
@@ -78,6 +78,14 @@ describe("played week selection", () => {
     expect(isPlayedWeek(unplayed)).toBe(false);
     expect(selectRecapWeek({ nflWeek: 4, currentWeekPlayed: false })).toBe(3);
     expect(selectRecapWeek({ nflWeek: 1, currentWeekPlayed: false })).toBeNull();
+  });
+
+  it("only lets the current week count as played on Tuesday and Wednesday Eastern", () => {
+    const day = (iso: string) => canRecapCurrentWeek(easternParts(new Date(iso)));
+    expect(day("2026-09-29T13:00:00Z")).toBe(true); // Tue 09:00
+    expect(day("2026-10-01T03:59:00Z")).toBe(true); // Wed 23:59
+    expect(day("2026-10-01T04:00:00Z")).toBe(false); // Thu 00:00
+    expect(day("2026-10-06T03:00:00Z")).toBe(false); // Mon 23:00, Monday night game
   });
 
   it("treats a null points value as unplayed", () => {

@@ -46,6 +46,11 @@ function snapshot(matchups = fixtureMatchupsFinal): LeagueSnapshot {
   };
 }
 
+/** Tuesday 10:00 America/New_York: the finished NFL week can be recapped. */
+const TUESDAY_MS = Date.parse("2026-09-29T14:00:00Z");
+/** Thursday 10:00 America/New_York: the current NFL week is in progress. */
+const THURSDAY_MS = Date.parse("2026-10-01T14:00:00Z");
+
 async function boot(name: string): Promise<DurableObjectStub<LeagueBrain>> {
   const stub = env.LEAGUE_BRAIN.getByName(name);
   await stub.bootstrap({
@@ -195,7 +200,7 @@ describe("LeagueBrain Durable Object", () => {
       };
     });
 
-    const result = await stub.attemptRecap();
+    const result = await stub.attemptRecap(TUESDAY_MS);
     expect(result.status).toBe("published");
     const recaps = await stub.listRecaps();
     expect(recaps).toEqual([expect.objectContaining({ week: 1, subject: "Week 1 recap" })]);
@@ -229,8 +234,35 @@ describe("LeagueBrain Durable Object", () => {
       brain.generateRecapDraft = async () => ({ subject: "Week 3 recap", body: "Last week counted." });
     });
 
-    const result = await stub.attemptRecap();
+    const result = await stub.attemptRecap(TUESDAY_MS);
     expect(result.status).toBe("published");
+    expect(await stub.listRecaps()).toEqual([expect.objectContaining({ week: 3, subject: "Week 3 recap" })]);
+  });
+
+  it("recaps the previous week while the current NFL week is in progress", async () => {
+    const stub = await boot("recap-in-progress");
+    const loadedWeeks: number[] = [];
+    await runInDurableObject(stub, async (instance) => {
+      const brain = instance as unknown as {
+        loadNflState(): Promise<{ week: number }>;
+        loadRecapWeek(
+          sleeperLeagueId: string,
+          week: number,
+        ): Promise<{ matchups: typeof fixtureMatchupsFinal; transactions: [] }>;
+        generateRecapDraft(prompt: { user: string }): Promise<{ subject: string; body: string }>;
+      };
+      brain.loadNflState = async () => ({ week: 4 });
+      // Thursday night scores are finite and nonzero, so week 4 alone would look played.
+      brain.loadRecapWeek = async (_sleeperLeagueId, week) => {
+        loadedWeeks.push(week);
+        return { matchups: fixtureMatchupsFinal, transactions: [] };
+      };
+      brain.generateRecapDraft = async () => ({ subject: "Week 3 recap", body: "Last week counted." });
+    });
+
+    const result = await stub.attemptRecap(THURSDAY_MS);
+    expect(result.status).toBe("published");
+    expect(loadedWeeks).toEqual([3]);
     expect(await stub.listRecaps()).toEqual([expect.objectContaining({ week: 3, subject: "Week 3 recap" })]);
   });
 
@@ -272,7 +304,7 @@ describe("LeagueBrain Durable Object", () => {
       );
     });
 
-    const result = await stub.attemptRecap();
+    const result = await stub.attemptRecap(TUESDAY_MS);
     expect(result.status).toBe("skipped_already");
     expect(generated).toBe(0);
     expect(await stub.listRecaps()).toHaveLength(1);
@@ -314,13 +346,13 @@ describe("LeagueBrain Durable Object", () => {
       );
     });
 
-    const first = await stub.attemptRecap();
+    const first = await stub.attemptRecap(TUESDAY_MS);
     expect(first.status).toBe("published");
     expect(generated).toBe(0);
     expect(stateLoads).toBe(0);
     expect(await stub.listRecaps()).toEqual([expect.objectContaining({ week: 3, subject: "Week 3 still unsent" })]);
 
-    const second = await stub.attemptRecap();
+    const second = await stub.attemptRecap(TUESDAY_MS);
     expect(second.status).toBe("published");
     expect(generated).toBe(1);
     expect(stateLoads).toBe(1);
@@ -482,6 +514,83 @@ describe("LeagueBrain Durable Object", () => {
     expect(afterSend.recaps).toHaveLength(1);
     expect(afterSend.recaps[0]?.emailed_at).not.toBeNull();
     expect(afterSend.bible).toEqual(["Week 3 recap: Week 3 belongs to Alex"]);
+  });
+
+  it("resends a partly failed recap only to recipients who did not get it", async () => {
+    const leagueId = "lg-email-partial";
+    await ensureSchema(env.DB);
+    const now = 1_806_200_000_000;
+    await createLeague(env.DB, {
+      id: leagueId,
+      sleeperLeagueId: "sleeper-email-partial",
+      name: "Partial League",
+      season: "2026",
+      now,
+    });
+    await activateLeague(env.DB, leagueId, now + 1);
+    for (const name of ["ok", "flaky"]) {
+      const user = await upsertUserByClerkId(env.DB, {
+        id: `user_email_partial_${name}`,
+        email: `${name}@partial.example.test`,
+        now,
+      });
+      await upsertLeagueMember(env.DB, { leagueId, userId: user.id, role: "member", now });
+      await setRecapOptIn(env.DB, leagueId, user.id, true);
+    }
+
+    const stub = env.LEAGUE_BRAIN.getByName("email-partial");
+    await stub.bootstrap({
+      leagueId,
+      sleeperLeagueId: "sleeper-email-partial",
+      name: "Partial League",
+      tone: "playful",
+    });
+    await stub.ingestSnapshot(snapshot(), fixturePlayers);
+
+    type SendBrain = {
+      env: { EMAIL: { send(message: { to: string | string[] }): Promise<unknown> } };
+      attemptRecapWithGenerator: LeagueBrain["attemptRecapWithGenerator"];
+    };
+    const first = await runInDurableObject(stub, async (instance) => {
+      const brain = instance as unknown as SendBrain;
+      const sentTo: Array<string | string[]> = [];
+      brain.env.EMAIL = {
+        async send(message) {
+          if (message.to === "flaky@partial.example.test") throw new Error("mailbox unavailable");
+          sentTo.push(message.to);
+          return {};
+        },
+      };
+      const result = await brain.attemptRecapWithGenerator(fixtureMatchupsFinal, [], async () => ({
+        subject: "Week 3 belongs to Alex",
+        body: "One inbox is down.",
+      }));
+      return { result, sentTo };
+    });
+    expect(first.result.status).toBe("email_pending");
+    expect(first.sentTo).toEqual(["ok@partial.example.test"]);
+
+    const second = await runInDurableObject(stub, async (instance, state) => {
+      const brain = instance as unknown as SendBrain;
+      const sentTo: Array<string | string[]> = [];
+      brain.env.EMAIL = {
+        async send(message) {
+          sentTo.push(message.to);
+          return {};
+        },
+      };
+      const result = await brain.attemptRecapWithGenerator(fixtureMatchupsFinal, [], async () => ({
+        subject: "Week 3 again",
+        body: "Should not generate.",
+      }));
+      const row = state.storage.sql.exec("SELECT emailed_at FROM recaps WHERE week = 3").toArray()[0] as
+        | { emailed_at: number | null }
+        | undefined;
+      return { result, sentTo, emailed: row?.emailed_at ?? null };
+    });
+    expect(second.result.status).toBe("published");
+    expect(second.sentTo).toEqual(["flaky@partial.example.test"]);
+    expect(second.emailed).not.toBeNull();
   });
 
   it("marks a recap emailed when nobody is opted in and does not send", async () => {

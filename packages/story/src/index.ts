@@ -5,7 +5,7 @@ export type { BeatDraft, RecapDraft } from "./json.ts";
 export { recapPrompt, beatPrompt } from "./prompts.ts";
 export { runRecapAttempt, recapStatusLabel } from "./recap.ts";
 export type { RecapAttemptResult, RecapPorts, RecapStatus } from "./recap.ts";
-export { easternParts, shouldAttemptTuesdayRecap, shouldPoll } from "./schedule.ts";
+export { canRecapCurrentWeek, easternParts, shouldAttemptTuesdayRecap, shouldPoll } from "./schedule.ts";
 export type { EasternParts } from "./schedule.ts";
 export { canonicalJson, hashPayload, hashSnapshot } from "./snapshot.ts";
 export type { LeagueSnapshot } from "./snapshot.ts";

@@ -36,3 +36,11 @@ export function shouldPoll(parts: EasternParts): boolean {
 export function shouldAttemptTuesdayRecap(parts: EasternParts): boolean {
   return parts.weekday === 2 && parts.hour === 9;
 }
+
+/**
+ * NFL weeks kick off Thursday and end Monday night, so the current week's scores are only
+ * complete on Tuesday and Wednesday. Thursday through Monday they are partial.
+ */
+export function canRecapCurrentWeek(parts: EasternParts): boolean {
+  return parts.weekday === 2 || parts.weekday === 3;
+}

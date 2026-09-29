@@ -690,7 +690,7 @@ export async function handleScheduled(
       });
       if (retainedDelivery) {
         if (shouldRecap) {
-          const result = await stub.attemptRecap();
+          const result = await stub.attemptRecap(nowMs);
           await settleRecapAttempt(env.DB, {
             leagueId: league.id,
             weekKey: settleWeekKey,
@@ -704,7 +704,7 @@ export async function handleScheduled(
         await stub.poll();
         polled += 1;
         if (shouldRecap) {
-          const result = await stub.attemptRecap();
+          const result = await stub.attemptRecap(nowMs);
           await settleRecapAttempt(env.DB, {
             leagueId: league.id,
             weekKey: settleWeekKey,

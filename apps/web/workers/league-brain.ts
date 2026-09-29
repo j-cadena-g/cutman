@@ -5,7 +5,9 @@ import { recapEmail, sendEmail } from "@cutman/email";
 import type { NflState, PlayerMap, SleeperMatchup, SleeperTransaction } from "@cutman/sleeper";
 import {
   beatPrompt,
+  canRecapCurrentWeek,
   diffSnapshots,
+  easternParts,
   factsIfChanged,
   hashSnapshot,
   isBlankBeat,
@@ -147,6 +149,12 @@ export class LeagueBrain extends DurableObject<Env> {
         facts TEXT NOT NULL,
         emailed_at INTEGER,
         created_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS recap_deliveries (
+        week INTEGER NOT NULL,
+        email TEXT NOT NULL,
+        sent_at INTEGER NOT NULL,
+        PRIMARY KEY (week, email)
       );
       CREATE TABLE IF NOT EXISTS bible (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -386,21 +394,24 @@ export class LeagueBrain extends DurableObject<Env> {
     return sleeperFromEnv(this.env).getNflState();
   }
 
-  async attemptRecap(): Promise<RecapAttemptResult> {
+  async attemptRecap(now: number = Date.now()): Promise<RecapAttemptResult> {
     const unsent = this.oldestUnemailedRecap();
     if (unsent) return this.sendStoredRecap(unsent);
 
     const settings = this.readSettings();
     const state = await this.loadNflState();
-    const current = await this.loadRecapWeek(settings.sleeperLeagueId, state.week);
+    // Pending attempts retry all week. Thursday through Monday the current week is in progress.
+    const current = canRecapCurrentWeek(easternParts(new Date(now)))
+      ? await this.loadRecapWeek(settings.sleeperLeagueId, state.week)
+      : null;
     const selected = selectRecapWeek({
       nflWeek: state.week,
-      currentWeekPlayed: isPlayedWeek(current.matchups),
+      currentWeekPlayed: current != null && isPlayedWeek(current.matchups),
     });
     if (selected == null) return { status: "skipped_not_final" };
 
     let weekBundle = current;
-    if (selected !== state.week) {
+    if (selected !== state.week || weekBundle == null) {
       weekBundle = await this.loadRecapWeek(settings.sleeperLeagueId, selected);
       if (!isPlayedWeek(weekBundle.matchups)) return { status: "skipped_not_final" };
     }
@@ -580,17 +591,35 @@ export class LeagueBrain extends DurableObject<Env> {
       this.markRecapEmailed(week);
       return;
     }
-    const message = recapEmail(recap);
-    await Promise.all(
-      recipients.map((recipient) =>
-        sendEmail(this.env.EMAIL, {
-          from: this.env.EMAIL_FROM,
-          to: recipient.email,
-          subject: message.subject,
-          text: message.text,
-        }),
-      ),
+    const delivered = new Set(
+      (
+        this.ctx.storage.sql.exec("SELECT email FROM recap_deliveries WHERE week = ?", week).toArray() as Array<{
+          email: string;
+        }>
+      ).map((row) => row.email),
     );
+    const message = recapEmail(recap);
+    // Record each send as it lands so a retry after a partial failure skips who already got it.
+    const results = await Promise.allSettled(
+      recipients
+        .filter((recipient) => !delivered.has(recipient.email))
+        .map(async (recipient) => {
+          await sendEmail(this.env.EMAIL, {
+            from: this.env.EMAIL_FROM,
+            to: recipient.email,
+            subject: message.subject,
+            text: message.text,
+          });
+          this.ctx.storage.sql.exec(
+            "INSERT OR IGNORE INTO recap_deliveries (week, email, sent_at) VALUES (?, ?, ?)",
+            week,
+            recipient.email,
+            Date.now(),
+          );
+        }),
+    );
+    const failure = results.find((result) => result.status === "rejected");
+    if (failure) throw failure.reason;
     this.markRecapEmailed(week);
   }
 
