@@ -34,6 +34,13 @@ const LEGACY_IMPORT_ABANDONED_KEY = "legacyImportAbandoned";
 /** Consecutive rejected exports before the target brain gives up and starts a fresh book. */
 export const LEGACY_IMPORT_MAX_ATTEMPTS = 3;
 
+/**
+ * Failed sends to one recipient before that recipient is dropped from a recap. Retries run
+ * hourly, so this is about a day: long enough to ride out an email outage, short enough that
+ * one bad address does not hold every later recap.
+ */
+export const MAX_RECAP_DELIVERY_FAILURES = 24;
+
 /** Thrown from readSettings while a legacy copy is unfinished so poll/recap/dashboard cannot seed a new history. */
 export const LEGACY_IMPORT_PENDING_MESSAGE = "League history import is pending";
 
@@ -92,6 +99,7 @@ export type LegacyBrainState = {
     emailedAt: number | null;
     createdAt: number;
   }>;
+  recapDeliveries: Array<{ week: number; email: string; sentAt: number }>;
 };
 
 export type Dashboard = {
@@ -113,6 +121,8 @@ export class LeagueBrain extends DurableObject<Env> {
   // await, so each mutation must finish (including rollback) before the next captures
   // prior tone. Hibernation drops this queue only when no request is in flight.
   private toneMutationMutex: Promise<void> = Promise.resolve();
+  // In-flight recap delivery per week. See deliverRecap.
+  private readonly recapDeliveries = new Map<number, Promise<void>>();
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -154,6 +164,12 @@ export class LeagueBrain extends DurableObject<Env> {
         week INTEGER NOT NULL,
         email TEXT NOT NULL,
         sent_at INTEGER NOT NULL,
+        PRIMARY KEY (week, email)
+      );
+      CREATE TABLE IF NOT EXISTS recap_delivery_failures (
+        week INTEGER NOT NULL,
+        email TEXT NOT NULL,
+        failures INTEGER NOT NULL,
         PRIMARY KEY (week, email)
       );
       CREATE TABLE IF NOT EXISTS bible (
@@ -224,6 +240,9 @@ export class LeagueBrain extends DurableObject<Env> {
           "SELECT week, subject, body, facts, emailed_at AS emailedAt, created_at AS createdAt FROM recaps ORDER BY week",
         )
         .toArray() as LegacyBrainState["recaps"],
+      recapDeliveries: this.ctx.storage.sql
+        .exec("SELECT week, email, sent_at AS sentAt FROM recap_deliveries ORDER BY week, email")
+        .toArray() as LegacyBrainState["recapDeliveries"],
     };
   }
 
@@ -584,32 +603,48 @@ export class LeagueBrain extends DurableObject<Env> {
     }
   }
 
-  private async deliverRecap(week: number, recap: RecapDraft): Promise<void> {
+  private deliverRecap(week: number, recap: RecapDraft): Promise<void> {
+    // RPCs interleave while sends are in flight. Callers for the same week share one delivery
+    // so the recipient list is never read twice before sends are recorded.
+    const inFlight = this.recapDeliveries.get(week);
+    if (inFlight) return inFlight;
+    const delivery = this.sendRecapToRecipients(week, recap).finally(() => {
+      this.recapDeliveries.delete(week);
+    });
+    this.recapDeliveries.set(week, delivery);
+    return delivery;
+  }
+
+  private async sendRecapToRecipients(week: number, recap: RecapDraft): Promise<void> {
     const settings = this.readSettings();
     const recipients = await listRecapRecipients(this.env.DB, settings.leagueId);
     if (recipients.length === 0) {
       this.markRecapEmailed(week);
       return;
     }
-    const delivered = new Set(
-      (
-        this.ctx.storage.sql.exec("SELECT email FROM recap_deliveries WHERE week = ?", week).toArray() as Array<{
-          email: string;
-        }>
-      ).map((row) => row.email),
-    );
     const message = recapEmail(recap);
+    const before = this.recapDeliveryState(week);
     // Record each send as it lands so a retry after a partial failure skips who already got it.
     const results = await Promise.allSettled(
       recipients
-        .filter((recipient) => !delivered.has(recipient.email))
+        .filter((recipient) => before.outstanding(recipient.email))
         .map(async (recipient) => {
-          await sendEmail(this.env.EMAIL, {
-            from: this.env.EMAIL_FROM,
-            to: recipient.email,
-            subject: message.subject,
-            text: message.text,
-          });
+          try {
+            await sendEmail(this.env.EMAIL, {
+              from: this.env.EMAIL_FROM,
+              to: recipient.email,
+              subject: message.subject,
+              text: message.text,
+            });
+          } catch (error) {
+            this.ctx.storage.sql.exec(
+              `INSERT INTO recap_delivery_failures (week, email, failures) VALUES (?, ?, 1)
+               ON CONFLICT(week, email) DO UPDATE SET failures = failures + 1`,
+              week,
+              recipient.email,
+            );
+            throw error;
+          }
           this.ctx.storage.sql.exec(
             "INSERT OR IGNORE INTO recap_deliveries (week, email, sent_at) VALUES (?, ?, ?)",
             week,
@@ -619,8 +654,36 @@ export class LeagueBrain extends DurableObject<Env> {
         }),
     );
     const failure = results.find((result) => result.status === "rejected");
-    if (failure) throw failure.reason;
+    const after = this.recapDeliveryState(week);
+    if (failure && recipients.some((recipient) => after.outstanding(recipient.email))) throw failure.reason;
+    const dropped = recipients.filter((recipient) => !after.delivered.has(recipient.email)).length;
+    if (dropped > 0) {
+      // Omit addresses. Operators get the week and a count only.
+      console.warn(JSON.stringify({ event: "league_brain.recap_delivery_abandoned", week, recipients: dropped }));
+    }
     this.markRecapEmailed(week);
+  }
+
+  private recapDeliveryState(week: number): { delivered: Set<string>; outstanding(email: string): boolean } {
+    const delivered = new Set(
+      (
+        this.ctx.storage.sql.exec("SELECT email FROM recap_deliveries WHERE week = ?", week).toArray() as Array<{
+          email: string;
+        }>
+      ).map((row) => row.email),
+    );
+    const exhausted = new Set(
+      (
+        this.ctx.storage.sql
+          .exec(
+            "SELECT email FROM recap_delivery_failures WHERE week = ? AND failures >= ?",
+            week,
+            MAX_RECAP_DELIVERY_FAILURES,
+          )
+          .toArray() as Array<{ email: string }>
+      ).map((row) => row.email),
+    );
+    return { delivered, outstanding: (email) => !delivered.has(email) && !exhausted.has(email) };
   }
 
   private markRecapEmailed(week: number): void {
@@ -948,6 +1011,15 @@ export class LeagueBrain extends DurableObject<Env> {
           emailedAt: row.emailedAt,
           createdAt: row.createdAt,
         },
+      );
+    }
+    for (const row of legacy.recapDeliveries) {
+      this.insertLegacyRowOrIdentical(
+        "INSERT OR IGNORE INTO recap_deliveries (week, email, sent_at) VALUES (?, ?, ?)",
+        [row.week, row.email, row.sentAt],
+        "SELECT week, email, sent_at AS sentAt FROM recap_deliveries WHERE week = ? AND email = ?",
+        [row.week, row.email],
+        { week: row.week, email: row.email, sentAt: row.sentAt },
       );
     }
   }
