@@ -50,6 +50,14 @@ export function formatExplorerRecord(wins: number, losses: number, ties: number)
   return ties > 0 ? `${wins}-${losses}-${ties}` : `${wins}-${losses}`;
 }
 
+export function formatExplorerSlot(slot: string | null): string {
+  if (!slot) return "—";
+  if (slot === "SUPER_FLEX") return "SF";
+  if (slot === "IDP_FLEX") return "IDP";
+  if (slot === "REC_FLEX") return "REC";
+  return slot;
+}
+
 export function formatExplorerDraftPick(
   round: number | null,
   draftSlot: number | null,

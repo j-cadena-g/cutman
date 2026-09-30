@@ -3,6 +3,7 @@ import { ExplorerManagerMeta, ExplorerRosterLink } from "~/components/explorer-m
 import { ExplorerPlayerList } from "~/components/explorer-player-list";
 import {
   formatExplorerRecord,
+  formatExplorerSlot,
   formatExplorerScore,
   isRealPlayerId,
   matchupLeader,
@@ -13,13 +14,6 @@ import {
 } from "~/lib/sleeper-explorer";
 import { cn } from "~/lib/utils";
 
-function slotLabel(slot: string | null): string {
-  if (!slot) return "—";
-  if (slot === "SUPER_FLEX") return "SF";
-  if (slot === "IDP_FLEX") return "IDP";
-  if (slot === "REC_FLEX") return "REC";
-  return slot;
-}
 
 function slotClass(slot: string | null): string {
   const key = (slot ?? "").split("/")[0] ?? "";
@@ -181,7 +175,7 @@ export function ExplorerMatchupCard({ matchup }: { matchup: ExplorerMatchupView 
               >
                 <StarterFace player={line.left} align="left" winning={leftWins} />
                 <p className={cn("text-center text-[11px] font-bold tracking-wide", slotClass(line.slot))}>
-                  {slotLabel(line.slot)}
+                  {formatExplorerSlot(line.slot)}
                 </p>
                 <StarterFace player={line.right} align="right" winning={rightWins} />
               </li>
@@ -189,7 +183,7 @@ export function ExplorerMatchupCard({ matchup }: { matchup: ExplorerMatchupView 
           })}
           </ol>
           {left.bench.length > 0 || right.bench.length > 0 ? (
-            <div className={cn(MATCHUP_COLS, MATCHUP_PAD, "border-t border-cream/10 py-3")}>
+            <div className={cn(MATCHUP_COLS, MATCHUP_PAD, "items-start border-t border-cream/10 py-3")}>
               <ExplorerPlayerList players={left.bench} empty="No bench" />
               <p className="text-center text-[11px] font-bold tracking-wide text-muted">BN</p>
               <ExplorerPlayerList players={right.bench} empty="No bench" />

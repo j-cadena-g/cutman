@@ -13,6 +13,7 @@ import { explorerDepsFromEnv, lookupExplorerBoard } from "~/lib/sleeper-explorer
 import {
   describeExplorerError,
   formatExplorerRecord,
+  formatExplorerSlot,
   formatExplorerScore,
   formatLeagueStatus,
   parseExplorerWeekParam,
@@ -62,7 +63,7 @@ function LeagueSettingsStrip({ settings }: { settings: ExplorerLeagueSettings })
     <section className="mt-6 flex flex-wrap gap-x-8 gap-y-2 rounded-2xl border border-cream/12 bg-field/80 px-4 py-3 text-sm text-muted">
       {settings.rosterSlots.length > 0 ? (
         <p>
-          <span className="font-semibold text-cream">Slots</span> · {settings.rosterSlots.join(" · ")}
+          <span className="font-semibold text-cream">Slots</span> · {settings.rosterSlots.map(formatExplorerSlot).join(" · ")}
         </p>
       ) : null}
       {settings.playoffWeekStart != null ? (

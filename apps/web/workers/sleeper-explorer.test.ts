@@ -72,6 +72,7 @@ import {
   sleeperAvatarUrl,
   sleeperPlayerHeadshotUrl,
   formatExplorerDraftPick,
+  formatExplorerSlot,
   formatExplorerRecord,
   formatExplorerScore,
   matchupLeader,
@@ -474,6 +475,11 @@ describe("formatExplorerScore / formatExplorerRecord", () => {
   it("omits ties from the record unless the team has one", () => {
     expect(formatExplorerRecord(5, 2, 0)).toBe("5-2");
     expect(formatExplorerRecord(5, 1, 1)).toBe("5-1-1");
+  });
+
+  it("labels flex roster slots the same way in the settings strip and matchup rows", () => {
+    expect(["QB", "SUPER_FLEX", "REC_FLEX", "IDP_FLEX"].map(formatExplorerSlot)).toEqual(["QB", "SF", "REC", "IDP"]);
+    expect(formatExplorerSlot(null)).toBe("—");
   });
 
   it("prefers draft_slot over overall pick_no for the within-round label", () => {
