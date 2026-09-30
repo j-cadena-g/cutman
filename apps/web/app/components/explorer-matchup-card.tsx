@@ -1,7 +1,9 @@
 import { ExplorerAvatar } from "~/components/explorer-avatar";
+import { ExplorerManagerMeta, ExplorerRosterLink } from "~/components/explorer-manager-link";
 import { ExplorerPlayerList } from "~/components/explorer-player-list";
 import {
   formatExplorerRecord,
+  formatExplorerSlot,
   formatExplorerScore,
   isRealPlayerId,
   matchupLeader,
@@ -12,13 +14,6 @@ import {
 } from "~/lib/sleeper-explorer";
 import { cn } from "~/lib/utils";
 
-function slotLabel(slot: string | null): string {
-  if (!slot) return "—";
-  if (slot === "SUPER_FLEX") return "SF";
-  if (slot === "IDP_FLEX") return "IDP";
-  if (slot === "REC_FLEX") return "REC";
-  return slot;
-}
 
 function slotClass(slot: string | null): string {
   const key = (slot ?? "").split("/")[0] ?? "";
@@ -64,9 +59,19 @@ function TeamPane({
       <div className={cn("flex min-w-0 items-center gap-2", mirrored && "flex-row-reverse")}>
         <ExplorerAvatar src={side.avatarUrl} name={side.teamName} size="md" />
         <div className="min-w-0">
-          <p className="truncate font-semibold text-cream">{side.teamName}</p>
+          <p className="truncate font-semibold text-cream">
+            <ExplorerRosterLink rosterId={side.rosterId} className="hover:text-live">
+              {side.teamName}
+            </ExplorerRosterLink>
+          </p>
           <p className="truncate text-xs text-muted">
-            {side.abandoned ? "Abandoned" : side.displayName} · {record}
+            <ExplorerManagerMeta
+              displayName={side.displayName}
+              username={side.username}
+              isOwner={side.isOwner}
+              abandoned={side.abandoned}
+            />{" "}
+            · {record}
           </p>
         </div>
       </div>
@@ -170,13 +175,20 @@ export function ExplorerMatchupCard({ matchup }: { matchup: ExplorerMatchupView 
               >
                 <StarterFace player={line.left} align="left" winning={leftWins} />
                 <p className={cn("text-center text-[11px] font-bold tracking-wide", slotClass(line.slot))}>
-                  {slotLabel(line.slot)}
+                  {formatExplorerSlot(line.slot)}
                 </p>
                 <StarterFace player={line.right} align="right" winning={rightWins} />
               </li>
             );
           })}
           </ol>
+          {left.bench.length > 0 || right.bench.length > 0 ? (
+            <div className={cn(MATCHUP_COLS, MATCHUP_PAD, "items-start border-t border-cream/10 py-3")}>
+              <ExplorerPlayerList players={left.bench} empty="No bench" />
+              <p className="text-center text-[11px] font-bold tracking-wide text-muted">BN</p>
+              <ExplorerPlayerList players={right.bench} empty="No bench" />
+            </div>
+          ) : null}
         </div>
       ) : (
         <p className="border-t border-cream/10 px-4 py-3 text-sm text-muted sm:px-5">No starters listed.</p>

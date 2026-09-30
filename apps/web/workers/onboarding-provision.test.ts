@@ -79,6 +79,21 @@ function createFakeSleeperClient(config: {
     async getPlayers() {
       return {};
     },
+    async getLeagueDrafts() {
+      return [];
+    },
+    async getDraftPicks() {
+      return [];
+    },
+    async getTradedPicks() {
+      return [];
+    },
+    async getWinnersBracket() {
+      return [];
+    },
+    async getLosersBracket() {
+      return [];
+    },
   };
 }
 

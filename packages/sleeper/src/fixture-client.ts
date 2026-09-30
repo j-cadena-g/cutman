@@ -1,20 +1,28 @@
 import {
   COMING_SOON_LEAGUE_ID,
   MUTABLE_SLEEPER_PREVIOUS_USERNAME,
+  PREVIOUS_SEASON_LEAGUE_ID,
+  V1_DRAFT_ID,
   V1_LEAGUE_ID,
   comingSoonFixtureLeague,
   comingSoonFixtureUsers,
   fixturePlayers,
   fixtureTransactions,
   mutableFixtureUser,
+  previousSeasonFixtureLeague,
+  v1FixtureDraft,
+  v1FixtureDraftPicks,
   v1FixtureLeague,
+  v1FixtureLosersBracket,
   v1FixtureMatchups,
   v1FixtureRosters,
   v1FixtureState,
+  v1FixtureTradedPicks,
   v1FixtureUser,
   v1FixtureUsers,
+  v1FixtureWinnersBracket,
 } from "./fixtures.ts";
-import type { NflState, PlayerMap, SleeperClient, SleeperLeague, SleeperLeagueUser, SleeperMatchup, SleeperRoster, SleeperTransaction, SleeperUser } from "./types.ts";
+import type { NflState, PlayerMap, SleeperBracketGame, SleeperClient, SleeperDraft, SleeperDraftPick, SleeperDraftPickRow, SleeperLeague, SleeperLeagueUser, SleeperMatchup, SleeperRoster, SleeperTransaction, SleeperUser } from "./types.ts";
 
 export type FixtureOverrides = {
   state?: NflState;
@@ -26,12 +34,18 @@ export type FixtureOverrides = {
   matchups?: SleeperMatchup[];
   transactions?: SleeperTransaction[];
   players?: PlayerMap;
+  drafts?: SleeperDraft[];
+  draftPicks?: SleeperDraftPickRow[];
+  tradedPicks?: SleeperDraftPick[];
+  winnersBracket?: SleeperBracketGame[];
+  losersBracket?: SleeperBracketGame[];
 };
 
 function defaultUsersByLeagueId(): Record<string, SleeperLeagueUser[]> {
   return {
     [V1_LEAGUE_ID]: v1FixtureUsers,
     [COMING_SOON_LEAGUE_ID]: comingSoonFixtureUsers,
+    [PREVIOUS_SEASON_LEAGUE_ID]: v1FixtureUsers,
   };
 }
 
@@ -47,7 +61,7 @@ function toSleeperUser(entry: SleeperLeagueUser): SleeperUser {
 export function createFixtureClient(overrides: FixtureOverrides = {}): SleeperClient {
   const state = overrides.state ?? v1FixtureState;
   const user = overrides.user === undefined ? v1FixtureUser : overrides.user;
-  const leagues = overrides.leagues ?? [v1FixtureLeague, comingSoonFixtureLeague];
+  const leagues = overrides.leagues ?? [v1FixtureLeague, comingSoonFixtureLeague, previousSeasonFixtureLeague];
   const usersByLeagueId =
     overrides.usersByLeagueId ??
     (overrides.users
@@ -72,6 +86,11 @@ export function createFixtureClient(overrides: FixtureOverrides = {}): SleeperCl
   const matchups = overrides.matchups ?? v1FixtureMatchups;
   const transactions = overrides.transactions ?? fixtureTransactions;
   const players = overrides.players ?? fixturePlayers;
+  const drafts = overrides.drafts ?? [v1FixtureDraft];
+  const draftPicks = overrides.draftPicks ?? v1FixtureDraftPicks;
+  const tradedPicks = overrides.tradedPicks ?? v1FixtureTradedPicks;
+  const winnersBracket = overrides.winnersBracket ?? v1FixtureWinnersBracket;
+  const losersBracket = overrides.losersBracket ?? v1FixtureLosersBracket;
 
   function usersForLeague(leagueId: string): SleeperLeagueUser[] {
     return usersByLeagueId[leagueId] ?? [];
@@ -90,8 +109,12 @@ export function createFixtureClient(overrides: FixtureOverrides = {}): SleeperCl
     async getUser(usernameOrId) {
       return directory.get(usernameOrId) ?? null;
     },
-    async getUserLeagues(userId) {
-      return leagues.filter((league) => usersForLeague(league.league_id).some((entry) => entry.user_id === userId));
+    async getUserLeagues(userId, season) {
+      return leagues.filter(
+        (league) =>
+          league.season === season &&
+          usersForLeague(league.league_id).some((entry) => entry.user_id === userId),
+      );
     },
     async getLeague(leagueId) {
       return leagues.find((league) => league.league_id === leagueId) ?? null;
@@ -110,6 +133,22 @@ export function createFixtureClient(overrides: FixtureOverrides = {}): SleeperCl
     },
     async getPlayers() {
       return players;
+    },
+    async getLeagueDrafts(leagueId) {
+      return leagueId === V1_LEAGUE_ID || Boolean(overrides.drafts) ? drafts.filter((draft) => !draft.league_id || draft.league_id === leagueId) : [];
+    },
+    async getDraftPicks(draftId) {
+      if (!drafts.some((draft) => draft.draft_id === draftId)) return [];
+      return draftId === V1_DRAFT_ID || Boolean(overrides.draftPicks) ? draftPicks : [];
+    },
+    async getTradedPicks(leagueId) {
+      return leagueId === V1_LEAGUE_ID || Boolean(overrides.tradedPicks) ? tradedPicks : [];
+    },
+    async getWinnersBracket(leagueId) {
+      return leagueId === V1_LEAGUE_ID || Boolean(overrides.winnersBracket) ? winnersBracket : [];
+    },
+    async getLosersBracket(leagueId) {
+      return leagueId === V1_LEAGUE_ID || Boolean(overrides.losersBracket) ? losersBracket : [];
     },
   };
 }

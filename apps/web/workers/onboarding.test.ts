@@ -93,6 +93,21 @@ function createFakeSleeperClient(config: FakeSleeperConfig): SleeperClient & {
     async getPlayers() {
       return {};
     },
+    async getLeagueDrafts() {
+      return [];
+    },
+    async getDraftPicks() {
+      return [];
+    },
+    async getTradedPicks() {
+      return [];
+    },
+    async getWinnersBracket() {
+      return [];
+    },
+    async getLosersBracket() {
+      return [];
+    },
   };
 }
 
@@ -600,6 +615,21 @@ describe("discoverLeagues", () => {
       async getPlayers() {
         return {};
       },
+      async getLeagueDrafts() {
+        return [];
+      },
+      async getDraftPicks() {
+        return [];
+      },
+      async getTradedPicks() {
+        return [];
+      },
+      async getWinnersBracket() {
+        return [];
+      },
+      async getLosersBracket() {
+        return [];
+      },
     };
     await connectSleeperAccount(makeDeps({ sleeperClient, pilotSleeperLeagueId }), {
       clerkUserId: user.id,
@@ -703,6 +733,21 @@ describe("discoverLeagues", () => {
       async getPlayers() {
         return {};
       },
+      async getLeagueDrafts() {
+        return [];
+      },
+      async getDraftPicks() {
+        return [];
+      },
+      async getTradedPicks() {
+        return [];
+      },
+      async getWinnersBracket() {
+        return [];
+      },
+      async getLosersBracket() {
+        return [];
+      },
     };
     await connectSleeperAccount(makeDeps({ sleeperClient, pilotSleeperLeagueId }), {
       clerkUserId: user.id,
@@ -759,6 +804,21 @@ describe("discoverLeagues", () => {
       },
       async getPlayers() {
         return {};
+      },
+      async getLeagueDrafts() {
+        return [];
+      },
+      async getDraftPicks() {
+        return [];
+      },
+      async getTradedPicks() {
+        return [];
+      },
+      async getWinnersBracket() {
+        return [];
+      },
+      async getLosersBracket() {
+        return [];
       },
     };
     await connectSleeperAccount(makeDeps({ sleeperClient, pilotSleeperLeagueId }), {

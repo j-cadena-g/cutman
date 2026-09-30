@@ -1,4 +1,4 @@
-import type { NflState, SleeperLeague, SleeperLeagueUser, SleeperMatchup, SleeperRoster, SleeperTransaction, SleeperUser } from "./types.ts";
+import type { NflState, SleeperBracketGame, SleeperDraft, SleeperDraftPick, SleeperDraftPickRow, SleeperLeague, SleeperLeagueUser, SleeperMatchup, SleeperRoster, SleeperTransaction, SleeperUser } from "./types.ts";
 
 // Fixture data for `createFixtureClient` only — not Worker env. Runtime league identity
 // is `PILOT_SLEEPER_LEAGUE_ID`.
@@ -7,6 +7,9 @@ export const V1_LEAGUE_NAME = "Example League";
 export const EXAMPLE_SLEEPER_USER_ID = "0000000000000000001";
 export const EXAMPLE_SLEEPER_USERNAME = "example_user";
 export const COMING_SOON_LEAGUE_ID = "0000000000000000010";
+export const PREVIOUS_SEASON_LEAGUE_ID = "0000000000000000020";
+export const PREVIOUS_SEASON_LEAGUE_NAME = "Example League 2025";
+export const V1_DRAFT_ID = "0000000000000000100";
 export const COMING_SOON_LEAGUE_NAME = "Coming Soon League";
 export const MUTABLE_SLEEPER_USER_ID = "0000000000000000002";
 export const MUTABLE_SLEEPER_USERNAME = "renamed_user";
@@ -208,6 +211,10 @@ export const v1FixtureLeague: SleeperLeague = {
   sport: "nfl",
   status: "in_season",
   total_rosters: 10,
+  roster_positions: ["QB", "RB", "WR", "TE", "FLEX", "K", "DEF"],
+  scoring_settings: { rec: 1, pass_td: 4, rush_td: 6 },
+  settings: { playoff_week_start: 15 },
+  draft_id: V1_DRAFT_ID,
 };
 
 export const mutableFixtureUser: SleeperUser = {
@@ -224,6 +231,15 @@ export const comingSoonFixtureLeague: SleeperLeague = {
   sport: "nfl",
   status: "in_season",
   total_rosters: 4,
+};
+
+export const previousSeasonFixtureLeague: SleeperLeague = {
+  league_id: PREVIOUS_SEASON_LEAGUE_ID,
+  name: PREVIOUS_SEASON_LEAGUE_NAME,
+  season: "2025",
+  sport: "nfl",
+  status: "complete",
+  total_rosters: 10,
 };
 
 export const v1FixtureCommissioner: SleeperLeagueUser = {
@@ -318,4 +334,36 @@ export const v1FixtureMatchups: SleeperMatchup[] = [
   { roster_id: 8, matchup_id: 4, points: 90.1, starters: ["4988", "8134", "DAL"], players: ["4988", "8134", "DAL"], players_points: { "4988": 15.1, "8134": 13.0, DAL: 8.0 } },
   { roster_id: 9, matchup_id: 5, points: 79.8, starters: ["6794", "4035", "SF"], players: ["6794", "4035", "SF"], players_points: { "6794": 12.8, "4035": 11.0, SF: 6.0 } },
   { roster_id: 10, matchup_id: 5, points: 83.4, starters: ["3198", "8146", "PHI"], players: ["3198", "8146", "PHI"], players_points: { "3198": 10.4, "8146": 14.0, PHI: 7.0 } },
+];
+
+export const v1FixtureDraft: SleeperDraft = {
+  draft_id: V1_DRAFT_ID,
+  league_id: V1_LEAGUE_ID,
+  status: "complete",
+  type: "snake",
+  season: "2026",
+  start_time: 1_720_000_000_000,
+};
+
+export const v1FixtureDraftPicks: SleeperDraftPickRow[] = [
+  {
+    player_id: "4046",
+    picked_by: EXAMPLE_SLEEPER_USER_ID,
+    roster_id: 1,
+    round: 1,
+    draft_slot: 1,
+    pick_no: 1,
+  },
+];
+
+export const v1FixtureTradedPicks: SleeperDraftPick[] = [
+  { season: "2027", round: 2, roster_id: 1, previous_owner_id: 2, owner_id: 1 },
+];
+
+export const v1FixtureWinnersBracket: SleeperBracketGame[] = [
+  { r: 1, m: 1, t1: 1, t2: 2, w: 1, l: 2 },
+];
+
+export const v1FixtureLosersBracket: SleeperBracketGame[] = [
+  { r: 1, m: 1, t1: 9, t2: 10, w: 10, l: 9 },
 ];

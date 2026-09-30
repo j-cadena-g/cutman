@@ -25,6 +25,13 @@ export type SleeperLeague = {
   total_rosters?: number;
   avatar?: string | null;
   roster_positions?: string[] | null;
+  scoring_settings?: Record<string, number> | null;
+  settings?: {
+    playoff_week_start?: number;
+    [key: string]: unknown;
+  } | null;
+  draft_id?: string | null;
+  previous_league_id?: string | null;
 };
 
 export type SleeperLeagueUser = {
@@ -52,6 +59,8 @@ export type SleeperRoster = {
     fpts?: number;
     // Hundredths of a point; Sleeper may send a negative value with a negative `fpts`.
     fpts_decimal?: number;
+    fpts_against?: number;
+    fpts_against_decimal?: number;
   };
 };
 
@@ -68,9 +77,37 @@ export type SleeperMatchup = {
 export type SleeperDraftPick = {
   season: string;
   round: number;
-  roster_id: number;
-  previous_owner_id: number;
-  owner_id: number;
+  roster_id: number | string;
+  previous_owner_id: number | string;
+  owner_id: number | string;
+};
+
+export type SleeperDraft = {
+  draft_id: string;
+  league_id?: string;
+  status?: string;
+  type?: string;
+  season?: string;
+  start_time?: number | null;
+};
+
+export type SleeperDraftPickRow = {
+  player_id?: string | null;
+  picked_by?: string | null;
+  roster_id?: number | string | null;
+  round?: number;
+  draft_slot?: number;
+  pick_no?: number;
+};
+
+export type SleeperBracketGame = {
+  r: number;
+  m: number;
+  t1: number | null;
+  t2: number | null;
+  w?: number | null;
+  l?: number | null;
+  p?: number | null;
 };
 
 export type SleeperTransaction = {
@@ -108,4 +145,9 @@ export type SleeperClient = {
   getMatchups(leagueId: string, week: number): Promise<SleeperMatchup[]>;
   getTransactions(leagueId: string, week: number): Promise<SleeperTransaction[]>;
   getPlayers(): Promise<PlayerMap>;
+  getLeagueDrafts(leagueId: string): Promise<SleeperDraft[]>;
+  getDraftPicks(draftId: string): Promise<SleeperDraftPickRow[]>;
+  getTradedPicks(leagueId: string): Promise<SleeperDraftPick[]>;
+  getWinnersBracket(leagueId: string): Promise<SleeperBracketGame[]>;
+  getLosersBracket(leagueId: string): Promise<SleeperBracketGame[]>;
 };

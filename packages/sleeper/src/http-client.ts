@@ -1,4 +1,4 @@
-import type { NflState, PlayerMap, SleeperClient, SleeperLeague, SleeperLeagueUser, SleeperMatchup, SleeperRoster, SleeperTransaction, SleeperUser } from "./types.ts";
+import type { NflState, PlayerMap, SleeperBracketGame, SleeperClient, SleeperDraft, SleeperDraftPick, SleeperDraftPickRow, SleeperLeague, SleeperLeagueUser, SleeperMatchup, SleeperRoster, SleeperTransaction, SleeperUser } from "./types.ts";
 
 const DEFAULT_BASE = "https://api.sleeper.app/v1";
 
@@ -14,6 +14,8 @@ function normalizedSleeperPath(path: string): string {
     if ((segments[2] === "matchups" || segments[2] === "transactions") && segments[3]) {
       segments[3] = ":id";
     }
+  } else if (segments[0] === "draft" && segments[1]) {
+    segments[1] = ":id";
   } else if (segments[0] !== "state" && segments[0] !== "players") {
     return `/${segments[0] ?? ""}${segments.length > 1 ? "/:redacted" : ""}`;
   }
@@ -89,6 +91,26 @@ export class HttpSleeperClient implements SleeperClient {
 
   async getPlayers(): Promise<PlayerMap> {
     return this.getJson<PlayerMap>("/players/nfl", HttpSleeperClient.PLAYERS_TIMEOUT_MS);
+  }
+
+  async getLeagueDrafts(leagueId: string): Promise<SleeperDraft[]> {
+    return this.getJson<SleeperDraft[]>(`/league/${encodeURIComponent(leagueId)}/drafts`);
+  }
+
+  async getDraftPicks(draftId: string): Promise<SleeperDraftPickRow[]> {
+    return this.getJson<SleeperDraftPickRow[]>(`/draft/${encodeURIComponent(draftId)}/picks`);
+  }
+
+  async getTradedPicks(leagueId: string): Promise<SleeperDraftPick[]> {
+    return this.getJson<SleeperDraftPick[]>(`/league/${encodeURIComponent(leagueId)}/traded_picks`);
+  }
+
+  async getWinnersBracket(leagueId: string): Promise<SleeperBracketGame[]> {
+    return this.getJson<SleeperBracketGame[]>(`/league/${encodeURIComponent(leagueId)}/winners_bracket`);
+  }
+
+  async getLosersBracket(leagueId: string): Promise<SleeperBracketGame[]> {
+    return this.getJson<SleeperBracketGame[]>(`/league/${encodeURIComponent(leagueId)}/losers_bracket`);
   }
 
   private async getJson<T>(path: string, timeoutMs = REQUEST_TIMEOUT_MS): Promise<T> {

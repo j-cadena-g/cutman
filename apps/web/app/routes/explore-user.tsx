@@ -1,6 +1,6 @@
 import { Link } from "react-router";
-import { BrandNav } from "~/components/brand-nav";
 import { ExplorerAvatar } from "~/components/explorer-avatar";
+import { ExplorerPage } from "~/components/explorer-page";
 import { Badge } from "~/components/ui/badge";
 import { Card, CardDescription, CardTitle } from "~/components/ui/card";
 import { cloudflareEnv } from "~/lib/env";
@@ -38,11 +38,10 @@ export default function ExploreUser({ loaderData }: Route.ComponentProps) {
   const { result } = loaderData;
 
   return (
-    <main className="mx-auto max-w-2xl px-6 py-16">
-      <BrandNav />
+    <ExplorerPage>
       {result.kind === "ok" ? (
         <>
-          <p className="mt-3 text-xs font-semibold uppercase tracking-[0.18em] text-muted">Sleeper profile</p>
+          <p className="mt-6 text-xs font-semibold uppercase tracking-[0.18em] text-muted">Sleeper profile</p>
           <div className="mt-3 flex items-center gap-4">
             <ExplorerAvatar src={result.user.avatarUrl} name={result.user.displayName} size="lg" />
             <div>
@@ -51,26 +50,26 @@ export default function ExploreUser({ loaderData }: Route.ComponentProps) {
             </div>
           </div>
           {result.stale ? (
-            <p className="mt-4 text-sm text-muted">Showing cached Sleeper data. A fresh pull wasn&apos;t available.</p>
+            <p className="mt-4 text-sm text-muted">Some Sleeper data could not be refreshed and may be incomplete.</p>
           ) : null}
           <p className="mt-6 text-sm text-muted">
             Season {result.season} · week {result.week} · {result.leagues.length} league
             {result.leagues.length === 1 ? "" : "s"}
           </p>
           {result.leagues.length === 0 ? (
-            <Card className="mt-6">
+            <Card className="mt-6 max-w-xl">
               <CardTitle>No leagues this season</CardTitle>
               <CardDescription>Sleeper didn&apos;t return any NFL leagues for this username in {result.season}.</CardDescription>
             </Card>
           ) : (
-            <ul className="mt-6 space-y-3">
+            <ul className="mt-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
               {result.leagues.map((league) => (
                 <li key={league.sleeperLeagueId}>
                   <Link
                     to={`/explore/leagues/${encodeURIComponent(league.sleeperLeagueId)}`}
-                    className="block rounded-xl focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-flag/70"
+                    className="block h-full rounded-xl focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-flag/70"
                   >
-                    <Card className="flex items-center gap-4 transition-colors hover:bg-turf">
+                    <Card className="flex h-full items-center gap-4 transition-colors hover:bg-turf">
                       <ExplorerAvatar src={league.avatarUrl} name={league.name} size="md" />
                       <div className="min-w-0">
                         <Badge>{formatLeagueStatus(league.status)}</Badge>
@@ -86,6 +85,32 @@ export default function ExploreUser({ loaderData }: Route.ComponentProps) {
               ))}
             </ul>
           )}
+          {result.previousSeason && result.previousLeagues.length > 0 ? (
+            <section className="mt-10 pb-16">
+              <h2 className="text-xs font-semibold uppercase tracking-[0.18em] text-muted">
+                Season {result.previousSeason}
+              </h2>
+              <ul className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                {result.previousLeagues.map((league) => (
+                  <li key={league.sleeperLeagueId}>
+                    <Link
+                      to={`/explore/leagues/${encodeURIComponent(league.sleeperLeagueId)}`}
+                      className="block h-full rounded-xl focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-flag/70"
+                    >
+                      <Card className="flex h-full items-center gap-4 transition-colors hover:bg-turf">
+                        <ExplorerAvatar src={league.avatarUrl} name={league.name} size="md" />
+                        <div className="min-w-0">
+                          <Badge>{formatLeagueStatus(league.status)}</Badge>
+                          <CardTitle className="mt-2 truncate">{league.name}</CardTitle>
+                          <CardDescription>Season {league.season}</CardDescription>
+                        </div>
+                      </Card>
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ) : null}
         </>
       ) : result.kind === "not_found" ? (
         <>
@@ -118,6 +143,6 @@ export default function ExploreUser({ loaderData }: Route.ComponentProps) {
           return exhaustive;
         })()
       )}
-    </main>
+    </ExplorerPage>
   );
 }
