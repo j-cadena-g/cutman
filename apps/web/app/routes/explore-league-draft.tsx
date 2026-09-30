@@ -58,7 +58,7 @@ export default function ExploreLeagueDraft({ loaderData }: Route.ComponentProps)
                             className="flex items-center gap-3 bg-field px-4 py-2.5"
                           >
                             <span className="w-10 text-xs tabular-nums text-muted">
-                              {formatExplorerDraftPick(pick.round, pick.draftSlot, pick.pickNo)}
+                              {formatExplorerDraftPick(pick.round, pick.pickInRound)}
                             </span>
                             <ExplorerAvatar src={pick.player.headshotUrl} name={pick.player.name} size="sm" />
                             <div className="min-w-0 flex-1">

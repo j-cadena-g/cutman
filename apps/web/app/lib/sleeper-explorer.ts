@@ -58,15 +58,30 @@ export function formatExplorerSlot(slot: string | null): string {
   return slot;
 }
 
-export function formatExplorerDraftPick(
-  round: number | null,
-  draftSlot: number | null,
-  pickNo: number | null,
-): string {
-  if (round == null) return "—";
-  if (draftSlot != null) return `${round}.${draftSlot}`;
-  if (pickNo != null) return `${round}.${pickNo}`;
-  return "—";
+export function formatExplorerDraftPick(round: number | null, pickInRound: number | null): string {
+  if (round == null || pickInRound == null) return "—";
+  return `${round}.${pickInRound}`;
+}
+
+/**
+ * Position of a pick within its round. draft_slot is the team's seat, which matches only in a
+ * linear draft: a snake draft's even rounds run 10..1. The overall pick_no is exact for every
+ * draft order, so use it when Sleeper sends it.
+ */
+export function draftPickInRound(
+  pick: { round?: number; draft_slot?: number; pick_no?: number },
+  teams: number | null,
+  draftType: string | null | undefined,
+): number | null {
+  const { round, draft_slot: slot, pick_no: pickNo } = pick;
+  if (round == null) return null;
+  if (pickNo != null && teams) {
+    const inRound = pickNo - (round - 1) * teams;
+    if (inRound >= 1 && inRound <= teams) return inRound;
+  }
+  if (slot == null) return null;
+  if (draftType === "snake" && teams && round % 2 === 0) return teams + 1 - slot;
+  return slot;
 }
 
 export function playerDisplayName(playerId: string, players: PlayerMap): string {
@@ -653,6 +668,7 @@ export type ExplorerDraftPickView = {
   pickNo: number | null;
   round: number | null;
   draftSlot: number | null;
+  pickInRound: number | null;
   player: ExplorerPlayer;
   teamName: string;
 };
@@ -695,6 +711,9 @@ export function assembleExplorerDraft(
   players: PlayerMap,
 ): ExplorerDraftView {
   const teamName = teamNameResolver(rosters, users, "Unknown team");
+  // Teams per round: the highest seat, or failing that the size of round 1.
+  const slots = picks.flatMap((pick) => (typeof pick.draft_slot === "number" ? [pick.draft_slot] : []));
+  const teams = slots.length > 0 ? Math.max(...slots) : picks.filter((pick) => pick.round === 1).length || null;
   return {
     draftId: draft.draft_id,
     status: draft.status ?? null,
@@ -704,6 +723,7 @@ export function assembleExplorerDraft(
       pickNo: pick.pick_no ?? null,
       round: pick.round ?? null,
       draftSlot: pick.draft_slot ?? null,
+      pickInRound: draftPickInRound(pick, teams, draft.type),
       player: toExplorerPlayer(pick.player_id || "", players, null, null),
       teamName: teamName(pick.roster_id),
     })),

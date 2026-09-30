@@ -71,6 +71,7 @@ import {
   parseExplorerWeekParam,
   sleeperAvatarUrl,
   sleeperPlayerHeadshotUrl,
+  draftPickInRound,
   formatExplorerDraftPick,
   formatExplorerSlot,
   formatExplorerRecord,
@@ -482,10 +483,21 @@ describe("formatExplorerScore / formatExplorerRecord", () => {
     expect(formatExplorerSlot(null)).toBe("—");
   });
 
-  it("prefers draft_slot over overall pick_no for the within-round label", () => {
-    expect(formatExplorerDraftPick(2, 3, 13)).toBe("2.3");
-    expect(formatExplorerDraftPick(1, null, 1)).toBe("1.1");
-    expect(formatExplorerDraftPick(null, 1, 1)).toBe("—");
+  it("labels a pick by round and position within the round", () => {
+    expect(formatExplorerDraftPick(2, 1)).toBe("2.1");
+    expect(formatExplorerDraftPick(null, 1)).toBe("—");
+    expect(formatExplorerDraftPick(2, null)).toBe("—");
+  });
+
+  it("numbers snake draft picks by their order in the round, not the team's seat", () => {
+    // 10 teams, snake: overall pick 11 is round 2's first pick, made by seat 10.
+    expect(draftPickInRound({ round: 2, draft_slot: 10, pick_no: 11 }, 10, "snake")).toBe(1);
+    expect(draftPickInRound({ round: 2, draft_slot: 1, pick_no: 20 }, 10, "snake")).toBe(10);
+    expect(draftPickInRound({ round: 3, draft_slot: 1, pick_no: 21 }, 10, "snake")).toBe(1);
+    // Without pick_no, reverse the seat in even snake rounds; linear drafts keep the seat.
+    expect(draftPickInRound({ round: 2, draft_slot: 10 }, 10, "snake")).toBe(1);
+    expect(draftPickInRound({ round: 2, draft_slot: 3 }, 10, "linear")).toBe(3);
+    expect(draftPickInRound({ round: 2 }, 10, "snake")).toBeNull();
   });
 });
 
