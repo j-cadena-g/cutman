@@ -50,11 +50,10 @@ function transactionFacts(
     if (tx.status !== "complete" || seen.has(tx.transaction_id)) continue;
     const names = tx.roster_ids.map((id) => teamLabel(next.users, next.rosters, id));
     if (tx.type === "trade") {
-      const moved = Object.keys(tx.adds ?? {}).map((id) => playerLabel(id, players));
       facts.push({
         kind: "trade",
         transactionId: tx.transaction_id,
-        copy: `${names.join(" and ")} completed a trade${moved.length ? `: ${moved.join(", ")}` : ""}.`,
+        copy: tradeCopy(names, tx, next, players),
       });
       continue;
     }
@@ -71,7 +70,60 @@ function transactionFacts(
   return facts;
 }
 
-function matchupFacts(prev: LeagueSnapshot | null, next: LeagueSnapshot): StoryFact[] {
+function clauseList(parts: string[]): string {
+  return parts.filter((part) => part.length > 0).join(" ");
+}
+
+function receivedByRoster(
+  adds: Record<string, number> | null | undefined,
+  next: LeagueSnapshot,
+  players: PlayerMap,
+): string[] {
+  const received = new Map<number, string[]>();
+  for (const [playerId, rosterId] of Object.entries(adds ?? {})) {
+    const roster = Number(rosterId);
+    const list = received.get(roster) ?? [];
+    list.push(playerLabel(playerId, players));
+    received.set(roster, list);
+  }
+  return [...received.entries()]
+    .sort((left, right) => left[0] - right[0])
+    .map(([rosterId, list]) => `${teamLabel(next.users, next.rosters, rosterId)} received ${list.join(", ")}.`);
+}
+
+function tradeCopy(
+  names: string[],
+  tx: LeagueSnapshot["transactions"][number],
+  next: LeagueSnapshot,
+  players: PlayerMap,
+): string {
+  const picks = (tx.draft_picks ?? []).map((pick) => {
+    const from = teamLabel(next.users, next.rosters, Number(pick.previous_owner_id));
+    const to = teamLabel(next.users, next.rosters, Number(pick.owner_id));
+    return `Picks: ${pick.season} round ${pick.round} from ${from} to ${to}.`;
+  });
+  const faab = (tx.waiver_budget ?? []).map((row) => {
+    const sender = teamLabel(next.users, next.rosters, row.sender);
+    const receiver = teamLabel(next.users, next.rosters, row.receiver);
+    return `FAAB: ${sender} sent ${row.amount} to ${receiver}.`;
+  });
+  return clauseList([
+    `${names.join(" and ")} completed a trade.`,
+    ...receivedByRoster(tx.adds, next, players),
+    ...picks,
+    ...faab,
+  ]);
+}
+
+function labeledPlayerPoints(matchup: SleeperMatchup, players: PlayerMap): string {
+  const table = matchup.players_points;
+  if (!table) return "";
+  return Object.entries(table)
+    .map(([id, pts]) => `${playerLabel(id, players)} ${pts}`)
+    .join(", ");
+}
+
+function matchupFacts(prev: LeagueSnapshot | null, next: LeagueSnapshot, players: PlayerMap): StoryFact[] {
   const prevByRoster = new Map((prev?.matchups ?? []).map((matchup) => [matchup.roster_id, matchup]));
   const grouped = new Map<number | null, SleeperMatchup[]>();
   for (const matchup of next.matchups) {
@@ -92,10 +144,13 @@ function matchupFacts(prev: LeagueSnapshot | null, next: LeagueSnapshot): StoryF
     if (!scoreChanged) continue;
     const leftName = teamLabel(next.users, next.rosters, left.roster_id);
     const rightName = teamLabel(next.users, next.rosters, right.roster_id);
+    const playerLine = [labeledPlayerPoints(left, players), labeledPlayerPoints(right, players)]
+      .filter((line) => line.length > 0)
+      .join(" vs ");
     facts.push({
       kind: "scoreboard",
       matchupId,
-      copy: `${leftName} ${left.points ?? "—"} vs ${rightName} ${right.points ?? "—"}.`,
+      copy: `${leftName} ${left.points ?? "—"} vs ${rightName} ${right.points ?? "—"}.${playerLine ? ` ${playerLine}.` : ""}`,
     });
     if (
       typeof left.points === "number" &&
@@ -112,32 +167,49 @@ function matchupFacts(prev: LeagueSnapshot | null, next: LeagueSnapshot): StoryF
   return facts;
 }
 
-function benchShameFacts(snapshot: LeagueSnapshot, players: PlayerMap): StoryFact[] {
+function shamePair(matchup: SleeperMatchup): { key: string; worst: { id: string; pts: number }; best: { id: string; pts: number } } | null {
+  if (!hasPlayerPoints(matchup)) return null;
+  const starters = new Set(matchup.starters ?? []);
+  const bench = (matchup.players ?? []).filter((id) => !starters.has(id));
+  if (bench.length === 0) return null;
+  let worstStarter: { id: string; pts: number } | null = null;
+  for (const starterId of starters) {
+    const pts = matchup.players_points?.[starterId];
+    if (typeof pts !== "number") continue;
+    if (!worstStarter || pts < worstStarter.pts) worstStarter = { id: starterId, pts };
+  }
+  let bestBench: { id: string; pts: number } | null = null;
+  for (const benchId of bench) {
+    const pts = matchup.players_points?.[benchId];
+    if (typeof pts !== "number") continue;
+    if (!bestBench || pts > bestBench.pts) bestBench = { id: benchId, pts };
+  }
+  if (!worstStarter || !bestBench) return null;
+  if (bestBench.pts <= worstStarter.pts) return null;
+  return {
+    key: `${matchup.roster_id}:${worstStarter.id}:${bestBench.id}`,
+    worst: worstStarter,
+    best: bestBench,
+  };
+}
+
+function benchShameFacts(prev: LeagueSnapshot | null, next: LeagueSnapshot, players: PlayerMap): StoryFact[] {
+  const previousPairs = new Set<string>();
+  if (prev) {
+    for (const matchup of prev.matchups) {
+      const pair = shamePair(matchup);
+      if (pair) previousPairs.add(pair.key);
+    }
+  }
   const facts: StoryFact[] = [];
-  for (const matchup of snapshot.matchups) {
-    if (!hasPlayerPoints(matchup)) continue;
-    const starters = new Set(matchup.starters ?? []);
-    const bench = (matchup.players ?? []).filter((id) => !starters.has(id));
-    if (bench.length === 0) continue;
-    let worstStarter: { id: string; pts: number } | null = null;
-    for (const starterId of starters) {
-      const pts = matchup.players_points?.[starterId];
-      if (typeof pts !== "number") continue;
-      if (!worstStarter || pts < worstStarter.pts) worstStarter = { id: starterId, pts };
-    }
-    let bestBench: { id: string; pts: number } | null = null;
-    for (const benchId of bench) {
-      const pts = matchup.players_points?.[benchId];
-      if (typeof pts !== "number") continue;
-      if (!bestBench || pts > bestBench.pts) bestBench = { id: benchId, pts };
-    }
-    if (!worstStarter || !bestBench) continue;
-    if (bestBench.pts <= worstStarter.pts) continue;
-    const name = teamLabel(snapshot.users, snapshot.rosters, matchup.roster_id);
+  for (const matchup of next.matchups) {
+    const pair = shamePair(matchup);
+    if (!pair || previousPairs.has(pair.key)) continue;
+    const name = teamLabel(next.users, next.rosters, matchup.roster_id);
     facts.push({
       kind: "bench_shame",
       rosterId: matchup.roster_id,
-      copy: `${name} left ${playerLabel(bestBench.id, players)} (${bestBench.pts}) on the pine while ${playerLabel(worstStarter.id, players)} put up ${worstStarter.pts}.`,
+      copy: `${name} left ${playerLabel(pair.best.id, players)} (${pair.best.pts}) on the pine while ${playerLabel(pair.worst.id, players)} put up ${pair.worst.pts}.`,
     });
   }
   return facts;
@@ -150,8 +222,8 @@ export function diffSnapshots(
 ): StoryFact[] {
   const facts = [
     ...transactionFacts(prev, next, players),
-    ...matchupFacts(prev, next),
-    ...benchShameFacts(next, players),
+    ...matchupFacts(prev, next, players),
+    ...benchShameFacts(prev, next, players),
   ];
   return facts;
 }

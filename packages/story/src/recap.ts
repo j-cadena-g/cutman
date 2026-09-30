@@ -3,14 +3,21 @@ import { isBlankRecap, type RecapDraft } from "./json.ts";
 import { isWeekFinal } from "./week.ts";
 import type { SleeperMatchup } from "@cutman/sleeper";
 
-export type RecapStatus = "skipped_not_final" | "skipped_already" | "published" | "model_error" | "blank";
+export type RecapStatus =
+  | "skipped_not_final"
+  | "skipped_already"
+  | "published"
+  | "model_error"
+  | "blank"
+  | "email_pending";
 
 export type RecapAttemptResult =
   | { status: "skipped_not_final" }
   | { status: "skipped_already" }
   | { status: "model_error"; error: string }
   | { status: "blank" }
-  | { status: "published"; recap: RecapDraft };
+  | { status: "published"; recap: RecapDraft }
+  | { status: "email_pending" };
 
 export type RecapPorts = {
   week: number;
@@ -59,6 +66,8 @@ export function recapStatusLabel(status: RecapStatus): string {
       return "Model failed; nothing published";
     case "blank":
       return "Blank recap; nothing sent";
+    case "email_pending":
+      return "Email pending; retry send";
     default: {
       const _exhaustive: never = status;
       return _exhaustive;
