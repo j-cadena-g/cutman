@@ -586,6 +586,12 @@ describe("explorer week selection", () => {
     expect(maxExplorerWeek({ leagueSeason: null, nflSeason: "2026", displayWeek: 4 })).toBe(4);
   });
 
+  it("ends a prior-season league at its last scored week", () => {
+    expect(maxExplorerWeek({ leagueSeason: "2025", nflSeason: "2026", displayWeek: 4, lastScoredWeek: 17 })).toBe(17);
+    expect(maxExplorerWeek({ leagueSeason: "2025", nflSeason: "2026", displayWeek: 4, lastScoredWeek: 0 })).toBe(18);
+    expect(maxExplorerWeek({ leagueSeason: "2026", nflSeason: "2026", displayWeek: 4, lastScoredWeek: 3 })).toBe(4);
+  });
+
   it("builds shareable week URLs", () => {
     expect(explorerLeagueWeekHref(V1_LEAGUE_ID, 2)).toBe(`/explore/leagues/${V1_LEAGUE_ID}?week=2`);
     expect(explorerLeaguePath(V1_LEAGUE_ID, "draft")).toBe(`/explore/leagues/${V1_LEAGUE_ID}/draft`);
@@ -820,6 +826,20 @@ describe("assembleStandings / assembleScoreboard / assembleRosters", () => {
       username: EXAMPLE_SLEEPER_USERNAME,
       isOwner: false,
     });
+  });
+
+  it("links a manager by display name when Sleeper's league users omit username", () => {
+    const users = [
+      { user_id: "u-a", display_name: "AlexTheGreat" },
+      { user_id: "u-b", display_name: "not a username!" },
+    ] as unknown as SleeperLeagueUser[];
+    const rosters: SleeperRoster[] = [
+      { roster_id: 1, owner_id: "u-a", players: [], starters: [], reserve: null },
+      { roster_id: 2, owner_id: "u-b", players: [], starters: [], reserve: null },
+    ];
+    const rows = assembleStandings(rosters, users);
+    expect(rows.find((row) => row.rosterId === 1)).toMatchObject({ displayName: "AlexTheGreat", username: "alexthegreat" });
+    expect(rows.find((row) => row.rosterId === 2)).toMatchObject({ username: null });
   });
 
   it("includes points against on standings when Sleeper sends fpts_against", () => {

@@ -26,6 +26,7 @@ import {
   clampExplorerWeek,
   isValidExplorerLeagueId,
   isValidExplorerUsername,
+  leagueLastScoredWeek,
   maxExplorerWeek,
   normalizeExplorerUsername,
   toExplorerLeagueCard,
@@ -541,6 +542,7 @@ export async function lookupExplorerBoard(
       leagueSeason: metaCached?.payload?.league?.season,
       nflSeason,
       displayWeek: currentWeek,
+      lastScoredWeek: leagueLastScoredWeek(metaCached?.payload?.league),
     }),
   );
   const weekCached = await readCache<WeekPayload>(deps, weekKey(leagueId, selectedWeek), BOARD_TTL_MS);
@@ -605,7 +607,12 @@ export async function lookupExplorerBoard(
 
     week = clampExplorerWeek(
       input.week,
-      maxExplorerWeek({ leagueSeason: league.season, nflSeason, displayWeek: currentWeek }),
+      maxExplorerWeek({
+        leagueSeason: league.season,
+        nflSeason,
+        displayWeek: currentWeek,
+        lastScoredWeek: leagueLastScoredWeek(league),
+      }),
     );
     const weekRead =
       week === selectedWeek ? weekCached : await readCache<WeekPayload>(deps, weekKey(leagueId, week), BOARD_TTL_MS);

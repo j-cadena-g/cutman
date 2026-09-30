@@ -98,9 +98,19 @@ export function maxExplorerWeek(input: {
   leagueSeason: string | null | undefined;
   nflSeason: string;
   displayWeek: number;
+  lastScoredWeek?: number | null;
 }): number {
-  if (input.leagueSeason && input.leagueSeason !== input.nflSeason) return 18;
+  if (input.leagueSeason && input.leagueSeason !== input.nflSeason) {
+    // A past season ends at its last scored week. Week 18 has no games when playoffs end in 17.
+    const last = input.lastScoredWeek;
+    return typeof last === "number" && Number.isInteger(last) && last >= 1 && last <= 18 ? last : 18;
+  }
   return Math.max(1, input.displayWeek);
+}
+
+export function leagueLastScoredWeek(league: SleeperLeague | null | undefined): number | null {
+  const value = league?.settings?.last_scored_leg;
+  return typeof value === "number" ? value : null;
 }
 
 export function explorerLeaguePath(leagueId: string, tab?: "draft" | "brackets"): string {
@@ -289,6 +299,15 @@ function recordFromRoster(roster: SleeperRoster | undefined): Pick<ExplorerManag
   };
 }
 
+/**
+ * Sleeper's league users carry display_name but no username. A Sleeper username is the display
+ * name lowercased, so fall back to it for the profile link.
+ */
+function explorerProfileUsername(user: SleeperLeagueUser | undefined): string | null {
+  const candidate = normalizeExplorerUsername(user?.username || user?.display_name || "");
+  return isValidExplorerUsername(candidate) ? candidate : null;
+}
+
 export function managerForRoster(
   roster: SleeperRoster,
   users: Map<string, SleeperLeagueUser>,
@@ -313,7 +332,7 @@ export function managerForRoster(
     rosterId: roster.roster_id,
     teamName,
     displayName,
-    username: user?.username ?? null,
+    username: explorerProfileUsername(user),
     isOwner: user?.is_owner === true,
     abandoned: false,
     avatarUrl: sleeperAvatarUrl(user?.avatar),
@@ -588,6 +607,7 @@ export function assembleExplorerBoard(input: {
     leagueSeason: input.league.season,
     nflSeason: input.nflSeason ?? input.league.season,
     displayWeek: currentWeek,
+    lastScoredWeek: leagueLastScoredWeek(input.league),
   });
   return {
     league: toExplorerLeagueCard(input.league),
