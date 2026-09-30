@@ -1,17 +1,23 @@
 /// <reference types="@cloudflare/vitest-pool-workers/types" />
 import { env } from "cloudflare:test";
 import {
+  EXAMPLE_COMMISSIONER_USERNAME,
   EXAMPLE_SLEEPER_USERNAME,
   EXAMPLE_SLEEPER_USER_ID,
+  PREVIOUS_SEASON_LEAGUE_ID,
+  PREVIOUS_SEASON_LEAGUE_NAME,
   SleeperRequestError,
   V1_LEAGUE_ID,
   V1_LEAGUE_NAME,
   createFixtureClient,
   fixturePlayers,
+  fixtureTransactions,
+  v1FixtureDraft,
   v1FixtureLeague,
   v1FixtureMatchups,
   v1FixtureRosters,
   v1FixtureState,
+  v1FixtureTradedPicks,
   v1FixtureUsers,
   type SleeperClient,
   type SleeperLeague,
@@ -29,11 +35,14 @@ import {
 } from "../app/lib/explorer-origin-quota.server.ts";
 import {
   BOARD_TTL_MS,
+  SETTLED_HISTORY_TTL_MS,
   ORIGIN_QUOTA_PER_HOUR,
   USER_TTL_MS,
   createMemoryExplorerCache,
   explorerDepsFromEnv,
   lookupExplorerBoard,
+  lookupExplorerBrackets,
+  lookupExplorerDrafts,
   lookupExplorerUser,
   resolveExplorerUserLeagues,
   type ExplorerCache,
@@ -43,20 +52,31 @@ import {
 } from "../app/lib/sleeper-explorer.server.ts";
 import {
   assembleExplorerBoard,
+  assembleExplorerDraft,
+  assembleExplorerTradedPicks,
+  assembleExplorerTransactions,
   assembleRosters,
   assembleScoreboard,
   assembleStandings,
+  clampExplorerWeek,
   describeExplorerError,
+  explorerLeaguePath,
+  explorerLeagueWeekHref,
+  formatExplorerMoveType,
   isRealPlayerId,
   isValidExplorerLeagueId,
   isValidExplorerUsername,
+  maxExplorerWeek,
   parseExplorerUsernameForm,
+  parseExplorerWeekParam,
   sleeperAvatarUrl,
   sleeperPlayerHeadshotUrl,
+  formatExplorerDraftPick,
   formatExplorerRecord,
   formatExplorerScore,
   matchupLeader,
   zipMatchupStarters,
+  type ExplorerMatchupSide,
 } from "../app/lib/sleeper-explorer.ts";
 
 function countingClient(base: SleeperClient = createFixtureClient()) {
@@ -70,8 +90,14 @@ function countingClient(base: SleeperClient = createFixtureClient()) {
     getMatchups: 0,
     getTransactions: 0,
     getPlayers: 0,
+    getLeagueDrafts: 0,
+    getDraftPicks: 0,
+    getTradedPicks: 0,
+    getWinnersBracket: 0,
+    getLosersBracket: 0,
   };
   const client: SleeperClient = {
+    ...base,
     async getNflState() {
       calls.getNflState += 1;
       return base.getNflState();
@@ -107,6 +133,26 @@ function countingClient(base: SleeperClient = createFixtureClient()) {
     async getPlayers() {
       calls.getPlayers += 1;
       return base.getPlayers();
+    },
+    async getLeagueDrafts(leagueId) {
+      calls.getLeagueDrafts += 1;
+      return base.getLeagueDrafts(leagueId);
+    },
+    async getDraftPicks(draftId) {
+      calls.getDraftPicks += 1;
+      return base.getDraftPicks(draftId);
+    },
+    async getTradedPicks(leagueId) {
+      calls.getTradedPicks += 1;
+      return base.getTradedPicks(leagueId);
+    },
+    async getWinnersBracket(leagueId) {
+      calls.getWinnersBracket += 1;
+      return base.getWinnersBracket(leagueId);
+    },
+    async getLosersBracket(leagueId) {
+      calls.getLosersBracket += 1;
+      return base.getLosersBracket(leagueId);
     },
   };
   return { client, calls };
@@ -429,6 +475,12 @@ describe("formatExplorerScore / formatExplorerRecord", () => {
     expect(formatExplorerRecord(5, 2, 0)).toBe("5-2");
     expect(formatExplorerRecord(5, 1, 1)).toBe("5-1-1");
   });
+
+  it("prefers draft_slot over overall pick_no for the within-round label", () => {
+    expect(formatExplorerDraftPick(2, 3, 13)).toBe("2.3");
+    expect(formatExplorerDraftPick(1, null, 1)).toBe("1.1");
+    expect(formatExplorerDraftPick(null, 1, 1)).toBe("—");
+  });
 });
 
 describe("zipMatchupStarters / matchupLeader", () => {
@@ -466,29 +518,30 @@ describe("zipMatchupStarters / matchupLeader", () => {
   });
 
   it("names the roster currently ahead and stays unset on a tie or missing score", () => {
-    expect(
-      matchupLeader([
-        { rosterId: 1, teamName: "A", displayName: "A", abandoned: false, avatarUrl: null, wins: 1, losses: 0, ties: 0, points: 10, starters: [] },
-        { rosterId: 2, teamName: "B", displayName: "B", abandoned: false, avatarUrl: null, wins: 0, losses: 1, ties: 0, points: 8, starters: [] },
-      ]),
-    ).toBe(1);
-    expect(
-      matchupLeader([
-        { rosterId: 1, teamName: "A", displayName: "A", abandoned: false, avatarUrl: null, wins: 1, losses: 0, ties: 0, points: 10, starters: [] },
-        { rosterId: 2, teamName: "B", displayName: "B", abandoned: false, avatarUrl: null, wins: 0, losses: 1, ties: 0, points: 10, starters: [] },
-      ]),
-    ).toBeNull();
-    expect(
-      matchupLeader([
-        { rosterId: 1, teamName: "A", displayName: "A", abandoned: false, avatarUrl: null, wins: 1, losses: 0, ties: 0, points: 10, starters: [] },
-      ]),
-    ).toBeNull();
-    expect(
-      matchupLeader([
-        { rosterId: 1, teamName: "A", displayName: "A", abandoned: false, avatarUrl: null, wins: 1, losses: 0, ties: 0, points: 10, starters: [] },
-        { rosterId: 2, teamName: "B", displayName: "B", abandoned: false, avatarUrl: null, wins: 0, losses: 1, ties: 0, points: null, starters: [] },
-      ]),
-    ).toBeNull();
+    const side = (
+      rosterId: number,
+      points: number | null,
+      extras: Partial<ExplorerMatchupSide> = {},
+    ): ExplorerMatchupSide => ({
+      rosterId,
+      teamName: rosterId === 1 ? "A" : "B",
+      displayName: rosterId === 1 ? "A" : "B",
+      username: null,
+      isOwner: false,
+      abandoned: false,
+      avatarUrl: null,
+      wins: rosterId === 1 ? 1 : 0,
+      losses: rosterId === 1 ? 0 : 1,
+      ties: 0,
+      points,
+      starters: [],
+      bench: [],
+      ...extras,
+    });
+    expect(matchupLeader([side(1, 10), side(2, 8)])).toBe(1);
+    expect(matchupLeader([side(1, 10), side(2, 10)])).toBeNull();
+    expect(matchupLeader([side(1, 10)])).toBeNull();
+    expect(matchupLeader([side(1, 10), side(2, null)])).toBeNull();
   });
 });
 
@@ -504,6 +557,38 @@ describe("isRealPlayerId", () => {
     expect(isRealPlayerId("4046")).toBe(true);
     expect(isRealPlayerId("PHI")).toBe(true);
     expect(isRealPlayerId("10")).toBe(true);
+  });
+});
+
+describe("explorer week selection", () => {
+  it("parses integer week query values and rejects junk", () => {
+    expect(parseExplorerWeekParam(null)).toBeNull();
+    expect(parseExplorerWeekParam("")).toBeNull();
+    expect(parseExplorerWeekParam("3")).toBe(3);
+    expect(parseExplorerWeekParam(" 2 ")).toBe(2);
+    expect(parseExplorerWeekParam("foo")).toBeNull();
+    expect(parseExplorerWeekParam("1.5")).toBeNull();
+    expect(parseExplorerWeekParam("0")).toBe(0);
+  });
+
+  it("clamps a requested week to 1..displayWeek and defaults to displayWeek", () => {
+    expect(clampExplorerWeek(null, 3)).toBe(3);
+    expect(clampExplorerWeek(2, 3)).toBe(2);
+    expect(clampExplorerWeek(0, 3)).toBe(1);
+    expect(clampExplorerWeek(99, 3)).toBe(3);
+    expect(clampExplorerWeek(-4, 1)).toBe(1);
+    expect(clampExplorerWeek(2, 0)).toBe(1);
+  });
+
+  it("uses week 18 as the ceiling for a prior-season league", () => {
+    expect(maxExplorerWeek({ leagueSeason: "2026", nflSeason: "2026", displayWeek: 3 })).toBe(3);
+    expect(maxExplorerWeek({ leagueSeason: "2025", nflSeason: "2026", displayWeek: 1 })).toBe(18);
+    expect(maxExplorerWeek({ leagueSeason: null, nflSeason: "2026", displayWeek: 4 })).toBe(4);
+  });
+
+  it("builds shareable week URLs", () => {
+    expect(explorerLeagueWeekHref(V1_LEAGUE_ID, 2)).toBe(`/explore/leagues/${V1_LEAGUE_ID}?week=2`);
+    expect(explorerLeaguePath(V1_LEAGUE_ID, "draft")).toBe(`/explore/leagues/${V1_LEAGUE_ID}/draft`);
   });
 });
 
@@ -713,6 +798,202 @@ describe("assembleStandings / assembleScoreboard / assembleRosters", () => {
     expect(first?.starters.map((player) => player.name)).toContain("Patrick Mahomes");
     expect(first?.starters.map((player) => player.name)).toContain("PHI");
   });
+
+  it("labels commissioner seats and keeps manager usernames for linking", () => {
+    const board = assembleExplorerBoard({
+      league: v1FixtureLeague,
+      week: 1,
+      currentWeek: 1,
+      users: v1FixtureUsers,
+      rosters: v1FixtureRosters,
+      matchups: v1FixtureMatchups,
+      players: fixturePlayers,
+      transactions: [],
+    });
+    const commish = board.standings.find((row) => row.rosterId === 10);
+    expect(commish).toMatchObject({
+      username: EXAMPLE_COMMISSIONER_USERNAME,
+      isOwner: true,
+    });
+    const example = board.standings.find((row) => row.rosterId === 1);
+    expect(example).toMatchObject({
+      username: EXAMPLE_SLEEPER_USERNAME,
+      isOwner: false,
+    });
+  });
+
+  it("includes points against on standings when Sleeper sends fpts_against", () => {
+    const users: SleeperLeagueUser[] = [{ user_id: "u-a", username: "a", display_name: "Alex" }];
+    const rosters: SleeperRoster[] = [
+      {
+        roster_id: 1,
+        owner_id: "u-a",
+        settings: { wins: 1, losses: 0, fpts: 100, fpts_decimal: 20, fpts_against: 80, fpts_against_decimal: 50 },
+      },
+    ];
+    const [row] = assembleStandings(rosters, users);
+    expect(row?.pointsFor).toBe(100.2);
+    expect(row?.pointsAgainst).toBe(80.5);
+  });
+
+  it("puts matchup bench players on each side", () => {
+    const users: SleeperLeagueUser[] = [
+      { user_id: "u-a", username: "a", display_name: "Alex", metadata: { team_name: "Left" } },
+      { user_id: "u-b", username: "b", display_name: "Mina", metadata: { team_name: "Right" } },
+    ];
+    const rosters: SleeperRoster[] = [
+      { roster_id: 1, owner_id: "u-a" },
+      { roster_id: 2, owner_id: "u-b" },
+    ];
+    const matchups: SleeperMatchup[] = [
+      {
+        roster_id: 1,
+        matchup_id: 1,
+        points: 10,
+        starters: ["4046"],
+        players: ["4046", "6794"],
+        players_points: { "4046": 10, "6794": 4 },
+      },
+      {
+        roster_id: 2,
+        matchup_id: 1,
+        points: 8,
+        starters: ["4881"],
+        players: ["4881", "4035"],
+        players_points: { "4881": 8, "4035": 3 },
+      },
+    ];
+    const [game] = assembleScoreboard(rosters, users, matchups, fixturePlayers);
+    expect(game?.sides[0]?.bench.map((player) => player.name)).toEqual(["Justin Jefferson"]);
+    expect(game?.sides[1]?.bench.map((player) => player.name)).toEqual(["Saquon Barkley"]);
+  });
+});
+
+describe("assembleExplorerTransactions", () => {
+  it("joins fixture trade adds, drops, and team names", () => {
+    const moves = assembleExplorerTransactions(fixtureTransactions, v1FixtureRosters, v1FixtureUsers, fixturePlayers);
+    expect(moves).toHaveLength(1);
+    expect(moves[0]).toMatchObject({
+      transactionId: "tx-trade-1",
+      type: "trade",
+      status: "complete",
+      rosterIds: [1, 2],
+    });
+    expect(formatExplorerMoveType("trade")).toBe("Trade");
+    expect(formatExplorerMoveType("free_agent")).toBe("Free agent");
+    expect(moves[0]?.teamNames).toEqual(expect.arrayContaining(["Example Squad", "Zero RB Forever"]));
+    expect(moves[0]?.adds.map((move) => ({ name: move.player.name, teamName: move.teamName }))).toEqual(
+      expect.arrayContaining([
+        { name: "CeeDee Lamb", teamName: "Example Squad" },
+        { name: "A.J. Brown", teamName: "Zero RB Forever" },
+      ]),
+    );
+  });
+
+  it("keeps original roster_id on traded draft picks so identical routes stay distinct", () => {
+    const moves = assembleExplorerTransactions(
+      [
+        {
+          type: "trade",
+          transaction_id: "tx-picks",
+          status: "complete",
+          roster_ids: [1, 2],
+          draft_picks: [
+            { season: "2027", round: 2, roster_id: 1, previous_owner_id: 2, owner_id: 1 },
+            { season: "2027", round: 2, roster_id: "3", previous_owner_id: 2, owner_id: 1 },
+          ],
+        },
+      ],
+      v1FixtureRosters,
+      v1FixtureUsers,
+      fixturePlayers,
+    );
+    expect(moves[0]?.draftPicks).toEqual([
+      expect.objectContaining({ season: "2027", round: 2, rosterId: 1, fromTeam: "Zero RB Forever", toTeam: "Example Squad" }),
+      expect.objectContaining({ season: "2027", round: 2, rosterId: 3, fromTeam: "Zero RB Forever", toTeam: "Example Squad" }),
+    ]);
+  });
+
+  it("includes fixture transactions on an assembled board", () => {
+    const board = assembleExplorerBoard({
+      league: v1FixtureLeague,
+      week: 1,
+      currentWeek: 3,
+      selectedWeek: 1,
+      users: v1FixtureUsers,
+      rosters: v1FixtureRosters,
+      matchups: v1FixtureMatchups,
+      players: fixturePlayers,
+      transactions: fixtureTransactions,
+    });
+    expect(board.currentWeek).toBe(3);
+    expect(board.selectedWeek).toBe(1);
+    expect(board.week).toBe(1);
+    expect(board.transactions).toHaveLength(1);
+    expect(board.transactions[0]?.transactionId).toBe("tx-trade-1");
+    expect(board.settings.playoffWeekStart).toBe(15);
+    expect(board.settings.rosterSlots).toEqual(["QB", "RB", "WR", "TE", "FLEX", "K", "DEF"]);
+    expect(board.settings.scoringLines).toEqual(
+      expect.arrayContaining([
+        { key: "pass_td", value: 4 },
+        { key: "rush_td", value: 6 },
+        { key: "rec", value: 1 },
+      ]),
+    );
+  });
+});
+
+describe("assembleExplorerDraft", () => {
+  it("resolves string roster_ids to the same team as numeric ids", () => {
+    const numbered = assembleExplorerDraft(
+      v1FixtureDraft,
+      [{ player_id: "4046", roster_id: 1, round: 1, pick_no: 1 }],
+      v1FixtureRosters,
+      v1FixtureUsers,
+      fixturePlayers,
+    );
+    const stringed = assembleExplorerDraft(
+      v1FixtureDraft,
+      [{ player_id: "4046", roster_id: "1", round: 1, pick_no: 1 }],
+      v1FixtureRosters,
+      v1FixtureUsers,
+      fixturePlayers,
+    );
+    expect(numbered.picks[0]?.teamName).toBe("Example Squad");
+    expect(stringed.picks[0]?.teamName).toBe(numbered.picks[0]?.teamName);
+  });
+
+  it("carries draft_slot as draftSlot, null when Sleeper omits it", () => {
+    const withSlot = assembleExplorerDraft(
+      v1FixtureDraft,
+      [{ player_id: "4046", roster_id: 1, round: 2, draft_slot: 3, pick_no: 13 }],
+      v1FixtureRosters,
+      v1FixtureUsers,
+      fixturePlayers,
+    );
+    const withoutSlot = assembleExplorerDraft(
+      v1FixtureDraft,
+      [{ player_id: "4046", roster_id: 1, round: 1, pick_no: 1 }],
+      v1FixtureRosters,
+      v1FixtureUsers,
+      fixturePlayers,
+    );
+    expect(withSlot.picks[0]).toMatchObject({ round: 2, draftSlot: 3, pickNo: 13 });
+    expect(withoutSlot.picks[0]?.draftSlot).toBeNull();
+  });
+});
+
+describe("assembleExplorerTradedPicks", () => {
+  it("carries original roster_id, including string ids", () => {
+    const numbered = assembleExplorerTradedPicks(v1FixtureTradedPicks, v1FixtureRosters, v1FixtureUsers);
+    const stringed = assembleExplorerTradedPicks(
+      [{ season: "2027", round: 2, roster_id: "1", previous_owner_id: "2", owner_id: "1" }],
+      v1FixtureRosters,
+      v1FixtureUsers,
+    );
+    expect(numbered[0]).toMatchObject({ season: "2027", round: 2, rosterId: 1 });
+    expect(stringed[0]?.rosterId).toBe(numbered[0]?.rosterId);
+  });
 });
 
 describe("lookupExplorerUser", () => {
@@ -757,9 +1038,10 @@ describe("lookupExplorerUser", () => {
     if (result.kind !== "ok") return;
     expect(result.user.username).toBe(EXAMPLE_SLEEPER_USERNAME);
     expect(result.leagues.map((league) => league.sleeperLeagueId)).toContain(V1_LEAGUE_ID);
+    expect(result.previousLeagues.map((league) => league.name)).toContain("Example League 2025");
     expect(calls.getLeagueUsers).toBe(0);
     expect(calls.getUser).toBe(1);
-    expect(calls.getUserLeagues).toBe(1);
+    expect(calls.getUserLeagues).toBe(2);
     expect("db" in makeDeps()).toBe(false);
   });
 
@@ -774,7 +1056,7 @@ describe("lookupExplorerUser", () => {
     await lookupExplorerUser(deps, { username: EXAMPLE_SLEEPER_USERNAME, clerkUserId: "clerk_1" });
     await lookupExplorerUser(deps, { username: EXAMPLE_SLEEPER_USERNAME, clerkUserId: "clerk_1" });
     expect(calls.getUser).toBe(1);
-    expect(calls.getUserLeagues).toBe(1);
+    expect(calls.getUserLeagues).toBe(2);
     expect(calls.getNflState).toBe(1);
   });
 
@@ -951,7 +1233,7 @@ describe("lookupExplorerUser", () => {
     });
     expect(result.kind).toBe("ok");
     expect(calls.getUser).toBe(1);
-    expect(calls.getUserLeagues).toBe(1);
+    expect(calls.getUserLeagues).toBe(2);
   });
 
   it("treats a rejected user cache get as a miss and continues to origin", async () => {
@@ -979,7 +1261,7 @@ describe("lookupExplorerUser", () => {
     expect(used("clerk_1", FIXED_NOW)).toBe(ORIGIN_QUOTA_PER_HOUR);
   });
 
-  it("charges two origin calls for a cold user and leagues lookup", async () => {
+  it("charges three origin calls for a cold user, current leagues, and previous-season leagues lookup", async () => {
     const { originQuota, used } = makeQuota();
     const cache = createMemoryExplorerCache();
     const result = await lookupExplorerUser(makeDeps({ cache, originQuota, now: () => FIXED_NOW }), {
@@ -987,7 +1269,7 @@ describe("lookupExplorerUser", () => {
       clerkUserId: "clerk_1",
     });
     expect(result.kind).toBe("ok");
-    expect(used("clerk_1", FIXED_NOW)).toBe(2);
+    expect(used("clerk_1", FIXED_NOW)).toBe(3);
   });
 
   it("charges only the leagues fetch when the user cache is already fresh", async () => {
@@ -1012,8 +1294,8 @@ describe("lookupExplorerUser", () => {
     );
     expect(result.kind).toBe("ok");
     expect(calls.getUser).toBe(0);
-    expect(calls.getUserLeagues).toBe(1);
-    expect(used("clerk_1", FIXED_NOW)).toBe(1);
+    expect(calls.getUserLeagues).toBe(2);
+    expect(used("clerk_1", FIXED_NOW)).toBe(2);
   });
 
   it("rejects a user lookup before origin when remaining quota is below the planned charge", async () => {
@@ -1043,9 +1325,32 @@ describe("lookupExplorerUser", () => {
       clerkUserId: "clerk_1",
     });
     expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") return;
     expect(calls.getUser).toBe(1);
     expect(calls.getUserLeagues).toBe(1);
+    expect(result.previousLeagues).toEqual([]);
+    expect(result.stale).toBe(true);
     expect(used("clerk_1", FIXED_NOW)).toBe(ORIGIN_QUOTA_PER_HOUR);
+  });
+
+  it("marks the user lookup stale when previous-season leagues fail with no cache", async () => {
+    const base = createFixtureClient();
+    const { client } = countingClient({
+      ...base,
+      async getUserLeagues(userId, season) {
+        if (season === "2025") throw new SleeperRequestError("/user/example/leagues/nfl/2025", 502);
+        return base.getUserLeagues(userId, season);
+      },
+    });
+    const result = await lookupExplorerUser(makeDeps({ sleeper: client }), {
+      username: EXAMPLE_SLEEPER_USERNAME,
+      clerkUserId: "clerk_1",
+    });
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") return;
+    expect(result.leagues.map((league) => league.sleeperLeagueId)).toContain(V1_LEAGUE_ID);
+    expect(result.previousLeagues).toEqual([]);
+    expect(result.stale).toBe(true);
   });
 
   it("returns rate_limited when a stale negative user cache meets a 429", async () => {
@@ -1132,8 +1437,8 @@ describe("lookupExplorerUser", () => {
     expect(result.leagues.map((league) => league.sleeperLeagueId)).toEqual(["200"]);
     expect(result.leagues.map((league) => league.sleeperLeagueId)).not.toContain("100");
     expect(calls.getUser).toBe(1);
-    expect(calls.getUserLeagues).toBe(1);
-    expect(requestedLeagueUserIds).toEqual([HANDLE_SWAP_USER_B.user_id]);
+    expect(calls.getUserLeagues).toBe(2);
+    expect(requestedLeagueUserIds).toEqual([HANDLE_SWAP_USER_B.user_id, HANDLE_SWAP_USER_B.user_id]);
 
     expect(await cache.getJson(leaguesCacheKey(HANDLE_SWAP_USER_A.user_id))).toMatchObject({
       payload: HANDLE_SWAP_LEAGUES_A,
@@ -1174,7 +1479,7 @@ describe("lookupExplorerUser", () => {
     expect(result.user.userId).toBe(HANDLE_SWAP_USER_A.user_id);
     expect(result.leagues.map((league) => league.sleeperLeagueId)).toEqual(["100"]);
     expect(calls.getUser).toBe(1);
-    expect(calls.getUserLeagues).toBe(0);
+    expect(calls.getUserLeagues).toBe(1);
   });
 
   it("does not fall back to user A's leagues when fetching user B's leagues fails", async () => {
@@ -1250,7 +1555,7 @@ describe("lookupExplorerBoard", () => {
     expect(firstGame?.sides).toHaveLength(2);
     expect(firstGame?.sides[0]?.starters.some((player) => player.name === "Patrick Mahomes")).toBe(true);
     expect(calls.getUserLeagues).toBe(0);
-    expect(calls.getTransactions).toBe(0);
+    expect(calls.getTransactions).toBe(1);
   });
 
   it("returns not_found for an unknown league id", async () => {
@@ -1270,13 +1575,77 @@ describe("lookupExplorerBoard", () => {
     expect(calls.getLeagueUsers).toBe(1);
     expect(calls.getRosters).toBe(1);
     expect(calls.getMatchups).toBe(1);
+    expect(calls.getTransactions).toBe(1);
+  });
+
+  it("consumes 2 quota for a new week when league meta is already fresh", async () => {
+    const { originQuota, used } = makeQuota();
+    const cache = createMemoryExplorerCache();
+    const { client, calls } = countingClient(
+      createFixtureClient({ state: { ...v1FixtureState, week: 3, display_week: 3, leg: 3 } }),
+    );
+    const first = await lookupExplorerBoard(
+      makeDeps({ sleeper: client, cache, originQuota, now: () => FIXED_NOW }),
+      { sleeperLeagueId: V1_LEAGUE_ID, clerkUserId: "clerk_1" },
+    );
+    expect(first.kind).toBe("ok");
+    if (first.kind === "ok") {
+      expect(first.board.selectedWeek).toBe(3);
+      expect(first.board.currentWeek).toBe(3);
+    }
+    expect(used("clerk_1", FIXED_NOW)).toBe(5);
+
+    const second = await lookupExplorerBoard(
+      makeDeps({ sleeper: client, cache, originQuota, now: () => FIXED_NOW }),
+      { sleeperLeagueId: V1_LEAGUE_ID, clerkUserId: "clerk_1", week: 1 },
+    );
+    expect(second.kind).toBe("ok");
+    if (second.kind === "ok") {
+      expect(second.board.selectedWeek).toBe(1);
+      expect(second.board.transactions[0]?.transactionId).toBe("tx-trade-1");
+    }
+    expect(calls.getLeague).toBe(1);
+    expect(calls.getLeagueUsers).toBe(1);
+    expect(calls.getRosters).toBe(1);
+    expect(calls.getMatchups).toBe(2);
+    expect(calls.getTransactions).toBe(2);
+    expect(used("clerk_1", FIXED_NOW)).toBe(7);
+  });
+
+  it("defaults to display_week and clamps week query values", async () => {
+    const { client, calls } = countingClient(
+      createFixtureClient({ state: { ...v1FixtureState, week: 3, display_week: 3, leg: 3 } }),
+    );
+    const cache = createMemoryExplorerCache();
+    const deps = makeDeps({ sleeper: client, cache });
+    const current = await lookupExplorerBoard(deps, { sleeperLeagueId: V1_LEAGUE_ID, clerkUserId: "clerk_1" });
+    expect(current.kind).toBe("ok");
+    if (current.kind === "ok") expect(current.board.selectedWeek).toBe(3);
+
+    const clampedHigh = await lookupExplorerBoard(deps, {
+      sleeperLeagueId: V1_LEAGUE_ID,
+      clerkUserId: "clerk_1",
+      week: 99,
+    });
+    expect(clampedHigh.kind).toBe("ok");
+    if (clampedHigh.kind === "ok") expect(clampedHigh.board.selectedWeek).toBe(3);
+    expect(calls.getMatchups).toBe(1);
+
+    const weekOne = await lookupExplorerBoard(deps, {
+      sleeperLeagueId: V1_LEAGUE_ID,
+      clerkUserId: "clerk_1",
+      week: 1,
+    });
+    expect(weekOne.kind).toBe("ok");
+    if (weekOne.kind === "ok") expect(weekOne.board.selectedWeek).toBe(1);
+    expect(calls.getMatchups).toBe(2);
   });
 
   it("treats invalid JSON in the board cache as a miss and continues to origin", async () => {
     const store = new Map<string, string>();
     const cache = createMemoryExplorerCache(store);
     await seedFreshNflState(cache, FIXED_NOW);
-    store.set(`explore:board:${V1_LEAGUE_ID}:1`, "{not-json");
+    store.set(`explore:meta:${V1_LEAGUE_ID}`, "{not-json");
     const { client, calls } = countingClient();
     const result = await lookupExplorerBoard(makeDeps({ sleeper: client, cache, now: () => FIXED_NOW }), {
       sleeperLeagueId: V1_LEAGUE_ID,
@@ -1290,7 +1659,10 @@ describe("lookupExplorerBoard", () => {
   });
 
   it("treats a rejected board cache get as a miss and continues to origin", async () => {
-    const cache = cacheRejectingGets(createMemoryExplorerCache(), (key) => key.startsWith("explore:board:"));
+    const cache = cacheRejectingGets(
+      createMemoryExplorerCache(),
+      (key) => key.startsWith("explore:meta:") || key.startsWith("explore:week:"),
+    );
     const { client, calls } = countingClient();
     const result = await lookupExplorerBoard(makeDeps({ sleeper: client, cache }), {
       sleeperLeagueId: V1_LEAGUE_ID,
@@ -1557,7 +1929,7 @@ describe("lookupExplorerBoard", () => {
     async ({ entry }) => {
       const cache = createMemoryExplorerCache();
       await seedFreshNflState(cache, FIXED_NOW);
-      await cache.putJson(`explore:board:${FAKE_BOARD_LEAGUE_ID}:1`, entry);
+      await cache.putJson(`explore:meta:${FAKE_BOARD_LEAGUE_ID}`, entry);
       const { client, calls } = countingClient();
       const result = await lookupExplorerBoard(
         makeDeps({ sleeper: client, cache, now: () => FIXED_NOW }),
@@ -1578,7 +1950,7 @@ describe("lookupExplorerBoard", () => {
       seed("clerk_1", FIXED_NOW, ORIGIN_QUOTA_PER_HOUR);
       const cache = createMemoryExplorerCache();
       await seedFreshNflState(cache, FIXED_NOW);
-      await cache.putJson(`explore:board:${FAKE_BOARD_LEAGUE_ID}:1`, entry);
+      await cache.putJson(`explore:meta:${FAKE_BOARD_LEAGUE_ID}`, entry);
       const { client, calls } = countingClient();
       const result = await lookupExplorerBoard(
         makeDeps({ sleeper: client, cache, originQuota, now: () => FIXED_NOW }),
@@ -1594,7 +1966,7 @@ describe("lookupExplorerBoard", () => {
     const { originQuota, used } = makeQuota();
     const cache = createMemoryExplorerCache();
     await seedFreshNflState(cache, FIXED_NOW);
-    await cache.putJson(`explore:board:${FAKE_BOARD_LEAGUE_ID}:1`, {
+    await cache.putJson(`explore:meta:${FAKE_BOARD_LEAGUE_ID}`, {
       fetchedAt: FIXED_NOW,
       payload: {},
     });
@@ -1617,7 +1989,7 @@ describe("lookupExplorerBoard", () => {
     seed("clerk_1", FIXED_NOW, ORIGIN_QUOTA_PER_HOUR);
     const cache = createMemoryExplorerCache();
     await seedFreshNflState(cache, FIXED_NOW);
-    await cache.putJson(`explore:board:${FAKE_BOARD_LEAGUE_ID}:1`, {
+    await cache.putJson(`explore:meta:${FAKE_BOARD_LEAGUE_ID}`, {
       fetchedAt: FIXED_NOW - BOARD_TTL_MS - 1,
     });
     const { client, calls } = countingClient();
@@ -1635,7 +2007,7 @@ describe("lookupExplorerBoard", () => {
     seed("clerk_1", FIXED_NOW, ORIGIN_QUOTA_PER_HOUR);
     const cache = createMemoryExplorerCache();
     await seedFreshNflState(cache, FIXED_NOW);
-    await cache.putJson(`explore:board:${FAKE_BOARD_LEAGUE_ID}:1`, {
+    await cache.putJson(`explore:meta:${FAKE_BOARD_LEAGUE_ID}`, {
       fetchedAt: FIXED_NOW - BOARD_TTL_MS - 1,
       payload: { league: fakeCachedLeague },
     });
@@ -1658,6 +2030,250 @@ describe("lookupExplorerBoard", () => {
     expect(calls.getLeagueUsers).toBe(0);
     expect(calls.getRosters).toBe(0);
     expect(calls.getMatchups).toBe(0);
+  });
+
+  it("lets a prior-season league travel through week 18 instead of this NFL week", async () => {
+    const { client, calls } = countingClient();
+    const result = await lookupExplorerBoard(makeDeps({ sleeper: client }), {
+      sleeperLeagueId: PREVIOUS_SEASON_LEAGUE_ID,
+      clerkUserId: "clerk_1",
+      week: 18,
+    });
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") return;
+    expect(result.board.league.name).toBe(PREVIOUS_SEASON_LEAGUE_NAME);
+    expect(result.board.season).toBe("2025");
+    expect(result.board.maxWeek).toBe(18);
+    expect(result.board.selectedWeek).toBe(18);
+    expect(calls.getMatchups).toBe(1);
+    expect(calls.getTransactions).toBe(1);
+  });
+
+  it("charges week origin after reclamping a prior-season board off a current-week cache hit", async () => {
+    const { originQuota, used } = makeQuota();
+    const cache = createMemoryExplorerCache();
+    await seedFreshNflState(cache, FIXED_NOW);
+    await cache.putJson(`explore:week:${PREVIOUS_SEASON_LEAGUE_ID}:1`, {
+      fetchedAt: FIXED_NOW,
+      payload: { matchups: [], transactions: [] },
+    });
+    const { client, calls } = countingClient();
+    const result = await lookupExplorerBoard(
+      makeDeps({ sleeper: client, cache, originQuota, now: () => FIXED_NOW }),
+      { sleeperLeagueId: PREVIOUS_SEASON_LEAGUE_ID, clerkUserId: "clerk_1", week: 18 },
+    );
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") return;
+    expect(result.board.selectedWeek).toBe(18);
+    expect(calls.getLeague).toBe(1);
+    expect(calls.getMatchups).toBe(1);
+    expect(calls.getTransactions).toBe(1);
+    expect(used("clerk_1", FIXED_NOW)).toBe(5);
+  });
+
+  it("does not fetch a reclamped week when the extra week quota is gone", async () => {
+    const { originQuota, seed, used } = makeQuota();
+    seed("clerk_1", FIXED_NOW, ORIGIN_QUOTA_PER_HOUR - 3);
+    const cache = createMemoryExplorerCache();
+    await seedFreshNflState(cache, FIXED_NOW);
+    await cache.putJson(`explore:week:${PREVIOUS_SEASON_LEAGUE_ID}:1`, {
+      fetchedAt: FIXED_NOW,
+      payload: { matchups: [], transactions: [] },
+    });
+    const { client, calls } = countingClient();
+    const result = await lookupExplorerBoard(
+      makeDeps({ sleeper: client, cache, originQuota, now: () => FIXED_NOW }),
+      { sleeperLeagueId: PREVIOUS_SEASON_LEAGUE_ID, clerkUserId: "clerk_1", week: 18 },
+    );
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") return;
+    expect(result.stale).toBe(true);
+    expect(result.board.selectedWeek).toBe(1);
+    expect(calls.getLeague).toBe(1);
+    expect(calls.getMatchups).toBe(0);
+    expect(calls.getTransactions).toBe(0);
+    expect(used("clerk_1", FIXED_NOW)).toBe(ORIGIN_QUOTA_PER_HOUR);
+  });
+
+  it("falls back to the cached week when a reclamped week fetch fails", async () => {
+    const cache = createMemoryExplorerCache();
+    await seedFreshNflState(cache, FIXED_NOW);
+    await cache.putJson(`explore:week:${PREVIOUS_SEASON_LEAGUE_ID}:1`, {
+      fetchedAt: FIXED_NOW,
+      payload: { matchups: v1FixtureMatchups, transactions: [] },
+    });
+    const { client, calls } = countingClient({
+      ...createFixtureClient(),
+      async getMatchups() {
+        throw new SleeperRequestError("/league/x/matchups/18", 502);
+      },
+    });
+    const result = await lookupExplorerBoard(
+      makeDeps({ sleeper: client, cache, now: () => FIXED_NOW }),
+      { sleeperLeagueId: PREVIOUS_SEASON_LEAGUE_ID, clerkUserId: "clerk_1", week: 18 },
+    );
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") return;
+    expect(result.stale).toBe(true);
+    expect(result.board.selectedWeek).toBe(1);
+    expect(result.board.matchups.length).toBeGreaterThan(0);
+    expect(calls.getLeague).toBe(1);
+    expect(calls.getMatchups).toBe(1);
+  });
+});
+
+describe("lookupExplorerDrafts", () => {
+  it("returns the fixture Mahomes pick and traded pick, then skips origin on a cache hit", async () => {
+    const { originQuota, used } = makeQuota();
+    const cache = createMemoryExplorerCache();
+    const { client, calls } = countingClient();
+    const deps = makeDeps({ sleeper: client, cache, originQuota, now: () => FIXED_NOW });
+    await lookupExplorerBoard(deps, { sleeperLeagueId: V1_LEAGUE_ID, clerkUserId: "clerk_1" });
+    const first = await lookupExplorerDrafts(deps, { sleeperLeagueId: V1_LEAGUE_ID, clerkUserId: "clerk_1" });
+    expect(first.kind).toBe("ok");
+    if (first.kind !== "ok") return;
+    expect(first.drafts[0]?.picks[0]?.player.name).toBe("Patrick Mahomes");
+    expect(first.tradedPicks).toEqual(
+      expect.arrayContaining([expect.objectContaining({ season: "2027", round: 2 })]),
+    );
+    expect(calls.getLeague).toBe(1);
+    expect(calls.getLeagueDrafts).toBe(1);
+    expect(calls.getDraftPicks).toBe(1);
+    expect(calls.getTradedPicks).toBe(1);
+    expect(used("clerk_1", FIXED_NOW)).toBe(8);
+
+    const second = await lookupExplorerDrafts(deps, { sleeperLeagueId: V1_LEAGUE_ID, clerkUserId: "clerk_1" });
+    expect(second.kind).toBe("ok");
+    expect(calls.getLeagueDrafts).toBe(1);
+    expect(calls.getDraftPicks).toBe(1);
+    expect(calls.getTradedPicks).toBe(1);
+    expect(used("clerk_1", FIXED_NOW)).toBe(8);
+  });
+
+  it("loads picks for every returned draft, not only the first", async () => {
+    const extraDraftId = "0000000000000000101";
+    const base = createFixtureClient();
+    const { client, calls } = countingClient({
+      ...base,
+      async getLeagueDrafts(leagueId) {
+        return [
+          ...(await base.getLeagueDrafts(leagueId)),
+          { draft_id: extraDraftId, league_id: leagueId, status: "complete", type: "snake", season: "2025" },
+        ];
+      },
+      async getDraftPicks(draftId) {
+        if (draftId === extraDraftId) {
+          return [{ player_id: "4035", roster_id: "2", round: 1, pick_no: 2 }];
+        }
+        return base.getDraftPicks(draftId);
+      },
+    });
+    const cache = createMemoryExplorerCache();
+    const deps = makeDeps({ sleeper: client, cache });
+    await lookupExplorerBoard(deps, { sleeperLeagueId: V1_LEAGUE_ID, clerkUserId: "clerk_1" });
+    const result = await lookupExplorerDrafts(deps, { sleeperLeagueId: V1_LEAGUE_ID, clerkUserId: "clerk_1" });
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") return;
+    expect(result.drafts).toHaveLength(2);
+    expect(result.drafts[0]?.picks[0]?.player.name).toBe("Patrick Mahomes");
+    expect(result.drafts[1]?.picks[0]).toMatchObject({
+      teamName: "Zero RB Forever",
+    });
+    expect(result.drafts[1]?.picks[0]?.player.name).toBe("Saquon Barkley");
+    expect(calls.getDraftPicks).toBe(2);
+  });
+
+  it("keeps other drafts when one pick fetch fails", async () => {
+    const extraDraftId = "0000000000000000101";
+    const base = createFixtureClient();
+    const { client, calls } = countingClient({
+      ...base,
+      async getLeagueDrafts(leagueId) {
+        return [
+          ...(await base.getLeagueDrafts(leagueId)),
+          { draft_id: extraDraftId, league_id: leagueId, status: "complete", type: "snake", season: "2025" },
+        ];
+      },
+      async getDraftPicks(draftId) {
+        if (draftId === extraDraftId) {
+          throw new SleeperRequestError("/draft/x/picks", 502);
+        }
+        return base.getDraftPicks(draftId);
+      },
+    });
+    const cache = createMemoryExplorerCache();
+    const deps = makeDeps({ sleeper: client, cache });
+    await lookupExplorerBoard(deps, { sleeperLeagueId: V1_LEAGUE_ID, clerkUserId: "clerk_1" });
+    const result = await lookupExplorerDrafts(deps, { sleeperLeagueId: V1_LEAGUE_ID, clerkUserId: "clerk_1" });
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") return;
+    expect(result.stale).toBe(true);
+    expect(result.drafts).toHaveLength(2);
+    expect(result.drafts[0]?.picks[0]?.player.name).toBe("Patrick Mahomes");
+    expect(result.drafts[1]?.picks).toEqual([]);
+    expect(calls.getDraftPicks).toBe(2);
+  });
+
+  it("keeps the draft board when traded picks fail", async () => {
+    const base = createFixtureClient();
+    const { client } = countingClient({
+      ...base,
+      async getTradedPicks() {
+        throw new SleeperRequestError("/league/x/traded_picks", 502);
+      },
+    });
+    const deps = makeDeps({ sleeper: client, cache: createMemoryExplorerCache() });
+    const result = await lookupExplorerDrafts(deps, { sleeperLeagueId: V1_LEAGUE_ID, clerkUserId: "clerk_1" });
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") return;
+    expect(result.stale).toBe(true);
+    expect(result.drafts[0]?.picks[0]?.player.name).toBe("Patrick Mahomes");
+    expect(result.tradedPicks).toEqual([]);
+  });
+
+  it("keeps a finished draft's picks past the board TTL but refreshes an in-season league's traded picks", async () => {
+    let now = FIXED_NOW;
+    const { client, calls } = countingClient();
+    const deps = makeDeps({ sleeper: client, cache: createMemoryExplorerCache(), now: () => now });
+    await lookupExplorerDrafts(deps, { sleeperLeagueId: V1_LEAGUE_ID, clerkUserId: "clerk_1" });
+    expect(calls.getDraftPicks).toBe(1);
+    expect(calls.getTradedPicks).toBe(1);
+
+    now = FIXED_NOW + BOARD_TTL_MS + 60_000;
+    const later = await lookupExplorerDrafts(deps, { sleeperLeagueId: V1_LEAGUE_ID, clerkUserId: "clerk_1" });
+    expect(later.kind).toBe("ok");
+    expect(calls.getDraftPicks).toBe(1);
+    expect(calls.getTradedPicks).toBe(2);
+
+    now = FIXED_NOW + SETTLED_HISTORY_TTL_MS + 60_000;
+    await lookupExplorerDrafts(deps, { sleeperLeagueId: V1_LEAGUE_ID, clerkUserId: "clerk_1" });
+    expect(calls.getDraftPicks).toBe(2);
+  });
+});
+
+describe("lookupExplorerBrackets", () => {
+  it("returns fixture winners and losers without refetching a warm meta blob", async () => {
+    const cache = createMemoryExplorerCache();
+    const { client, calls } = countingClient();
+    const deps = makeDeps({ sleeper: client, cache });
+    await lookupExplorerBoard(deps, { sleeperLeagueId: V1_LEAGUE_ID, clerkUserId: "clerk_1" });
+    const first = await lookupExplorerBrackets(deps, { sleeperLeagueId: V1_LEAGUE_ID, clerkUserId: "clerk_1" });
+    expect(first.kind).toBe("ok");
+    if (first.kind !== "ok") return;
+    expect(first.winners).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ round: 1, match: 1, left: "Example Squad", right: "Zero RB Forever" }),
+      ]),
+    );
+    expect(first.losers[0]?.round).toBe(1);
+    expect(calls.getLeague).toBe(1);
+    expect(calls.getWinnersBracket).toBe(1);
+    expect(calls.getLosersBracket).toBe(1);
+
+    const second = await lookupExplorerBrackets(deps, { sleeperLeagueId: V1_LEAGUE_ID, clerkUserId: "clerk_1" });
+    expect(second.kind).toBe("ok");
+    expect(calls.getWinnersBracket).toBe(1);
+    expect(calls.getLosersBracket).toBe(1);
   });
 });
 

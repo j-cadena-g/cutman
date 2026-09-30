@@ -4,6 +4,7 @@ import type {
   SleeperLeagueUser,
   SleeperMatchup,
   SleeperRoster,
+  SleeperTransaction,
   SleeperUser,
 } from "@cutman/sleeper";
 
@@ -49,6 +50,17 @@ export function formatExplorerRecord(wins: number, losses: number, ties: number)
   return ties > 0 ? `${wins}-${losses}-${ties}` : `${wins}-${losses}`;
 }
 
+export function formatExplorerDraftPick(
+  round: number | null,
+  draftSlot: number | null,
+  pickNo: number | null,
+): string {
+  if (round == null) return "—";
+  if (draftSlot != null) return `${round}.${draftSlot}`;
+  if (pickNo != null) return `${round}.${pickNo}`;
+  return "—";
+}
+
 export function playerDisplayName(playerId: string, players: PlayerMap): string {
   const player = players[playerId];
   if (!player) return playerId;
@@ -65,6 +77,56 @@ export function isRealPlayerId(playerId: string | null | undefined): playerId is
 export function formatLeagueStatus(status: string | null | undefined): string {
   if (!status) return "Unknown";
   return status.replaceAll("_", " ");
+}
+
+export function parseExplorerWeekParam(raw: string | null | undefined): number | null {
+  if (raw == null) return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  if (!/^-?\d+$/.test(trimmed)) return null;
+  const value = Number(trimmed);
+  return Number.isSafeInteger(value) ? value : null;
+}
+
+export function clampExplorerWeek(requested: number | null | undefined, maxWeek: number): number {
+  const ceiling = Math.max(1, Math.trunc(maxWeek) || 1);
+  if (requested == null || !Number.isFinite(requested)) return ceiling;
+  return Math.min(ceiling, Math.max(1, Math.trunc(requested)));
+}
+
+export function maxExplorerWeek(input: {
+  leagueSeason: string | null | undefined;
+  nflSeason: string;
+  displayWeek: number;
+}): number {
+  if (input.leagueSeason && input.leagueSeason !== input.nflSeason) return 18;
+  return Math.max(1, input.displayWeek);
+}
+
+export function explorerLeaguePath(leagueId: string, tab?: "draft" | "brackets"): string {
+  const base = `/explore/leagues/${encodeURIComponent(leagueId)}`;
+  switch (tab) {
+    case "draft":
+      return `${base}/draft`;
+    case "brackets":
+      return `${base}/brackets`;
+    case undefined:
+      return base;
+    default: {
+      const exhaustive: never = tab;
+      return exhaustive;
+    }
+  }
+}
+
+export function explorerLeagueWeekHref(leagueId: string, week: number): string {
+  return `${explorerLeaguePath(leagueId)}?week=${week}`;
+}
+
+export function formatExplorerMoveType(type: string): string {
+  const labeled = type.replaceAll("_", " ").trim();
+  if (!labeled) return "Move";
+  return labeled.charAt(0).toUpperCase() + labeled.slice(1);
 }
 
 export type ExplorerUserCard = {
@@ -96,6 +158,8 @@ export type ExplorerManager = {
   rosterId: number;
   teamName: string;
   displayName: string;
+  username: string | null;
+  isOwner: boolean;
   abandoned: boolean;
   avatarUrl: string | null;
   wins: number;
@@ -105,11 +169,13 @@ export type ExplorerManager = {
 
 export type ExplorerStandingRow = ExplorerManager & {
   pointsFor: number;
+  pointsAgainst: number;
 };
 
 export type ExplorerMatchupSide = ExplorerManager & {
   points: number | null;
   starters: ExplorerPlayer[];
+  bench: ExplorerPlayer[];
 };
 
 export type ExplorerMatchupView = {
@@ -152,13 +218,43 @@ export type ExplorerRosterView = ExplorerManager & {
   reserve: ExplorerPlayer[];
 };
 
+export type ExplorerTransactionMove = {
+  player: ExplorerPlayer;
+  rosterId: number;
+  teamName: string;
+};
+
+export type ExplorerTransactionView = {
+  transactionId: string;
+  type: string;
+  status: string;
+  created: number | null;
+  rosterIds: number[];
+  teamNames: string[];
+  adds: ExplorerTransactionMove[];
+  drops: ExplorerTransactionMove[];
+  waiverBudget: Array<{ senderName: string; receiverName: string; amount: number }>;
+  draftPicks: ExplorerTradedPickView[];
+};
+
+export type ExplorerLeagueSettings = {
+  rosterSlots: string[];
+  playoffWeekStart: number | null;
+  scoringLines: Array<{ key: string; value: number }>;
+};
+
 export type ExplorerBoardView = {
   league: ExplorerLeagueCard;
   week: number;
+  currentWeek: number;
+  selectedWeek: number;
+  maxWeek: number;
   season: string;
   standings: ExplorerStandingRow[];
   matchups: ExplorerMatchupView[];
   rosters: ExplorerRosterView[];
+  transactions: ExplorerTransactionView[];
+  settings: ExplorerLeagueSettings;
 };
 
 export function toExplorerUserCard(user: SleeperUser): ExplorerUserCard {
@@ -203,6 +299,8 @@ export function managerForRoster(
       rosterId: roster.roster_id,
       teamName: "Abandoned roster",
       displayName: "No owner",
+      username: null,
+      isOwner: false,
       abandoned: true,
       avatarUrl: null,
       ...record,
@@ -215,6 +313,8 @@ export function managerForRoster(
     rosterId: roster.roster_id,
     teamName,
     displayName,
+    username: user?.username ?? null,
+    isOwner: user?.is_owner === true,
     abandoned: false,
     avatarUrl: sleeperAvatarUrl(user?.avatar),
     ...record,
@@ -278,6 +378,10 @@ function remainingPlayers(
     .map((playerId) => toExplorerPlayer(playerId, players, points, null));
 }
 
+function combinedPoints(whole?: number, decimal?: number): number {
+  return (whole ?? 0) + (decimal ?? 0) / 100;
+}
+
 export function assembleStandings(
   rosters: SleeperRoster[],
   users: SleeperLeagueUser[],
@@ -290,7 +394,8 @@ export function assembleStandings(
       wins: roster.settings?.wins ?? 0,
       losses: roster.settings?.losses ?? 0,
       ties: roster.settings?.ties ?? 0,
-      pointsFor: (roster.settings?.fpts ?? 0) + (roster.settings?.fpts_decimal ?? 0) / 100,
+      pointsFor: combinedPoints(roster.settings?.fpts, roster.settings?.fpts_decimal),
+      pointsAgainst: combinedPoints(roster.settings?.fpts_against, roster.settings?.fpts_against_decimal),
     };
   });
   rows.sort((left, right) => {
@@ -334,16 +439,20 @@ export function assembleScoreboard(
               rosterId: side.roster_id,
               teamName: `Roster ${side.roster_id}`,
               displayName: "Unknown manager",
+              username: null,
+              isOwner: false,
               abandoned: true,
               avatarUrl: null,
               wins: 0,
               losses: 0,
               ties: 0,
             };
+        const starterIds = new Set((side.starters ?? []).filter(isRealPlayerId));
         return {
           ...manager,
           points: side.custom_points ?? side.points,
           starters: starterPlayers(side.starters, rosterPositions, players, side.players_points, true),
+          bench: remainingPlayers(side.players, starterIds, players, side.players_points),
         };
       }),
     };
@@ -381,17 +490,111 @@ export function assembleRosters(
     .sort((left, right) => left.rosterId - right.rosterId);
 }
 
+export function assembleLeagueSettings(league: SleeperLeague): ExplorerLeagueSettings {
+  const scoring = league.scoring_settings ?? {};
+  const highlightKeys = ["pass_td", "rush_td", "rec_td", "rec", "bonus_rec_te", "fum"];
+  return {
+    rosterSlots: (league.roster_positions ?? []).filter((slot) => slot !== "BN"),
+    playoffWeekStart: typeof league.settings?.playoff_week_start === "number" ? league.settings.playoff_week_start : null,
+    scoringLines: highlightKeys.flatMap((key) => {
+      const value = scoring[key];
+      return typeof value === "number" ? [{ key, value }] : [];
+    }),
+  };
+}
+
+function explorerRosterId(value: string | number | null | undefined): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim() !== "") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function teamNameResolver(rosters: SleeperRoster[], users: SleeperLeagueUser[], missing: string) {
+  const owners = usersById(users);
+  const names = new Map<number, string>();
+  return (rosterId: string | number | null | undefined): string => {
+    const id = explorerRosterId(rosterId);
+    if (id == null) return missing;
+    const cached = names.get(id);
+    if (cached) return cached;
+    const roster = rosters.find((row) => row.roster_id === id);
+    const name = roster ? managerForRoster(roster, owners).teamName : `Roster ${id}`;
+    names.set(id, name);
+    return name;
+  };
+}
+
+export function assembleExplorerTransactions(
+  transactions: SleeperTransaction[],
+  rosters: SleeperRoster[],
+  users: SleeperLeagueUser[],
+  players: PlayerMap,
+): ExplorerTransactionView[] {
+  const teamName = teamNameResolver(rosters, users, "Unknown team");
+  const movesFrom = (record: Record<string, number> | null | undefined): ExplorerTransactionMove[] =>
+    Object.entries(record ?? {}).map(([playerId, rosterId]) => ({
+      player: toExplorerPlayer(playerId, players, null, null),
+      rosterId,
+      teamName: teamName(rosterId),
+    }));
+
+  return [...transactions]
+    .sort((left, right) => (right.created ?? 0) - (left.created ?? 0) || left.transaction_id.localeCompare(right.transaction_id))
+    .map((transaction) => {
+      const rosterIds = transaction.roster_ids ?? [];
+      return {
+        transactionId: transaction.transaction_id,
+        type: transaction.type,
+        status: transaction.status,
+        created: transaction.created ?? null,
+        rosterIds,
+        teamNames: rosterIds.map(teamName),
+        adds: movesFrom(transaction.adds),
+        drops: movesFrom(transaction.drops),
+        waiverBudget: (transaction.waiver_budget ?? []).map((transfer) => ({
+          senderName: teamName(transfer.sender),
+          receiverName: teamName(transfer.receiver),
+          amount: transfer.amount,
+        })),
+        draftPicks: (transaction.draft_picks ?? []).map((pick) => ({
+          season: pick.season,
+          round: pick.round,
+          fromTeam: teamName(pick.previous_owner_id),
+          toTeam: teamName(pick.owner_id),
+          rosterId: explorerRosterId(pick.roster_id),
+        })),
+      };
+    });
+}
+
 export function assembleExplorerBoard(input: {
   league: SleeperLeague;
   week: number;
+  currentWeek?: number;
+  selectedWeek?: number;
+  nflSeason?: string;
   users: SleeperLeagueUser[];
   rosters: SleeperRoster[];
   matchups: SleeperMatchup[];
   players: PlayerMap;
+  transactions?: SleeperTransaction[];
 }): ExplorerBoardView {
+  const selectedWeek = input.selectedWeek ?? input.week;
+  const currentWeek = input.currentWeek ?? input.week;
+  const maxWeek = maxExplorerWeek({
+    leagueSeason: input.league.season,
+    nflSeason: input.nflSeason ?? input.league.season,
+    displayWeek: currentWeek,
+  });
   return {
     league: toExplorerLeagueCard(input.league),
-    week: input.week,
+    week: selectedWeek,
+    currentWeek,
+    selectedWeek,
+    maxWeek,
     season: input.league.season,
     standings: assembleStandings(input.rosters, input.users),
     matchups: assembleScoreboard(
@@ -408,7 +611,113 @@ export function assembleExplorerBoard(input: {
       input.players,
       input.league.roster_positions,
     ),
+    transactions: assembleExplorerTransactions(
+      input.transactions ?? [],
+      input.rosters,
+      input.users,
+      input.players,
+    ),
+    settings: assembleLeagueSettings(input.league),
   };
+}
+
+export type ExplorerDraftPickView = {
+  pickNo: number | null;
+  round: number | null;
+  draftSlot: number | null;
+  player: ExplorerPlayer;
+  teamName: string;
+};
+
+export type ExplorerDraftView = {
+  draftId: string;
+  status: string | null;
+  type: string | null;
+  season: string | null;
+  picks: ExplorerDraftPickView[];
+};
+
+export type ExplorerTradedPickView = {
+  season: string;
+  round: number;
+  fromTeam: string;
+  toTeam: string;
+  rosterId: number | null;
+};
+
+export type ExplorerBracketGameView = {
+  round: number;
+  match: number;
+  left: string;
+  right: string;
+  winner: string | null;
+};
+
+export function assembleExplorerDraft(
+  draft: { draft_id: string; status?: string; type?: string; season?: string },
+  picks: Array<{
+    player_id?: string | null;
+    roster_id?: number | string | null;
+    round?: number;
+    draft_slot?: number;
+    pick_no?: number;
+  }>,
+  rosters: SleeperRoster[],
+  users: SleeperLeagueUser[],
+  players: PlayerMap,
+): ExplorerDraftView {
+  const teamName = teamNameResolver(rosters, users, "Unknown team");
+  return {
+    draftId: draft.draft_id,
+    status: draft.status ?? null,
+    type: draft.type ?? null,
+    season: draft.season ?? null,
+    picks: picks.map((pick) => ({
+      pickNo: pick.pick_no ?? null,
+      round: pick.round ?? null,
+      draftSlot: pick.draft_slot ?? null,
+      player: toExplorerPlayer(pick.player_id || "", players, null, null),
+      teamName: teamName(pick.roster_id),
+    })),
+  };
+}
+
+export function assembleExplorerTradedPicks(
+  picks: Array<{
+    season: string;
+    round: number;
+    roster_id?: number | string | null;
+    previous_owner_id: number | string;
+    owner_id: number | string;
+  }>,
+  rosters: SleeperRoster[],
+  users: SleeperLeagueUser[],
+): ExplorerTradedPickView[] {
+  const teamName = teamNameResolver(rosters, users, "Unknown team");
+  return picks.map((pick) => ({
+    season: pick.season,
+    round: pick.round,
+    fromTeam: teamName(pick.previous_owner_id),
+    toTeam: teamName(pick.owner_id),
+    rosterId: explorerRosterId(pick.roster_id),
+  }));
+}
+
+export function assembleExplorerBracket(
+  games: Array<{ r: number; m: number; t1: number | null; t2: number | null; w?: number | null }>,
+  rosters: SleeperRoster[],
+  users: SleeperLeagueUser[],
+): ExplorerBracketGameView[] {
+  const teamName = teamNameResolver(rosters, users, "TBD");
+  return [...games]
+    .sort((left, right) => left.r - right.r || left.m - right.m)
+    .map((game) => ({
+      round: game.r,
+      match: game.m,
+      left: teamName(game.t1),
+      right: teamName(game.t2),
+      winner: game.w == null ? null : teamName(game.w),
+    }));
 }
 
 type ExplorerErrorKind =

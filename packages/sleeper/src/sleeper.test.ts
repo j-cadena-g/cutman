@@ -12,7 +12,10 @@ import {
   MUTABLE_SLEEPER_PREVIOUS_USERNAME,
   MUTABLE_SLEEPER_USER_ID,
   MUTABLE_SLEEPER_USERNAME,
+  PREVIOUS_SEASON_LEAGUE_ID,
+  PREVIOUS_SEASON_LEAGUE_NAME,
   REQUEST_TIMEOUT_MS,
+  V1_DRAFT_ID,
   V1_LEAGUE_ID,
   V1_LEAGUE_NAME,
   comingSoonFixtureLeague,
@@ -23,10 +26,15 @@ import {
   mutableFixtureUser,
   SleeperRequestError,
   v1FixtureCommissioner,
+  v1FixtureDraft,
+  v1FixtureDraftPicks,
+  v1FixtureLosersBracket,
   v1FixtureMatchups,
   v1FixtureRosters,
+  v1FixtureTradedPicks,
   v1FixtureUser,
   v1FixtureUsers,
+  v1FixtureWinnersBracket,
 } from "./index.ts";
 
 describe("fixture sleeper client", () => {
@@ -75,6 +83,40 @@ describe("fixture sleeper client", () => {
 
     const unknownMembers = await client.getLeagueUsers("not-a-fixture-league");
     expect(unknownMembers).toEqual([]);
+  });
+
+  it("filters getUserLeagues by season and serves draft, traded-pick, and bracket history", async () => {
+    const client = createFixtureClient();
+    const user = await client.getUser(EXAMPLE_SLEEPER_USERNAME);
+    const current = await client.getUserLeagues(user!.user_id, "2026");
+    const previous = await client.getUserLeagues(user!.user_id, "2025");
+
+    expect(current.map((league) => league.league_id)).toEqual([V1_LEAGUE_ID, COMING_SOON_LEAGUE_ID]);
+    expect(previous).toEqual([
+      expect.objectContaining({ league_id: PREVIOUS_SEASON_LEAGUE_ID, name: PREVIOUS_SEASON_LEAGUE_NAME, season: "2025" }),
+    ]);
+
+    expect(await client.getLeagueDrafts(V1_LEAGUE_ID)).toEqual([v1FixtureDraft]);
+    expect(await client.getDraftPicks(V1_DRAFT_ID)).toEqual(v1FixtureDraftPicks);
+    expect(await client.getTradedPicks(V1_LEAGUE_ID)).toEqual(v1FixtureTradedPicks);
+    expect(await client.getWinnersBracket(V1_LEAGUE_ID)).toEqual(v1FixtureWinnersBracket);
+    expect(await client.getLosersBracket(V1_LEAGUE_ID)).toEqual(v1FixtureLosersBracket);
+    expect(await client.getLeagueDrafts(COMING_SOON_LEAGUE_ID)).toEqual([]);
+  });
+
+  it("returns no picks when the requested draft is absent, including a drafts override that drops V1_DRAFT_ID", async () => {
+    const client = createFixtureClient({ drafts: [] });
+    expect(await client.getDraftPicks(V1_DRAFT_ID)).toEqual([]);
+  });
+
+  it("serves override picks only for a draft that still exists", async () => {
+    const customPicks = [{ player_id: "4046", round: 1, pick_no: 1, draft_slot: 1 }];
+    const client = createFixtureClient({
+      drafts: [{ draft_id: "custom-draft", league_id: V1_LEAGUE_ID }],
+      draftPicks: customPicks,
+    });
+    expect(await client.getDraftPicks("custom-draft")).toEqual(customPicks);
+    expect(await client.getDraftPicks(V1_DRAFT_ID)).toEqual([]);
   });
 
   it("exposes a commissioner with is_owner and a challenge-shaped team name, plus non-owner members", async () => {
@@ -195,7 +237,7 @@ describe("HttpSleeperClient errors", () => {
 
   it("redacts unknown path prefixes after the first segment", () => {
     const error = new SleeperRequestError("/draft/abc123", 502);
-    expect(error.message).toBe("Sleeper /draft/:redacted failed: 502");
+    expect(error.message).toBe("Sleeper /draft/:id failed: 502");
     expect(error.message).not.toContain("abc123");
     expect(error.path).toBe("/draft/abc123");
     expect(Object.keys(error)).not.toContain("path");
