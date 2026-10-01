@@ -1,5 +1,6 @@
 import { ExplorerAvatar } from "~/components/explorer-avatar";
-import { Card, CardDescription, CardTitle } from "~/components/ui/card";
+import { EmptyState, surface } from "~/components/ui/card";
+import { cn } from "~/lib/utils";
 import { formatExplorerMoveType, type ExplorerTransactionView } from "~/lib/sleeper-explorer";
 
 function MovePlayers({
@@ -12,7 +13,7 @@ function MovePlayers({
   if (moves.length === 0) return null;
   return (
     <div>
-      <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-muted">{label}</p>
+      <p className="eyebrow-sm text-muted">{label}</p>
       <ul className="mt-1 space-y-1">
         {moves.map((move) => (
           <li key={`${label}-${move.player.playerId}-${move.rosterId}`} className="flex min-w-0 items-center gap-2">
@@ -29,27 +30,28 @@ function MovePlayers({
 export function ExplorerMovesList({ transactions }: { transactions: ExplorerTransactionView[] }) {
   if (transactions.length === 0) {
     return (
-      <Card className="mt-3">
-        <CardTitle className="text-lg">No moves this week</CardTitle>
-        <CardDescription>Sleeper didn&apos;t return waivers, trades, or free-agent claims for this week.</CardDescription>
-      </Card>
+      <EmptyState
+        className="mt-3"
+        title="No moves this week"
+        detail="Sleeper didn't return waivers, trades, or free-agent claims for this week."
+      />
     );
   }
 
   return (
-    <ul className="mt-3 grid gap-3 xl:grid-cols-2">
+    <ul className="mt-3 space-y-3">
       {transactions.map((transaction) => (
-        <li key={transaction.transactionId} className="rounded-2xl border border-cream/12 bg-field/80 p-4">
+        <li key={transaction.transactionId} className={cn(surface, "@container p-4")}>
           <div className="flex flex-wrap items-baseline justify-between gap-2">
             <p className="font-semibold text-cream">
               {formatExplorerMoveType(transaction.type)}
-              <span className="ml-2 text-xs font-medium uppercase tracking-[0.14em] text-muted">
+              <span className="eyebrow-sm ml-2 text-muted">
                 {transaction.status}
               </span>
             </p>
             <p className="truncate text-xs text-muted">{transaction.teamNames.join(" · ")}</p>
           </div>
-          <div className="mt-3 grid gap-3 sm:grid-cols-2">
+          <div className="mt-3 grid grid-cols-1 gap-3 @md:grid-cols-2">
             <MovePlayers label="Adds" moves={transaction.adds} />
             <MovePlayers label="Drops" moves={transaction.drops} />
           </div>

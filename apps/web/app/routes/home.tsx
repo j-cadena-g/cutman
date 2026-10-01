@@ -2,7 +2,7 @@ import { SignInButton, SignUpButton } from "@clerk/react-router";
 import type { LeagueRow } from "@cutman/db";
 import { Link, redirect } from "react-router";
 import { computeHomeDestination, resolveHomeAccess } from "~/lib/access.server";
-import { BrandNav } from "~/components/brand-nav";
+import { PageLead, PageShell, PageTitle } from "~/components/page-shell";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
 import { Card, CardDescription, CardTitle } from "~/components/ui/card";
@@ -47,10 +47,10 @@ export default function Home({ loaderData }: Route.ComponentProps) {
   if (kind === "signed_out") {
     return (
       <main className="mx-auto flex min-h-screen max-w-lg flex-col justify-center px-6 py-16">
-        <p className="text-xs font-semibold uppercase tracking-[0.24em] text-flag">Cutman</p>
+        <p className="eyebrow tracking-brand text-flag">Cutman</p>
         <h1 className="mt-4 font-display text-5xl leading-[1.05]">The season story for your Sleeper league.</h1>
         <p className="mt-4 text-muted">
-          Cutman keeps the book for your Sleeper league. Sign in with Clerk to open the dashboard.
+          Cutman keeps the book for your Sleeper league. Sign in to open your dashboard.
         </p>
         {clerkConfigured ? (
           <div className="mt-10 flex flex-wrap gap-3">
@@ -78,16 +78,15 @@ export default function Home({ loaderData }: Route.ComponentProps) {
   // Only reachable with more than one active league membership (single/zero redirect in the
   // loader) — the commissioner's-scorecard "which book do you want to open" view.
   return (
-    <main className="mx-auto max-w-3xl px-6 py-16">
-      <BrandNav />
-      <h1 className="mt-4 font-display text-4xl">Your leagues</h1>
-      <p className="mt-2 text-muted">Pick a book to open.</p>
+    <PageShell>
+      <PageTitle>Your leagues</PageTitle>
+      <PageLead>Pick a book to open.</PageLead>
       <ol className="mt-8 space-y-4">
         {leagues.map((league, index) => (
           <li key={league.id}>
-            <Link to={`/leagues/${league.id}`} className="block focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-flag/70 rounded-xl">
+            <Link to={`/leagues/${league.id}`} className="block rounded-2xl focus-ring">
               <Card className="transition-colors hover:bg-turf">
-                <Badge>League {index + 1}</Badge>
+                <Badge variant="neutral">League {index + 1}</Badge>
                 <CardTitle className="mt-3">{league.name}</CardTitle>
                 <CardDescription>Season {league.season}</CardDescription>
               </Card>
@@ -95,6 +94,6 @@ export default function Home({ loaderData }: Route.ComponentProps) {
           </li>
         ))}
       </ol>
-    </main>
+    </PageShell>
   );
 }

@@ -33,7 +33,7 @@ import {
 import { describeExplorerError } from "~/lib/sleeper-explorer";
 import { kvExplorerCache, ORIGIN_QUOTA_PER_HOUR } from "~/lib/sleeper-explorer.server";
 import { provisionAndActivateLeague, provisioningDepsFromEnv, retryProvisionAndActivateLeague } from "~/lib/provisioning.server";
-import { BrandNav } from "~/components/brand-nav";
+import { PageLead, PageShell, PageTitle, SectionHeading } from "~/components/page-shell";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
 import { Card, CardDescription, CardTitle } from "~/components/ui/card";
@@ -240,7 +240,7 @@ function SetupRail({ current }: { current: 1 | 2 | 3 }) {
     { n: 3, label: "Verify or join" },
   ];
   return (
-    <ol aria-label="Setup progress" className="flex flex-wrap gap-3 text-xs font-semibold uppercase tracking-[0.16em]">
+    <ol aria-label="Setup progress" className="eyebrow-sm flex flex-wrap gap-3">
       {steps.map((step) => {
         const done = step.n < current;
         const active = step.n === current;
@@ -314,7 +314,7 @@ function ChallengeLabel({
   const countdown = formatChallengeCountdown(expiresAt, now);
   return (
     <Card className="border-2 border-dashed border-flag/50 bg-ink/40">
-      <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-muted">Roster label · verification code</p>
+      <p className="eyebrow-sm text-muted">Roster label · verification code</p>
       <p className="mt-3 font-mono text-3xl font-bold tracking-[0.14em] text-flag">{challenge}</p>
       <div className="my-4 border-t-2 border-dashed border-cream/15" aria-hidden="true" />
       <ol className="list-decimal space-y-1 pl-5 text-sm leading-relaxed text-cream/90">
@@ -408,10 +408,9 @@ export default function Onboarding({ loaderData, actionData }: Route.ComponentPr
   const setupError = errorForIntent("retry-provision") ?? errorForIntent("verify-challenge");
 
   return (
-    <main className="mx-auto max-w-2xl px-6 py-16">
-      <BrandNav />
-      <h1 className="mt-3 font-display text-4xl">Set up your league</h1>
-      <p className="mt-2 text-muted">Connect your Sleeper account, then verify or join the pilot league.</p>
+    <PageShell>
+      <PageTitle>Set up your league</PageTitle>
+      <PageLead>Connect your Sleeper account, then verify or join the pilot league.</PageLead>
 
       <div className="mt-8">
         <SetupRail current={current} />
@@ -447,7 +446,7 @@ export default function Onboarding({ loaderData, actionData }: Route.ComponentPr
         {step.kind !== "connect_sleeper_account" && sleeperUsername ? (
           <p className="text-sm text-muted">
             Connected as <span className="text-cream">{sleeperUsername}</span> on Sleeper.{" "}
-            <Link to={ONBOARDING_REFRESH_HREF} className="text-flag underline-offset-4 hover:underline">
+            <Link to={ONBOARDING_REFRESH_HREF} className="text-link">
               Refresh leagues
             </Link>
           </p>
@@ -455,7 +454,7 @@ export default function Onboarding({ loaderData, actionData }: Route.ComponentPr
 
         {step.kind === "discovery_unavailable" ? (
           <Card>
-            <Badge>{discoveryQuotaExceeded ? "Lookup limit" : "Connection issue"}</Badge>
+            <Badge variant="warning">{discoveryQuotaExceeded ? "Lookup limit" : "Connection issue"}</Badge>
             <CardTitle className="mt-3">
               {discoveryQuotaExceeded ? "Lookup limit reached" : "Cutman couldn't reach Sleeper"}
             </CardTitle>
@@ -474,7 +473,7 @@ export default function Onboarding({ loaderData, actionData }: Route.ComponentPr
 
         {step.kind === "not_a_pilot_league_member" ? (
           <Card>
-            <Badge>Not in this league</Badge>
+            <Badge variant="warning">Not in this league</Badge>
             <CardTitle className="mt-3">That Sleeper account isn't in this league</CardTitle>
             <CardDescription>{describeOnboardingError("not_a_pilot_league_member")}</CardDescription>
             <div className="mt-5">
@@ -577,7 +576,7 @@ export default function Onboarding({ loaderData, actionData }: Route.ComponentPr
 
         {comingSoonLeagues.length > 0 ? (
           <div>
-            <h2 className="text-xs font-semibold uppercase tracking-[0.18em] text-muted">Your other leagues</h2>
+            <SectionHeading>Your other leagues</SectionHeading>
             <ul className="mt-3 space-y-2">
               {comingSoonLeagues.map((league) => (
                 <li key={league.sleeperLeagueId}>
@@ -586,7 +585,7 @@ export default function Onboarding({ loaderData, actionData }: Route.ComponentPr
                       <p className="text-cream">{league.name}</p>
                       <p className="text-xs text-muted">Season {league.season}</p>
                     </div>
-                    <Badge>Coming soon</Badge>
+                    <Badge variant="neutral">Coming soon</Badge>
                   </Card>
                 </li>
               ))}
@@ -594,6 +593,6 @@ export default function Onboarding({ loaderData, actionData }: Route.ComponentPr
           </div>
         ) : null}
       </div>
-    </main>
+    </PageShell>
   );
 }

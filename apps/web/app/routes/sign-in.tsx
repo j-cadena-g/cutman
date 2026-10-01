@@ -12,9 +12,9 @@ export function loader({ context }: Route.LoaderArgs) {
 export default function SignInPage({ loaderData }: Route.ComponentProps) {
   return (
     <main className="mx-auto flex min-h-screen max-w-lg flex-col justify-center px-6 py-16">
-      <p className="text-xs font-semibold uppercase tracking-[0.24em] text-flag">Cutman</p>
+      <p className="eyebrow tracking-brand text-flag">Cutman</p>
       <h1 className="mt-4 font-display text-5xl leading-[1.05]">The season story for your Sleeper league.</h1>
-      <p className="mt-4 text-muted">Sign in with Clerk to continue to league setup or your dashboard.</p>
+      <p className="mt-4 text-muted">Sign in to continue to league setup or your dashboard.</p>
       {loaderData.clerkConfigured ? (
         <div className="mt-10">
           <SignIn
@@ -34,7 +34,7 @@ export default function SignInPage({ loaderData }: Route.ComponentProps) {
             <code className="text-cream">op run --environment &quot;Cutman (dev)&quot;</code>, or set{" "}
             <code className="text-cream">OP_ENVIRONMENT_ID</code> and run <code className="text-cream">pnpm dev</code>.
           </p>
-          <Link className="inline-block underline decoration-flag/60" to="/">
+          <Link className="text-link inline-block" to="/">
             Back to Cutman
           </Link>
         </div>

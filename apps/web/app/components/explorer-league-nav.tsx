@@ -1,4 +1,5 @@
 import { Link, useLocation } from "react-router";
+import { segmentedItem, segmentedTrack } from "~/components/ui/segmented";
 import { explorerLeaguePath } from "~/lib/sleeper-explorer";
 import { cn } from "~/lib/utils";
 
@@ -13,16 +14,13 @@ export function ExplorerLeagueNav({ leagueId }: { leagueId: string }) {
     { href: brackets, label: "Brackets", active: pathname === brackets },
   ];
   return (
-    <nav aria-label="League sections" className="flex w-full gap-1 rounded-full bg-turf/80 p-1 lg:w-auto">
+    <nav aria-label="League sections" className={cn(segmentedTrack, "w-full lg:w-auto")}>
       {items.map((item) => (
         <Link
           key={item.href}
           to={item.href}
           aria-current={item.active ? "page" : undefined}
-          className={cn(
-            "flex-1 rounded-full px-3 py-1.5 text-center text-xs font-semibold uppercase tracking-[0.14em] lg:flex-none lg:px-4",
-            item.active ? "bg-live text-ink" : "text-muted hover:text-cream",
-          )}
+          className={segmentedItem(item.active, "flex-1 lg:flex-none")}
         >
           {item.label}
         </Link>

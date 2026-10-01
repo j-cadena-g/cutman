@@ -3,10 +3,11 @@ import { setRecapOptIn } from "@cutman/db";
 import { isTone, parseTone, toneBlurb, toneLabel, toneOrPlayful, TONES } from "@cutman/story";
 import { Form, redirect } from "react-router";
 import { resolveLeagueAccess } from "~/lib/access.server";
-import { BrandNav } from "~/components/brand-nav";
+import { PageLead, PageShell, PageTitle, SectionHeading } from "~/components/page-shell";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
-import { Card, CardDescription, CardTitle } from "~/components/ui/card";
+import { Card, CardDescription, CardTitle, EmptyState } from "~/components/ui/card";
+import { segmentedItem, segmentedTrack } from "~/components/ui/segmented";
 import { getDashboardOrNull } from "~/lib/dashboard";
 import { clerkAppearance } from "~/lib/clerk-appearance";
 import { cloudflareEnv } from "~/lib/env";
@@ -122,18 +123,21 @@ export async function action(args: Route.ActionArgs) {
   return { error: "Cutman didn't recognize that action." };
 }
 
+// UserButton mounts client-side only; the fixed slot keeps the header from reflowing when it does.
 function SignedInUserControls() {
   return (
-    <Show when="signed-in">
-      <UserButton
-        appearance={{
-          ...clerkAppearance,
-          elements: {
-            avatarBox: "h-10 w-10 ring-2 ring-flag/70",
-          },
-        }}
-      />
-    </Show>
+    <span className="inline-flex h-10 w-10 shrink-0 items-center justify-center">
+      <Show when="signed-in">
+        <UserButton
+          appearance={{
+            ...clerkAppearance,
+            elements: {
+              avatarBox: "h-10 w-10 ring-2 ring-flag/70",
+            },
+          }}
+        />
+      </Show>
+    </span>
   );
 }
 
@@ -146,28 +150,28 @@ export default function League({ loaderData, actionData }: Route.ComponentProps)
   const leagueName = dashboard?.name ?? league.name;
 
   return (
-    <main className="mx-auto max-w-5xl px-6 py-10">
-      <header className="flex flex-wrap items-end justify-between gap-4">
-        <div>
-          <BrandNav />
-          <h1 className="mt-2 font-display text-4xl md:text-5xl">{leagueName}</h1>
-          <p className="mt-2 text-muted">
-            Week {dashboard?.week ?? "—"} · living dashboard from the last snapshot
-          </p>
-          <p className="mt-1 text-sm text-muted">{userEmail}</p>
-        </div>
-        <div className="flex flex-wrap items-center gap-3">
-          <Button asChild variant="secondary">
+    <PageShell
+      width="default"
+      actions={
+        <>
+          <Button asChild variant="secondary" size="sm">
             <a href={`https://sleeper.com/leagues/${league.sleeperLeagueId}`} target="_blank" rel="noreferrer">
               Rosters on Sleeper
             </a>
           </Button>
-          <SignedInUserControls />
           <SignOutButton>
-            <Button variant="ghost">Sign out</Button>
+            <Button variant="ghost" size="sm">
+              Sign out
+            </Button>
           </SignOutButton>
-        </div>
-      </header>
+          <SignedInUserControls />
+        </>
+      }
+    >
+      <PageTitle>{leagueName}</PageTitle>
+      <PageLead>
+        Week {dashboard?.week ?? "—"} · living dashboard from the last snapshot · {userEmail}
+      </PageLead>
 
       {actionError ? (
         <p role="alert" className="mt-4 text-sm text-danger">
@@ -177,35 +181,34 @@ export default function League({ loaderData, actionData }: Route.ComponentProps)
 
       <Card className="mt-8">
         <Badge>{isOwner ? "Commissioner" : "Member"}</Badge>
-        <CardTitle className="mt-3">Commish strip</CardTitle>
+        <CardTitle className="mt-3">Commissioner controls</CardTitle>
         <CardDescription>
           {toneLabel(tone)} — {toneBlurb(tone)} Default tone is playful.
         </CardDescription>
-        <div className="mt-6 grid gap-6 md:grid-cols-2">
+        <div className="mt-6 grid grid-cols-1 gap-6 md:grid-cols-2">
           <Form method="post" className="space-y-3">
             <input type="hidden" name="intent" value="tone" />
-            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-muted">Voice</p>
-            <div className="flex flex-wrap gap-2">
+            <p className="eyebrow text-muted">Voice</p>
+            <div className={`${segmentedTrack} w-fit flex-wrap`}>
               {TONES.map((option) => (
-                <Button
+                <button
                   key={option}
+                  type="submit"
                   name="tone"
                   value={option}
-                  variant={tone === option ? "default" : "secondary"}
                   aria-pressed={tone === option}
                   disabled={!isOwner || dashboard === null}
+                  className={segmentedItem(tone === option)}
                 >
                   {toneLabel(option)}
-                </Button>
+                </button>
               ))}
             </div>
-            {dashboard === null ? (
-              <p className="text-sm text-muted">Tone opens once setup finishes.</p>
-            ) : null}
+            {dashboard === null ? <p className="text-sm text-muted">Tone opens once setup finishes.</p> : null}
           </Form>
           <Form method="post" className="space-y-3">
             <input type="hidden" name="intent" value="optin" />
-            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-muted">Tuesday recap email</p>
+            <p className="eyebrow text-muted">Tuesday recap email</p>
             <Button name="optin" value={optIn ? "0" : "1"} variant={optIn ? "secondary" : "default"}>
               {optIn ? "Opted in — click to stop" : "Email me the Tuesday recap"}
             </Button>
@@ -215,23 +218,21 @@ export default function League({ loaderData, actionData }: Route.ComponentProps)
 
       {dashboard ? (
         <>
-          <section className="mt-12 grid gap-6 lg:grid-cols-5">
+          <section className="mt-12 grid grid-cols-1 gap-8 lg:grid-cols-5">
             <div className="lg:col-span-3">
-              <h2 className="font-display text-3xl">Timeline</h2>
+              <SectionHeading>Timeline</SectionHeading>
               {dashboard.timeline.length === 0 ? (
-                <Card className="mt-4">
-                  <CardTitle>Quiet so far</CardTitle>
-                  <CardDescription>
-                    Cutman polls Sleeper on the cron, diffs the snapshot, and only writes a beat when something
-                    actually changed. This page reads the Durable Object, not Sleeper.
-                  </CardDescription>
-                </Card>
+                <EmptyState
+                  className="mt-3"
+                  title="Quiet so far"
+                  detail="Cutman polls Sleeper on the cron, diffs the snapshot, and only writes a beat when something actually changed."
+                />
               ) : (
-                <ol className="mt-4 space-y-4">
+                <ol className="mt-3 space-y-4">
                   {dashboard.timeline.map((beat) => (
                     <li key={beat.id}>
                       <Card>
-                        <p className="text-[11px] uppercase tracking-[0.18em] text-flag">
+                        <p className="eyebrow-sm text-flag">
                           Week {beat.week} · {beat.kind.replaceAll("_", " ")}
                         </p>
                         <p className="mt-2 text-lg leading-relaxed">{beat.copy}</p>
@@ -242,11 +243,11 @@ export default function League({ loaderData, actionData }: Route.ComponentProps)
               )}
             </div>
             <div className="lg:col-span-2">
-              <h2 className="font-display text-3xl">Bible</h2>
+              <SectionHeading>Bible</SectionHeading>
               {dashboard.bible.length === 0 ? (
-                <p className="mt-4 text-muted">Running gags land here as the season writes itself.</p>
+                <EmptyState className="mt-3" title="No running gags yet" detail="They land here as the season writes itself." />
               ) : (
-                <ul className="mt-4 space-y-3 text-sm leading-relaxed text-paper">
+                <ul className="mt-3 space-y-3 text-sm leading-relaxed text-paper">
                   {dashboard.bible.map((entry) => (
                     <li key={entry.id} className="border-l-2 border-flag/40 pl-3">
                       {entry.entry}
@@ -257,18 +258,19 @@ export default function League({ loaderData, actionData }: Route.ComponentProps)
             </div>
           </section>
 
-          <section className="mt-12 pb-16">
-            <h2 className="font-display text-3xl">Recap archive</h2>
+          <section className="mt-12">
+            <SectionHeading>Recap archive</SectionHeading>
             {dashboard.recaps.length === 0 ? (
-              <p className="mt-4 text-muted">
-                Tuesday 9:00 in America/New_York, once every matchup has a real score. One recap per week. Never a
-                blank email. From: Cutman &lt;hello@mail.cutman.io&gt;.
-              </p>
+              <EmptyState
+                className="mt-3"
+                title="No recaps yet"
+                detail="Tuesday 9:00 America/New_York, once every matchup has a real score. One recap per week, from Cutman <hello@mail.cutman.io>."
+              />
             ) : (
-              <div className="mt-5 space-y-4">
+              <div className="mt-3 space-y-4">
                 {dashboard.recaps.map((recap) => (
                   <Card key={recap.week}>
-                    <p className="text-[11px] uppercase tracking-[0.18em] text-flag">Week {recap.week}</p>
+                    <p className="eyebrow-sm text-flag">Week {recap.week}</p>
                     <CardTitle className="mt-2">{recap.subject}</CardTitle>
                     <p className="mt-3 whitespace-pre-wrap text-sm leading-relaxed text-paper">{recap.body}</p>
                   </Card>
@@ -278,17 +280,15 @@ export default function League({ loaderData, actionData }: Route.ComponentProps)
           </section>
         </>
       ) : (
-        <section className="mt-12 pb-16">
-          <Card>
-            <Badge>Verified</Badge>
-            <CardTitle className="mt-3">Setting up your season book</CardTitle>
-            <CardDescription>
-              Cutman is finishing setup for this league. The timeline, bible, and recap archive will fill in
-              automatically once it's ready — check back soon.
-            </CardDescription>
-          </Card>
-        </section>
+        <Card className="mt-12">
+          <Badge>Verified</Badge>
+          <CardTitle className="mt-3">Setting up your season book</CardTitle>
+          <CardDescription>
+            Cutman is finishing setup for this league. The timeline, bible, and recap archive will fill in
+            automatically once it's ready — check back soon.
+          </CardDescription>
+        </Card>
       )}
-    </main>
+    </PageShell>
   );
 }

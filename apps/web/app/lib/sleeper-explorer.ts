@@ -768,7 +768,7 @@ export function assembleExplorerBracket(
     }));
 }
 
-type ExplorerErrorKind =
+export type ExplorerErrorKind =
   | "invalid_username"
   | "not_found"
   | "rate_limited"

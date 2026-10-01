@@ -1,5 +1,5 @@
 import { Form, redirect } from "react-router";
-import { BrandNav } from "~/components/brand-nav";
+import { PageLead, PageShell, PageTitle } from "~/components/page-shell";
 import { Button } from "~/components/ui/button";
 import { Card, CardDescription, CardTitle } from "~/components/ui/card";
 import { Input } from "~/components/ui/input";
@@ -26,12 +26,11 @@ export default function Explore({ actionData }: Route.ComponentProps) {
   const submittedUsername =
     actionData && "submittedUsername" in actionData ? actionData.submittedUsername : undefined;
   return (
-    <main className="mx-auto max-w-xl px-6 py-16">
-      <BrandNav />
-      <h1 className="mt-3 font-display text-4xl">Explore Sleeper</h1>
-      <p className="mt-2 text-muted">
+    <PageShell>
+      <PageTitle>Explore Sleeper</PageTitle>
+      <PageLead>
         Look up any public Sleeper username. This is live league data from Sleeper, not a Cutman season book.
-      </p>
+      </PageLead>
       <Card className="mt-8">
         <CardTitle>Find a manager</CardTitle>
         <CardDescription>Cutman only reads what Sleeper already publishes.</CardDescription>
@@ -55,6 +54,6 @@ export default function Explore({ actionData }: Route.ComponentProps) {
           <Button type="submit">Look up</Button>
         </Form>
       </Card>
-    </main>
+    </PageShell>
   );
 }

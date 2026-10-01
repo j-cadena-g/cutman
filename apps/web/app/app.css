@@ -1,5 +1,6 @@
 @import "tailwindcss";
 
+/* Keep the hex values in sync with app/lib/clerk-appearance.ts (guarded by workers/theme-tokens.test.ts). */
 @theme {
   --font-display: "Fraunces", "Times New Roman", serif;
   --font-sans: "Figtree", ui-sans-serif, system-ui, sans-serif;
@@ -11,26 +12,52 @@
   --color-paper: #c5cdd4;
   --color-muted: #8b949e;
   --color-danger: #ff6b6b;
-  --color-live: #00ceb8;
+  /* Roster-slot legend on matchup cards. */
+  --color-pos-qb: #fcd34d;
+  --color-pos-rb: #6ee7b7;
+  --color-pos-wr: #7dd3fc;
+  --color-pos-te: #fda4af;
+  --color-pos-k: #c4b5fd;
+  --color-pos-def: #fdba74;
+  --color-pos-flex: #bef264;
   --radius-sm: 0.35rem;
   --radius-md: 0.7rem;
+  --shadow-card: 0 18px 40px rgba(0, 0, 0, 0.28);
+  --tracking-brand: 0.24em;
 }
 
-html,
-body {
-  min-height: 100%;
-  background: var(--color-ink);
-  color: var(--color-cream);
-  font-family: var(--font-sans);
-  color-scheme: dark;
+/* Keep element styles in the base layer: unlayered rules beat every Tailwind utility. */
+@layer base {
+  html,
+  body {
+    min-height: 100%;
+    background: var(--color-ink);
+    color: var(--color-cream);
+    font-family: var(--font-sans);
+    color-scheme: dark;
+  }
+
+  body {
+    background-image:
+      radial-gradient(1200px 500px at 10% -10%, rgba(0, 206, 184, 0.16), transparent 55%),
+      radial-gradient(900px 400px at 100% 0%, rgba(0, 206, 184, 0.05), transparent 40%);
+  }
 }
 
-body {
-  background-image:
-    radial-gradient(1200px 500px at 10% -10%, rgba(0, 206, 184, 0.16), transparent 55%),
-    radial-gradient(900px 400px at 100% 0%, rgba(0, 206, 184, 0.05), transparent 40%);
+/* Small-caps label for sections and form fields. Pair with a text color. */
+@utility eyebrow {
+  @apply text-xs font-semibold uppercase tracking-[0.18em];
 }
 
-a {
-  color: inherit;
+/* Smaller small-caps label for card internals, badges, and sub-lists. */
+@utility eyebrow-sm {
+  @apply text-[11px] font-semibold uppercase tracking-[0.16em];
+}
+
+@utility focus-ring {
+  @apply focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-flag/70;
+}
+
+@utility text-link {
+  @apply rounded-sm text-flag underline-offset-4 hover:underline focus-ring;
 }

@@ -16,5 +16,7 @@ export default defineConfig({
   ],
   test: {
     include: ["workers/**/*.test.ts"],
+    // Vitest stubs CSS to "" by default; theme-tokens.test.ts reads app.css as raw text.
+    css: { include: [/app\.css/] },
   },
 });
