@@ -1,5 +1,6 @@
 import { ClerkProvider } from "@clerk/react-router";
-import { isRouteErrorResponse, Links, Meta, Outlet, Scripts, ScrollRestoration } from "react-router";
+import { isRouteErrorResponse, Link, Links, Meta, Outlet, Scripts, ScrollRestoration } from "react-router";
+import { PageLead, PageShell, PageTitle } from "~/components/page-shell";
 import { clerkAppearance } from "~/lib/clerk-appearance";
 import { clerkRequestMiddleware, loadRootAuth } from "~/lib/clerk.server";
 import type { Route } from "./+types/root";
@@ -71,10 +72,14 @@ export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
     detail = error.message;
   }
   return (
-    <main className="mx-auto max-w-xl px-6 py-24">
-      <p className="text-xs font-semibold uppercase tracking-[0.22em] text-flag">Cutman</p>
-      <h1 className="mt-4 font-display text-4xl">{title}</h1>
-      <p className="mt-3 text-muted">{detail}</p>
-    </main>
+    <PageShell>
+      <PageTitle>{title}</PageTitle>
+      <PageLead>{detail}</PageLead>
+      <p className="mt-6 text-sm">
+        <Link to="/" className="text-link">
+          Back to Cutman
+        </Link>
+      </p>
+    </PageShell>
   );
 }

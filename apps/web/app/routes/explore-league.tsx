@@ -1,17 +1,19 @@
+import { ChevronDown } from "lucide-react";
 import { useEffect, useState } from "react";
-import { Link, useLocation } from "react-router";
+import { useLocation } from "react-router";
 import { ExplorerAvatar } from "~/components/explorer-avatar";
 import { ExplorerManagerMeta, ExplorerRosterLink, EXPLORER_OPEN_ROSTER_EVENT } from "~/components/explorer-manager-link";
 import { ExplorerMatchupCard } from "~/components/explorer-matchup-card";
 import { ExplorerMovesList } from "~/components/explorer-moves-list";
-import { ExplorerLeagueChrome, ExplorerPage } from "~/components/explorer-page";
+import { ExplorerErrorState, ExplorerLeagueChrome, ExplorerPage, ExplorerStaleNotice } from "~/components/explorer-page";
+import { SectionHeading } from "~/components/page-shell";
 import { ExplorerPlayerList } from "~/components/explorer-player-list";
 import { ExplorerWeekNav } from "~/components/explorer-week-nav";
-import { Card, CardDescription, CardTitle } from "~/components/ui/card";
+import { EmptyState, surface } from "~/components/ui/card";
+import { cn } from "~/lib/utils";
 import { cloudflareEnv } from "~/lib/env";
 import { explorerDepsFromEnv, lookupExplorerBoard } from "~/lib/sleeper-explorer.server";
 import {
-  describeExplorerError,
   formatExplorerRecord,
   formatExplorerSlot,
   formatExplorerScore,
@@ -37,20 +39,6 @@ export async function loader(args: Route.LoaderArgs) {
   return { result };
 }
 
-function ExplorerMessage({ title, detail }: { title: string; detail: string }) {
-  return (
-    <Card className="mt-8">
-      <CardTitle>{title}</CardTitle>
-      <CardDescription>{detail}</CardDescription>
-      <p className="mt-4 text-sm">
-        <Link to="/explore" className="text-flag underline-offset-4 hover:underline">
-          Look up a username
-        </Link>
-      </p>
-    </Card>
-  );
-}
-
 function scoringLabel(key: string): string {
   return key.replaceAll("_", " ");
 }
@@ -60,7 +48,7 @@ function LeagueSettingsStrip({ settings }: { settings: ExplorerLeagueSettings })
     return null;
   }
   return (
-    <section className="mt-6 flex flex-wrap gap-x-8 gap-y-2 rounded-2xl border border-cream/12 bg-field/80 px-4 py-3 text-sm text-muted">
+    <section className={cn(surface, "mt-6 flex flex-wrap gap-x-8 gap-y-2 px-4 py-3 text-sm text-muted")}>
       {settings.rosterSlots.length > 0 ? (
         <p>
           <span className="font-semibold text-cream">Slots</span> · {settings.rosterSlots.map(formatExplorerSlot).join(" · ")}
@@ -102,11 +90,11 @@ function ExplorerRosterPanel({ roster }: { roster: ExplorerRosterView }) {
     <details
       id={`roster-${roster.rosterId}`}
       name="explorer-rosters"
-      className="rounded-2xl border border-cream/12 bg-field/80 p-4"
+      className={cn(surface, "group @container p-4")}
       open={open}
       onToggle={(event) => setOpen(event.currentTarget.open)}
     >
-      <summary className="flex cursor-pointer list-none items-center gap-3 [&::-webkit-details-marker]:hidden">
+      <summary className="flex cursor-pointer list-none items-center gap-3 rounded-lg focus-ring [&::-webkit-details-marker]:hidden">
         <ExplorerAvatar src={roster.avatarUrl} name={roster.teamName} size="sm" />
         <span className="min-w-0 flex-1">
           <span className="block truncate font-semibold text-cream">{roster.teamName}</span>
@@ -114,6 +102,10 @@ function ExplorerRosterPanel({ roster }: { roster: ExplorerRosterView }) {
             {formatExplorerRecord(roster.wins, roster.losses, roster.ties)}
           </span>
         </span>
+        <ChevronDown
+          aria-hidden="true"
+          className="h-4 w-4 shrink-0 text-muted transition-transform group-open:rotate-180"
+        />
       </summary>
       <div className="mt-3 text-xs text-muted">
         <ExplorerManagerMeta
@@ -123,21 +115,21 @@ function ExplorerRosterPanel({ roster }: { roster: ExplorerRosterView }) {
           abandoned={roster.abandoned}
         />
       </div>
-      <div className="mt-4 grid gap-5 sm:grid-cols-3">
+      <div className="mt-4 grid grid-cols-1 gap-5 @xl:grid-cols-3">
         <div>
-          <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-muted">Starters</p>
+          <p className="eyebrow-sm text-muted">Starters</p>
           <div className="mt-1">
             <ExplorerPlayerList players={roster.starters} empty="None" />
           </div>
         </div>
         <div>
-          <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-muted">Bench</p>
+          <p className="eyebrow-sm text-muted">Bench</p>
           <div className="mt-1">
             <ExplorerPlayerList players={roster.bench} empty="None" />
           </div>
         </div>
         <div>
-          <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-muted">IR / reserve</p>
+          <p className="eyebrow-sm text-muted">IR / reserve</p>
           <div className="mt-1">
             <ExplorerPlayerList players={roster.reserve} empty="None" />
           </div>
@@ -149,14 +141,14 @@ function ExplorerRosterPanel({ roster }: { roster: ExplorerRosterView }) {
 
 function StandingsList({ rows }: { rows: ExplorerStandingRow[] }) {
   return (
-    <ol className="divide-y divide-cream/10 overflow-hidden rounded-2xl border border-cream/12 bg-field/80">
+    <ol className={cn(surface, "divide-y divide-cream/10 overflow-hidden")}>
       {rows.map((row, index) => (
         <li key={row.rosterId} className="flex items-center gap-3 px-4 py-3">
           <span className="w-5 text-center text-xs font-semibold tabular-nums text-muted">{index + 1}</span>
           <ExplorerAvatar src={row.avatarUrl} name={row.teamName} size="sm" />
           <div className="min-w-0 flex-1">
             <p className="truncate text-sm font-semibold text-cream">
-              <ExplorerRosterLink rosterId={row.rosterId} className="hover:text-live">
+              <ExplorerRosterLink rosterId={row.rosterId} className="rounded-sm transition-colors hover:text-flag focus-ring">
                 {row.teamName}
               </ExplorerRosterLink>
             </p>
@@ -183,106 +175,70 @@ function StandingsList({ rows }: { rows: ExplorerStandingRow[] }) {
 export default function ExploreLeague({ loaderData }: Route.ComponentProps) {
   const { result } = loaderData;
 
+  if (result.kind !== "ok") {
+    return (
+      <ExplorerPage>
+        <ExplorerErrorState kind={result.kind} heading={result.kind === "not_found" ? "League not found" : undefined} />
+      </ExplorerPage>
+    );
+  }
+
+  const { board } = result;
   return (
     <ExplorerPage>
-      {result.kind === "ok" ? (
-        <>
-          <ExplorerLeagueChrome
-            avatarUrl={result.board.league.avatarUrl}
-            name={result.board.league.name}
-            eyebrow="Sleeper league"
-            meta={`Week ${result.board.selectedWeek} · ${result.board.season} · ${formatLeagueStatus(result.board.league.status)}`}
-            leagueId={result.board.league.sleeperLeagueId}
-          />
-          <div className="mt-4">
-            <ExplorerWeekNav
-              leagueId={result.board.league.sleeperLeagueId}
-              maxWeek={result.board.maxWeek}
-              selectedWeek={result.board.selectedWeek}
-            />
+      <ExplorerLeagueChrome
+        avatarUrl={board.league.avatarUrl}
+        name={board.league.name}
+        meta={`Week ${board.selectedWeek} · ${board.season} · ${formatLeagueStatus(board.league.status)}`}
+        leagueId={board.league.sleeperLeagueId}
+      />
+      <div className="mt-4">
+        <ExplorerWeekNav leagueId={board.league.sleeperLeagueId} maxWeek={board.maxWeek} selectedWeek={board.selectedWeek} />
+      </div>
+      {result.stale ? <ExplorerStaleNotice /> : null}
+      <LeagueSettingsStrip settings={board.settings} />
+
+      <div className="mt-8 grid grid-cols-1 items-start gap-8 lg:grid-cols-[minmax(16rem,20rem)_minmax(0,1fr)] xl:grid-cols-[minmax(18rem,22rem)_minmax(0,1fr)]">
+        <aside className="min-w-0 lg:sticky lg:top-4 lg:max-h-[calc(100vh-2rem)] lg:overflow-y-auto">
+          <SectionHeading>Standings</SectionHeading>
+          <div className="mt-3">
+            <StandingsList rows={board.standings} />
           </div>
-          {result.stale ? (
-            <p className="mt-3 text-sm text-muted">Showing cached Sleeper data. A fresh pull wasn&apos;t available.</p>
-          ) : null}
-          <LeagueSettingsStrip settings={result.board.settings} />
+        </aside>
 
-          <div className="mt-8 grid items-start gap-8 lg:grid-cols-[minmax(16rem,20rem)_minmax(0,1fr)] xl:grid-cols-[minmax(18rem,22rem)_minmax(0,1fr)]">
-            <aside className="lg:sticky lg:top-4 lg:max-h-[calc(100vh-2rem)] lg:overflow-y-auto">
-              <h2 className="text-xs font-semibold uppercase tracking-[0.18em] text-muted">Standings</h2>
-              <div className="mt-3">
-                <StandingsList rows={result.board.standings} />
-              </div>
-            </aside>
+        <div className="min-w-0 space-y-10">
+          <section>
+            <SectionHeading>Week {board.selectedWeek} matchups</SectionHeading>
+            {board.matchups.length === 0 ? (
+              <EmptyState className="mt-3" title="No matchups yet" detail="Sleeper didn't return games for this week." />
+            ) : (
+              <ul className="mt-3 grid grid-cols-1 gap-4 2xl:grid-cols-2">
+                {board.matchups.map((matchup) => (
+                  <li key={matchup.matchupId === null ? `bye-${matchup.sides[0]?.rosterId}` : `m-${matchup.matchupId}`}>
+                    <ExplorerMatchupCard matchup={matchup} />
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
 
-            <div className="min-w-0 space-y-10">
-              <section>
-                <h2 className="text-xs font-semibold uppercase tracking-[0.18em] text-muted">
-                  Week {result.board.selectedWeek} matchups
-                </h2>
-                {result.board.matchups.length === 0 ? (
-                  <Card className="mt-3">
-                    <CardTitle>No matchups yet</CardTitle>
-                    <CardDescription>Sleeper didn&apos;t return games for this week.</CardDescription>
-                  </Card>
-                ) : (
-                  <ul className="mt-3 grid gap-4 2xl:grid-cols-2">
-                    {result.board.matchups.map((matchup) => (
-                      <li
-                        key={matchup.matchupId === null ? `bye-${matchup.sides[0]?.rosterId}` : `m-${matchup.matchupId}`}
-                      >
-                        <ExplorerMatchupCard matchup={matchup} />
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </section>
+          <section>
+            <SectionHeading>Week {board.selectedWeek} moves</SectionHeading>
+            <ExplorerMovesList transactions={board.transactions} />
+          </section>
 
-              <section>
-                <h2 className="text-xs font-semibold uppercase tracking-[0.18em] text-muted">
-                  Week {result.board.selectedWeek} moves
-                </h2>
-                <ExplorerMovesList transactions={result.board.transactions} />
-              </section>
-
-              <section className="pb-16">
-                <h2 className="text-xs font-semibold uppercase tracking-[0.18em] text-muted">Rosters</h2>
-                <ul className="mt-3 grid gap-3 lg:grid-cols-2">
-                  {result.board.rosters.map((roster) => (
-                    <li key={roster.rosterId}>
-                      <ExplorerRosterPanel roster={roster} />
-                    </li>
-                  ))}
-                </ul>
-              </section>
-            </div>
-          </div>
-        </>
-      ) : result.kind === "not_found" ? (
-        <>
-          <h1 className="mt-3 font-display text-4xl">League not found</h1>
-          <ExplorerMessage title="No Sleeper league" detail={describeExplorerError(result.kind)} />
-        </>
-      ) : result.kind === "rate_limited" ? (
-        <>
-          <h1 className="mt-3 font-display text-4xl">Explore Sleeper</h1>
-          <ExplorerMessage title="Sleeper is throttling" detail={describeExplorerError(result.kind)} />
-        </>
-      ) : result.kind === "quota_exceeded" ? (
-        <>
-          <h1 className="mt-3 font-display text-4xl">Explore Sleeper</h1>
-          <ExplorerMessage title="Lookup limit reached" detail={describeExplorerError(result.kind)} />
-        </>
-      ) : result.kind === "unavailable" ? (
-        <>
-          <h1 className="mt-3 font-display text-4xl">Explore Sleeper</h1>
-          <ExplorerMessage title="Couldn't reach Sleeper" detail={describeExplorerError(result.kind)} />
-        </>
-      ) : (
-        (() => {
-          const exhaustive: never = result;
-          return exhaustive;
-        })()
-      )}
+          <section>
+            <SectionHeading>Rosters</SectionHeading>
+            <ul className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-2">
+              {board.rosters.map((roster) => (
+                <li key={roster.rosterId} className="lg:has-open:col-span-2">
+                  <ExplorerRosterPanel roster={roster} />
+                </li>
+              ))}
+            </ul>
+          </section>
+        </div>
+      </div>
     </ExplorerPage>
   );
 }

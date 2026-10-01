@@ -22,8 +22,8 @@ export function ExplorerWeekNav({
             to={explorerLeagueWeekHref(leagueId, week)}
             aria-current={selected ? "page" : undefined}
             className={cn(
-              "rounded-full px-2.5 py-1 text-xs font-semibold tabular-nums",
-              selected ? "bg-live text-ink" : "bg-turf text-muted hover:text-cream",
+              "rounded-full px-2.5 py-1 text-xs font-semibold tabular-nums transition-colors focus-ring",
+              selected ? "bg-flag text-ink" : "bg-turf text-muted hover:text-cream",
             )}
           >
             {week}

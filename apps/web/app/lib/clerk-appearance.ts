@@ -1,3 +1,4 @@
+// Colors mirror the @theme tokens in app/app.css; workers/theme-tokens.test.ts keeps them in sync.
 export const clerkAppearance = {
   variables: {
     colorPrimary: "#00ceb8",

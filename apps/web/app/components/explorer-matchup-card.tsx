@@ -12,29 +12,29 @@ import {
   type ExplorerPlayer,
   type ExplorerMatchupSide,
 } from "~/lib/sleeper-explorer";
+import { surface } from "~/components/ui/card";
 import { cn } from "~/lib/utils";
-
 
 function slotClass(slot: string | null): string {
   const key = (slot ?? "").split("/")[0] ?? "";
   switch (key) {
     case "QB":
     case "SUPER_FLEX":
-      return "text-amber-300";
+      return "text-pos-qb";
     case "RB":
-      return "text-emerald-300";
+      return "text-pos-rb";
     case "WR":
-      return "text-sky-300";
+      return "text-pos-wr";
     case "TE":
-      return "text-rose-300";
+      return "text-pos-te";
     case "K":
-      return "text-violet-300";
+      return "text-pos-k";
     case "DEF":
-      return "text-orange-200";
+      return "text-pos-def";
     case "FLEX":
     case "REC_FLEX":
     case "WRRBTE":
-      return "text-lime-300";
+      return "text-pos-flex";
     default:
       return "text-muted";
   }
@@ -60,7 +60,7 @@ function TeamPane({
         <ExplorerAvatar src={side.avatarUrl} name={side.teamName} size="md" />
         <div className="min-w-0">
           <p className="truncate font-semibold text-cream">
-            <ExplorerRosterLink rosterId={side.rosterId} className="hover:text-live">
+            <ExplorerRosterLink rosterId={side.rosterId} className="rounded-sm transition-colors hover:text-flag focus-ring">
               {side.teamName}
             </ExplorerRosterLink>
           </p>
@@ -78,7 +78,7 @@ function TeamPane({
       <p
         className={cn(
           "font-sans text-2xl font-bold leading-none tabular-nums tracking-tight sm:text-3xl",
-          leading ? "text-live" : "text-cream",
+          leading ? "text-flag" : "text-cream",
         )}
       >
         {formatExplorerScore(side.points)}
@@ -98,18 +98,18 @@ function StarterFace({
 }) {
   const empty = !player || !isRealPlayerId(player.playerId);
   const name = empty ? "Empty" : player.name;
-  const meta = empty ? "—" : [player.team, player.position].filter(Boolean).join(" · ");
+  const meta = empty ? "—" : [player.position, player.team].filter(Boolean).join(" · ");
   return (
     <div className={cn("flex min-w-0 items-center gap-2", align === "right" && "flex-row-reverse text-right")}>
       <ExplorerAvatar src={empty ? null : player.headshotUrl} name={name} size="sm" />
-      <div className="min-w-0">
+      <div className="min-w-0 flex-1">
         <p className={cn("truncate text-sm", empty ? "text-muted" : "text-cream")}>{name}</p>
         <p className="truncate text-[11px] text-muted">{meta}</p>
       </div>
       <p
         className={cn(
           "shrink-0 text-sm font-semibold tabular-nums",
-          winning ? "text-live" : "text-cream",
+          winning ? "text-flag" : "text-cream",
           empty && "text-muted",
         )}
       >
@@ -130,10 +130,10 @@ export function ExplorerMatchupCard({ matchup }: { matchup: ExplorerMatchupView 
     : `${left?.teamName ?? "Team"} vs ${right?.teamName ?? "Team"}`;
 
   return (
-    <article className="overflow-hidden rounded-2xl border border-cream/12 bg-field/80 shadow-[0_18px_40px_rgba(0,0,0,0.28)]">
+    <article className={cn(surface, "overflow-hidden")}>
       <div className="px-4 py-4 sm:px-5">
         {bye ? (
-          <p className="mb-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-live">Bye</p>
+          <p className="eyebrow-sm mb-3 text-flag">Bye</p>
         ) : null}
         {bye || !left || !right ? (
           left ? (
@@ -144,7 +144,7 @@ export function ExplorerMatchupCard({ matchup }: { matchup: ExplorerMatchupView 
         ) : (
           <div className={cn(MATCHUP_COLS, "items-start")}>
             <TeamPane side={left} align="left" leading={leaderId === left.rosterId} />
-            <p className="pt-4 text-center text-[11px] font-semibold uppercase tracking-[0.16em] text-muted">vs</p>
+            <p className="eyebrow-sm pt-4 text-center text-muted">vs</p>
             <TeamPane side={right} align="right" leading={leaderId === right.rosterId} />
           </div>
         )}
@@ -186,7 +186,7 @@ export function ExplorerMatchupCard({ matchup }: { matchup: ExplorerMatchupView 
             <div className={cn(MATCHUP_COLS, MATCHUP_PAD, "items-start border-t border-cream/10 py-3")}>
               <ExplorerPlayerList players={left.bench} empty="No bench" />
               <p className="text-center text-[11px] font-bold tracking-wide text-muted">BN</p>
-              <ExplorerPlayerList players={right.bench} empty="No bench" />
+              <ExplorerPlayerList players={right.bench} empty="No bench" align="right" />
             </div>
           ) : null}
         </div>
