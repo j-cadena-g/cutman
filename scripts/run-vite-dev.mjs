@@ -15,6 +15,7 @@ import {
   classifyLocalDevSecrets,
   envForLocalViteWorker,
   formatMissingAgenticNote,
+  remoteAiStatus,
 } from "./lib/local-dev-secrets.mjs";
 import { parseManifestKeys } from "./lib/parse-manifest-keys.mjs";
 
@@ -55,6 +56,17 @@ function assertRequiredKeys() {
   if (agenticNote) {
     console.log(agenticNote);
   }
+
+  const remoteAi = remoteAiStatus();
+  if (remoteAi.error) {
+    console.error(`error: ${remoteAi.error}`);
+    process.exit(1);
+  }
+  console.log(
+    remoteAi.enabled
+      ? "note: CUTMAN_REMOTE_AI=true — beats and recaps call real Workers AI (Gemma) and use account quota"
+      : "note: Workers AI is off locally; set CUTMAN_REMOTE_AI=true to draft beats and recaps",
+  );
 }
 
 async function assertDevPortAvailable(port) {

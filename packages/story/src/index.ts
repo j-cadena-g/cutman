@@ -1,5 +1,5 @@
-export { diffSnapshots, factsIfChanged } from "./diff.ts";
-export type { StoryFact } from "./diff.ts";
+export { diffSnapshots, factsIfChanged, ONE_SCORE_MARGIN } from "./diff.ts";
+export type { DiffOptions, StoryFact } from "./diff.ts";
 export { parseBeatDraft, parseRecapDraft, isBlankBeat, isBlankRecap } from "./json.ts";
 export type { BeatDraft, RecapDraft } from "./json.ts";
 export { recapPrompt, beatPrompt } from "./prompts.ts";
@@ -11,4 +11,14 @@ export { canonicalJson, hashPayload, hashSnapshot } from "./snapshot.ts";
 export type { LeagueSnapshot } from "./snapshot.ts";
 export { isTone, parseTone, toneBlurb, toneLabel, toneOrPlayful, TONES } from "./tone.ts";
 export type { Tone } from "./tone.ts";
-export { hasFinitePoints, hasPlayerPoints, isPlayedWeek, isWeekFinal, selectRecapWeek } from "./week.ts";
+export { buildSeasonLedger, closeGameEntries, matchupPairs, ordinal, previouslyOnEntry, seasonLines } from "./season.ts";
+export type { FinalWeek, SeasonFocus, SeasonLabels, SeasonLedger, SeasonRules, TeamRecord } from "./season.ts";
+export {
+  hasFinitePoints,
+  hasPlayerPoints,
+  isPlayedWeek,
+  isWeekFinal,
+  LAST_FANTASY_WEEK,
+  lastSettledWeek,
+  selectRecapWeek,
+} from "./week.ts";

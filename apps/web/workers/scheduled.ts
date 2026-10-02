@@ -701,7 +701,7 @@ export async function handleScheduled(
           if (result.status === "published") recapped += 1;
         }
       } else if (poll || shouldRecap) {
-        await stub.poll();
+        await stub.poll(nowMs);
         polled += 1;
         if (shouldRecap) {
           const result = await stub.attemptRecap(nowMs);
@@ -733,7 +733,7 @@ export async function handleScheduled(
     if (retainedDelivery && independentPoll) {
       try {
         const stub = env.LEAGUE_BRAIN.get(env.LEAGUE_BRAIN.idFromName(league.id));
-        await stub.poll();
+        await stub.poll(nowMs);
         polled += 1;
       } catch (error) {
         logScheduledLeagueFailure(error);

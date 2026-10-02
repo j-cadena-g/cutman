@@ -63,7 +63,7 @@ pnpm typecheck
 
 Set `USE_SLEEPER_FIXTURES=true` in your Environment to use canned example-league data (CI always does). Leave it `false` to hit the live Sleeper API for membership checks and cron polls.
 
-Local `pnpm run dev` does not call Workers AI (no Cloudflare login). Gemma writes beats and recaps after deploy.
+Local `pnpm run dev` does not call Workers AI by default (no Cloudflare login), so beats and recaps are not drafted locally. To draft them with real Gemma, set `CUTMAN_REMOTE_AI=true` plus `CLOUDFLARE_API_TOKEN` (Workers AI and Workers Scripts edit) and `CLOUDFLARE_ACCOUNT_ID` in your local-dev Environment. Only the `AI` binding goes remote; D1, KV, and email stay local. Calls use account quota. Without the token and account id, `pnpm run dev` refuses to start rather than opening the OAuth login.
 
 ### Local Environment Notes
 
@@ -78,7 +78,7 @@ Local `pnpm run dev` does not call Workers AI (no Cloudflare login). Gemma write
 
 | File / Source | Purpose |
 | --- | --- |
-| `apps/web/.dev.vars.example` | Key manifest for local dev (`op run` + `dev:verify`). Required: `APP_ENV`, `APP_ORIGIN`, `CLERK_PUBLISHABLE_KEY`, `CLERK_SECRET_KEY`. Optional: `PILOT_SLEEPER_LEAGUE_ID` (fake placeholder in git; live value in 1Password) |
+| `apps/web/.dev.vars.example` | Key manifest for local dev (`op run` + `dev:verify`). Required: `APP_ENV`, `APP_ORIGIN`, `CLERK_PUBLISHABLE_KEY`, `CLERK_SECRET_KEY`. Optional: `PILOT_SLEEPER_LEAGUE_ID` (fake placeholder in git; live value in 1Password), `CUTMAN_REMOTE_AI` (local Workers AI opt-in) |
 | `apps/web/.deploy.env.example` | Deploy binding IDs and Worker vars (rendered into `apps/web/.wrangler.deploy.jsonc`) |
 | `apps/web/.wrangler.secrets.example` | Worker secrets for deploy (`wrangler deploy --secrets-file`). Today: `CLERK_SECRET_KEY` |
 | `apps/web/.op/refs.env.example` | Template for local `OP_ENVIRONMENT_ID` (copy to gitignored `apps/web/.op/refs.env`) |
@@ -93,7 +93,7 @@ Current Worker bindings in the public `apps/web/wrangler.jsonc` template:
 | `DB` | D1 | Clerk users, leagues, memberships, recap opt-in, scheduled rotation cursor, one-row-per-user explorer origin quota |
 | `PLAYERS` | KV | NFL player map, fetched at most once per day |
 | `EXPLORER_CACHE` | KV | Explorer lookup cache (independent of `PLAYERS`) |
-| `LEAGUE_BRAIN` | SQLite Durable Object | Snapshots, beats, bible, recaps. id = internal `leagues.id` |
+| `LEAGUE_BRAIN` | SQLite Durable Object | Snapshots, beats, bible, recaps, settled weeks (season ledger). id = internal `leagues.id` |
 | `AI` | Workers AI | `@cf/google/gemma-4-26b-a4b-it` only |
 | `EMAIL` | Email Service | `env.EMAIL.send` for Tuesday recaps. From-name is **Cutman** |
 | Cron | `0 * * * *` UTC | Handler uses Eastern Time: poll every 3h; recap Tuesday 9:00 |

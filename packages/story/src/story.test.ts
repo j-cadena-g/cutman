@@ -13,10 +13,14 @@ import {
 } from "@cutman/sleeper";
 import { describe, expect, it } from "vitest";
 import { diffSnapshots, factsIfChanged } from "./diff.ts";
+import { playerLabel } from "./labels.ts";
+import { beatPrompt, recapPrompt } from "./prompts.ts";
 import { runRecapAttempt } from "./recap.ts";
 import { canRecapCurrentWeek, easternParts, shouldAttemptTuesdayRecap, shouldPoll } from "./schedule.ts";
 import { hashSnapshot, type LeagueSnapshot } from "./snapshot.ts";
 import { isPlayedWeek, isWeekFinal, selectRecapWeek } from "./week.ts";
+
+const FINAL = { settled: true } as const;
 
 function snapshot(overrides: Partial<LeagueSnapshot> = {}): LeagueSnapshot {
   return {
@@ -37,12 +41,12 @@ describe("snapshot diff idempotency", () => {
     const hashA = await hashSnapshot(first);
     const hashB = await hashSnapshot(second);
     expect(hashA).toBe(hashB);
-    const facts = await factsIfChanged(hashA, hashB, first, second, fixturePlayers);
+    const facts = await factsIfChanged(hashA, hashB, first, second, fixturePlayers, { settled: true });
     expect(facts).toEqual([]);
   });
 
   it("emits trade and bench-shame facts when the week moves", () => {
-    const facts = diffSnapshots(null, snapshot(), fixturePlayers);
+    const facts = diffSnapshots(null, snapshot(), fixturePlayers, FINAL);
     expect(facts.some((fact) => fact.kind === "trade")).toBe(true);
     expect(facts.some((fact) => fact.kind === "bench_shame")).toBe(true);
     const shame = facts.find((fact) => fact.kind === "bench_shame" && fact.rosterId === 1);
@@ -54,6 +58,7 @@ describe("snapshot diff idempotency", () => {
       null,
       snapshot({ matchups: fixtureMatchupsNoPlayerPoints }),
       fixturePlayers,
+      FINAL,
     );
     expect(facts.some((fact) => fact.kind === "bench_shame")).toBe(false);
   });
@@ -143,6 +148,7 @@ describe("trade copy and bench shame", () => {
         waiver_budget: [{ sender: 1, receiver: 2, amount: 15 }],
       }),
       fixturePlayers,
+      FINAL,
     );
     const trade = facts.find((fact) => fact.kind === "trade");
     expect(trade?.copy).toContain("Purdy Please and Zero RB Forever completed a trade.");
@@ -167,6 +173,7 @@ describe("trade copy and bench shame", () => {
         waiver_budget: [],
       }),
       fixturePlayers,
+      FINAL,
     );
     const trade = facts.find((fact) => fact.kind === "trade");
     expect(trade?.copy).toContain("Picks: 2027 round 1 from Purdy Please to Zero RB Forever.");
@@ -184,7 +191,7 @@ describe("trade copy and bench shame", () => {
           : matchup.players_points,
       })),
     });
-    const facts = diffSnapshots(first, second, fixturePlayers);
+    const facts = diffSnapshots(first, second, fixturePlayers, { settled: true, prevSettled: true });
     expect(facts.some((fact) => fact.kind === "bench_shame")).toBe(false);
   });
 
@@ -200,7 +207,7 @@ describe("trade copy and bench shame", () => {
         };
       }),
     });
-    const facts = diffSnapshots(first, second, fixturePlayers);
+    const facts = diffSnapshots(first, second, fixturePlayers, { settled: true, prevSettled: true });
     const shame = facts.filter((fact) => fact.kind === "bench_shame");
     expect(shame).toHaveLength(1);
     expect(shame[0]?.copy).toContain("Lamar Jackson");
@@ -315,5 +322,72 @@ describe("ET cron windows", () => {
     expect(shouldAttemptTuesdayRecap({ hour: 19, weekday: 2, weekdayLabel: "Tue" })).toBe(false);
     expect(shouldAttemptTuesdayRecap({ hour: 9, weekday: 3, weekdayLabel: "Wed" })).toBe(false);
     expect(shouldAttemptTuesdayRecap({ hour: 10, weekday: 2, weekdayLabel: "Tue" })).toBe(false);
+  });
+});
+
+describe("live and final facts", () => {
+  const live = fixtureMatchupsFinal.map((matchup) => ({
+    ...matchup,
+    points: matchup.roster_id === 2 ? 0 : 6.5,
+    players_points: Object.fromEntries(
+      Object.keys(matchup.players_points ?? {}).map((id, index) => [id, matchup.roster_id === 2 || index > 0 ? 0 : 6.5]),
+    ),
+  }));
+
+  it("labels live scores, drops starters who have not scored, and skips close-game and bench facts", () => {
+    const facts = diffSnapshots(null, snapshot({ matchups: live }), fixturePlayers, { settled: false });
+    const scoreboard = facts.filter((fact) => fact.kind === "scoreboard");
+    expect(scoreboard).toHaveLength(2);
+    for (const fact of scoreboard) expect(fact.copy.startsWith("In progress, not final: ")).toBe(true);
+    expect(scoreboard.some((fact) => / 0(,|\.| vs)/.test(fact.copy.split(". ").slice(1).join(". ")))).toBe(false);
+    expect(facts.some((fact) => fact.kind === "rivalry" || fact.kind === "bench_shame")).toBe(false);
+  });
+
+  it("calls a one-score final with its winner and margin", () => {
+    const facts = diffSnapshots(null, snapshot(), fixturePlayers, { settled: true });
+    expect(facts.filter((fact) => fact.kind === "scoreboard").every((fact) => fact.copy.startsWith("Final: "))).toBe(true);
+    const close = facts.filter((fact) => fact.kind === "rivalry");
+    expect(close).toHaveLength(1);
+    expect(close[0]?.copy).toMatch(/ beat .+ by 4\.6, a one-score game\.$/);
+  });
+
+  it("does not let a live snapshot of the same week hide the final bench shame", () => {
+    const first = snapshot();
+    const second = snapshot({
+      matchups: fixtureMatchupsFinal.map((matchup) => ({ ...matchup, points: (matchup.points ?? 0) + 0.1 })),
+    });
+    const afterLive = diffSnapshots(first, second, fixturePlayers, { settled: true, prevSettled: false });
+    expect(afterLive.some((fact) => fact.kind === "bench_shame")).toBe(true);
+    const afterFinal = diffSnapshots(first, second, fixturePlayers, { settled: true, prevSettled: true });
+    expect(afterFinal.some((fact) => fact.kind === "bench_shame")).toBe(false);
+  });
+
+  it("describes waiver and free-agent moves as pickups, not trades", () => {
+    const moves: SleeperTransaction[] = [
+      { type: "waiver", transaction_id: "w1", status: "complete", roster_ids: [1], adds: { "4984": 1 }, drops: { "9226": 1 } },
+      { type: "free_agent", transaction_id: "f1", status: "complete", roster_ids: [2], adds: { "4881": 2 }, drops: null },
+    ];
+    const facts = diffSnapshots(null, snapshot({ transactions: moves, matchups: [] }), fixturePlayers, { settled: false });
+    const copies = facts.filter((fact) => fact.kind === "waiver").map((fact) => fact.copy);
+    expect(copies).toEqual([
+      expect.stringMatching(/ picked up CeeDee Lamb off waivers and dropped A\.J\. Brown\.$/),
+      expect.stringMatching(/ picked up Lamar Jackson in free agency\.$/),
+    ]);
+    expect(copies.join(" ")).not.toContain("trade");
+  });
+
+  it("names team defenses", () => {
+    expect(playerLabel("SF", { SF: { player_id: "SF", first_name: "San Francisco", last_name: "49ers", position: "DEF" } })).toBe(
+      "San Francisco 49ers D/ST",
+    );
+    expect(playerLabel("KC", {})).toBe("Player KC");
+  });
+
+  it("tells the model live facts have no winner and roster moves are not trades", () => {
+    const input = { tone: "savage" as const, leagueName: "L", week: 4, bible: [], facts: [] };
+    for (const prompt of [beatPrompt(input), recapPrompt(input)]) {
+      expect(prompt.system).toContain('Facts marked "In progress, not final" are live: never say who won or lost them.');
+      expect(prompt.system).toContain("[waiver] facts are roster moves, never trades.");
+    }
   });
 });

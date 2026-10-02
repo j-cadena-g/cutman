@@ -73,3 +73,36 @@ export function envForLocalViteWorker(env = process.env) {
   }
   return next;
 }
+
+/** Opt-in switch for calling real Workers AI from local dev. */
+export const REMOTE_AI_FLAG = "CUTMAN_REMOTE_AI";
+
+/** Wrangler reads these instead of opening the Cloudflare OAuth login. */
+export const REMOTE_AI_KEYS = ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"];
+
+/**
+ * Local Workers AI is off unless CUTMAN_REMOTE_AI=true. When it is on, an API token and
+ * account id are required so `pnpm run dev` never falls back to the OAuth browser login.
+ * @param {NodeJS.ProcessEnv | Record<string, string | undefined>} [env]
+ * @returns {{ enabled: boolean, missing: string[], error: string | null }}
+ */
+export function remoteAiStatus(env = process.env) {
+  const raw = env[REMOTE_AI_FLAG]?.trim() ?? "";
+  if (raw !== "" && raw !== "true" && raw !== "false") {
+    return {
+      enabled: false,
+      missing: [],
+      error: `Invalid ${REMOTE_AI_FLAG}; expected "true" or "false".`,
+    };
+  }
+  if (raw !== "true") return { enabled: false, missing: [], error: null };
+  const missing = REMOTE_AI_KEYS.filter((key) => !env[key]?.trim());
+  return {
+    enabled: true,
+    missing,
+    error:
+      missing.length > 0
+        ? `${REMOTE_AI_FLAG}=true needs ${missing.join(" and ")} so Wrangler skips the OAuth login. Set them in your local-dev Environment, or unset ${REMOTE_AI_FLAG}.`
+        : null,
+  };
+}

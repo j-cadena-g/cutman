@@ -1,4 +1,5 @@
-import type { PlayerMap, SleeperLeagueUser, SleeperMatchup, SleeperRoster } from "@cutman/sleeper";
+import type { PlayerMap, SleeperMatchup } from "@cutman/sleeper";
+import { playerLabel, teamLabel } from "./labels.ts";
 import type { LeagueSnapshot } from "./snapshot.ts";
 import { hasPlayerPoints } from "./week.ts";
 
@@ -29,15 +30,15 @@ export type StoryFact =
       matchupId: number | null;
     };
 
-function teamLabel(users: SleeperLeagueUser[], rosters: SleeperRoster[], rosterId: number): string {
-  const roster = rosters.find((entry) => entry.roster_id === rosterId);
-  const user = users.find((entry) => entry.user_id === roster?.owner_id);
-  return user?.metadata?.team_name || user?.display_name || `Roster ${rosterId}`;
-}
+/** Margin that makes a final a one-score game. */
+export const ONE_SCORE_MARGIN = 8;
 
-function playerLabel(playerId: string, players: PlayerMap): string {
-  return players[playerId]?.full_name ?? `Player ${playerId}`;
-}
+export type DiffOptions = {
+  /** The next snapshot's week is final. Live weeks never produce close-game or bench-shame facts. */
+  settled: boolean;
+  /** The previous snapshot was the same week, already final. Only then does it dedupe bench shame. */
+  prevSettled?: boolean;
+};
 
 function transactionFacts(
   prev: LeagueSnapshot | null,
@@ -60,11 +61,12 @@ function transactionFacts(
     if (tx.type === "free_agent" || tx.type === "waiver") {
       const adds = Object.keys(tx.adds ?? {}).map((id) => playerLabel(id, players));
       const drops = Object.keys(tx.drops ?? {}).map((id) => playerLabel(id, players));
-      facts.push({
-        kind: "waiver",
-        transactionId: tx.transaction_id,
-        copy: `${names[0] ?? "A manager"} hit the wire${adds.length ? ` for ${adds.join(", ")}` : ""}${drops.length ? `, dumping ${drops.join(", ")}` : ""}.`,
-      });
+      const how = tx.type === "waiver" ? "off waivers" : "in free agency";
+      const manager = names[0] ?? "A manager";
+      const copy = adds.length
+        ? `${manager} picked up ${adds.join(", ")} ${how}${drops.length ? ` and dropped ${drops.join(", ")}` : ""}.`
+        : `${manager} dropped ${drops.join(", ") || "a player"}.`;
+      facts.push({ kind: "waiver", transactionId: tx.transaction_id, copy });
     }
   }
   return facts;
@@ -115,15 +117,26 @@ function tradeCopy(
   ]);
 }
 
-function labeledPlayerPoints(matchup: SleeperMatchup, players: PlayerMap): string {
+/** Starters only. Live weeks also drop starters who have not scored yet. */
+function labeledPlayerPoints(matchup: SleeperMatchup, players: PlayerMap, settled: boolean): string {
   const table = matchup.players_points;
   if (!table) return "";
-  return Object.entries(table)
-    .map(([id, pts]) => `${playerLabel(id, players)} ${pts}`)
+  return (matchup.starters ?? [])
+    .filter((id) => typeof table[id] === "number" && (settled || table[id] !== 0))
+    .map((id) => `${playerLabel(id, players)} ${table[id]}`)
     .join(", ");
 }
 
-function matchupFacts(prev: LeagueSnapshot | null, next: LeagueSnapshot, players: PlayerMap): StoryFact[] {
+function points(value: number | null): string {
+  return typeof value === "number" ? String(Number(value.toFixed(2))) : "—";
+}
+
+function matchupFacts(
+  prev: LeagueSnapshot | null,
+  next: LeagueSnapshot,
+  players: PlayerMap,
+  settled: boolean,
+): StoryFact[] {
   const prevByRoster = new Map((prev?.matchups ?? []).map((matchup) => [matchup.roster_id, matchup]));
   const grouped = new Map<number | null, SleeperMatchup[]>();
   for (const matchup of next.matchups) {
@@ -144,23 +157,29 @@ function matchupFacts(prev: LeagueSnapshot | null, next: LeagueSnapshot, players
     if (!scoreChanged) continue;
     const leftName = teamLabel(next.users, next.rosters, left.roster_id);
     const rightName = teamLabel(next.users, next.rosters, right.roster_id);
-    const playerLine = [labeledPlayerPoints(left, players), labeledPlayerPoints(right, players)]
+    const playerLine = [labeledPlayerPoints(left, players, settled), labeledPlayerPoints(right, players, settled)]
       .filter((line) => line.length > 0)
       .join(" vs ");
+    const status = settled ? "Final" : "In progress, not final";
     facts.push({
       kind: "scoreboard",
       matchupId,
-      copy: `${leftName} ${left.points ?? "—"} vs ${rightName} ${right.points ?? "—"}.${playerLine ? ` ${playerLine}.` : ""}`,
+      copy: `${status}: ${leftName} ${points(left.points)} vs ${rightName} ${points(right.points)}.${playerLine ? ` ${playerLine}.` : ""}`,
     });
     if (
+      settled &&
       typeof left.points === "number" &&
       typeof right.points === "number" &&
-      Math.abs(left.points - right.points) <= 8
+      Math.abs(left.points - right.points) <= ONE_SCORE_MARGIN
     ) {
+      const margin = Math.abs(left.points - right.points);
       facts.push({
         kind: "rivalry",
         matchupId,
-        copy: `${leftName} and ${rightName} are inside a one-score game. This one is going in the bible.`,
+        copy:
+          margin === 0
+            ? `${leftName} and ${rightName} tied at ${points(left.points)}.`
+            : `${left.points > right.points ? leftName : rightName} beat ${left.points > right.points ? rightName : leftName} by ${points(margin)}, a one-score game.`,
       });
     }
   }
@@ -193,9 +212,16 @@ function shamePair(matchup: SleeperMatchup): { key: string; worst: { id: string;
   };
 }
 
-function benchShameFacts(prev: LeagueSnapshot | null, next: LeagueSnapshot, players: PlayerMap): StoryFact[] {
+function benchShameFacts(
+  prev: LeagueSnapshot | null,
+  next: LeagueSnapshot,
+  players: PlayerMap,
+  options: DiffOptions,
+): StoryFact[] {
+  // Mid-week, most starters have not played, so the bench comparison means nothing yet.
+  if (!options.settled) return [];
   const previousPairs = new Set<string>();
-  if (prev) {
+  if (prev && options.prevSettled && prev.week === next.week) {
     for (const matchup of prev.matchups) {
       const pair = shamePair(matchup);
       if (pair) previousPairs.add(pair.key);
@@ -218,12 +244,13 @@ function benchShameFacts(prev: LeagueSnapshot | null, next: LeagueSnapshot, play
 export function diffSnapshots(
   prev: LeagueSnapshot | null,
   next: LeagueSnapshot,
-  players: PlayerMap = {},
+  players: PlayerMap,
+  options: DiffOptions,
 ): StoryFact[] {
   const facts = [
     ...transactionFacts(prev, next, players),
-    ...matchupFacts(prev, next, players),
-    ...benchShameFacts(prev, next, players),
+    ...matchupFacts(prev, next, players, options.settled),
+    ...benchShameFacts(prev, next, players, options),
   ];
   return facts;
 }
@@ -233,8 +260,9 @@ export async function factsIfChanged(
   nextHash: string,
   prev: LeagueSnapshot | null,
   next: LeagueSnapshot,
-  players: PlayerMap = {},
+  players: PlayerMap,
+  options: DiffOptions,
 ): Promise<StoryFact[]> {
   if (prevHash === nextHash) return [];
-  return diffSnapshots(prev, next, players);
+  return diffSnapshots(prev, next, players, options);
 }
