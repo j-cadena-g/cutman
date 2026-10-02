@@ -205,6 +205,113 @@ function overridePreparedBindRun(
   });
 }
 
+type StatementFault = (query: string, values: unknown[]) => boolean;
+
+/** Route env.DB through a proxy whose matching statements throw on first/all/run/raw. */
+function envWithFailingStatements(
+  matches: StatementFault,
+  message: string,
+): { scheduledEnv: Env; faults: () => number } {
+  let faults = 0;
+  const fail = async () => {
+    faults += 1;
+    throw new Error(message);
+  };
+  const failing = <T extends object>(target: T): T =>
+    new Proxy(target, {
+      get(inner, prop, receiver) {
+        if (prop === "first" || prop === "all" || prop === "run" || prop === "raw") return fail;
+        const value = Reflect.get(inner, prop, receiver);
+        return typeof value === "function" ? value.bind(inner) : value;
+      },
+    });
+  const originalPrepare = env.DB.prepare.bind(env.DB);
+  const wrappedDb = new Proxy(env.DB, {
+    get(target, prop, receiver) {
+      if (prop === "prepare") {
+        return (query: string) => {
+          const statement = originalPrepare(query);
+          const proxied = new Proxy(statement, {
+            get(inner, innerProp, innerReceiver) {
+              if (innerProp === "bind") {
+                return (...values: unknown[]) => {
+                  const bound = inner.bind(...values);
+                  return matches(query, values) ? failing(bound) : bound;
+                };
+              }
+              const value = Reflect.get(inner, innerProp, innerReceiver);
+              return typeof value === "function" ? value.bind(inner) : value;
+            },
+          });
+          return matches(query, []) ? failing(proxied) : proxied;
+        };
+      }
+      const value = Reflect.get(target, prop, receiver);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  const scheduledEnv = new Proxy(env, {
+    get(target, prop, receiver) {
+      if (prop === "DB") return wrappedDb;
+      return Reflect.get(target, prop, receiver);
+    },
+  }) as Env;
+  return { scheduledEnv, faults: () => faults };
+}
+
+/** Stub LeagueBrain poll/attemptRecap and capture console.error for one test. */
+function stubScheduledWork(recapStatus: "published" | "skipped_already" = "published"): {
+  polledIds: string[];
+  recapIds: string[];
+  errors: unknown[][];
+  restore: () => void;
+} {
+  const polledIds: string[] = [];
+  const recapIds: string[] = [];
+  const errors: unknown[][] = [];
+  const originalPoll = LeagueBrain.prototype.poll;
+  const originalAttemptRecap = LeagueBrain.prototype.attemptRecap;
+  const originalError = console.error;
+  LeagueBrain.prototype.poll = async function (this: LeagueBrain) {
+    const dashboard = await this.getDashboard();
+    polledIds.push(dashboard.leagueId);
+    return { wroteBeat: false, hash: "test", facts: 0 };
+  };
+  LeagueBrain.prototype.attemptRecap = async function (this: LeagueBrain) {
+    const dashboard = await this.getDashboard();
+    recapIds.push(dashboard.leagueId);
+    if (recapStatus === "published") {
+      return { status: "published", recap: { subject: "Week recap", body: "Delivered." } };
+    }
+    return { status: "skipped_already" };
+  };
+  console.error = (...args: unknown[]) => {
+    errors.push(args);
+  };
+  return {
+    polledIds,
+    recapIds,
+    errors,
+    restore: () => {
+      LeagueBrain.prototype.poll = originalPoll;
+      LeagueBrain.prototype.attemptRecap = originalAttemptRecap;
+      console.error = originalError;
+    },
+  };
+}
+
+function expectBoundedScheduledErrors(errors: unknown[][], count: number, forbidden: string[]): void {
+  expect(errors).toHaveLength(count);
+  for (const entry of errors) {
+    const payload = JSON.parse(String(entry[0])) as Record<string, unknown>;
+    expect(payload).toEqual({ event: "scheduled.league.failed", reason: "error" });
+  }
+  const serialized = JSON.stringify(errors);
+  for (const value of forbidden) {
+    expect(serialized).not.toContain(value);
+  }
+}
+
 async function setCursorBeforeLeague(leagueId: string): Promise<void> {
   const allActive = await listActiveLeagues(env.DB, { limit: 10_000 });
   const idx = allActive.findIndex((league) => league.id === leagueId);
@@ -2486,6 +2593,269 @@ describe("handleScheduled recap backlog", () => {
     } finally {
       LeagueBrain.prototype.poll = originalPoll;
       LeagueBrain.prototype.attemptRecap = originalAttemptRecap;
+    }
+  });
+});
+
+describe("handleScheduled optional D1 reads", () => {
+  const SCHEMA_DRIFT = "D1_ERROR: no such column: leagues.provisioning_started_at";
+  const isAppStateRead = (key: string) => (query: string, values: unknown[]) =>
+    query.includes("SELECT value FROM app_state") && values[0] === key;
+  const isRotationPageRead = (query: string) =>
+    query.startsWith("SELECT * FROM leagues WHERE status = 'active'");
+
+  beforeEach(async () => {
+    await clearScheduledCursor();
+    await clearRecapEnrollment();
+    await clearRecapBacklog();
+  });
+
+  afterEach(async () => {
+    await clearScheduledCursor();
+    await clearRecapEnrollment();
+    await clearRecapBacklog();
+  });
+
+  it("keeps polling when the retained email_pending read fails on an old leagues schema", async () => {
+    const now = 1_806_000_000_000;
+    const league = await seedLeague("fault_retained_poll", now, "active");
+    const retained = await seedLeague("fault_retained_row", now + 1, "active");
+    await env.DB.prepare(
+      `INSERT INTO recap_attempt_backlog (league_id, week_key, status, attempts, last_error, created_at, updated_at)
+       VALUES (?, '2026-09-01', 'pending', 0, 'email_pending', ?, ?)`,
+    )
+      .bind(retained.id, now, now)
+      .run();
+    await setCursorBeforeLeague(league.id);
+    const { scheduledEnv, faults } = envWithFailingStatements(
+      (query) => query.includes("backlog_week_key"),
+      SCHEMA_DRIFT,
+    );
+    const work = stubScheduledWork();
+
+    try {
+      const result = await handleScheduled(scheduledEnv, POLL_NOW, 1);
+      expect(faults()).toBe(1);
+      expect(result).toEqual({ polled: 1, recapped: 0 });
+      expect(work.polledIds).toEqual([league.id]);
+      expect(work.recapIds).toEqual([]);
+      expectBoundedScheduledErrors(work.errors, 1, [league.id, retained.id, SCHEMA_DRIFT, "provisioning_started_at"]);
+      expect(await scheduledCursorValue()).toBe(JSON.stringify({ afterId: league.id }));
+      expect(await backlogRows("2026-09-01", [retained.id])).toEqual([
+        { league_id: retained.id, status: "pending", attempts: 0, last_error: "email_pending" },
+      ]);
+    } finally {
+      work.restore();
+    }
+  });
+
+  it("skips enrollment without rewriting its state when the enrollment read fails in the recap window", async () => {
+    const now = 1_806_001_000_000;
+    const league = await seedLeague("fault_enroll_read_recap", now, "active");
+    await setCursorBeforeLeague(league.id);
+    await completeRecapEnrollment(RECAP_WEEK_KEY);
+    const { scheduledEnv, faults } = envWithFailingStatements(
+      isAppStateRead(SCHEDULED_RECAP_ENROLLMENT_KEY),
+      "enrollment read boom",
+    );
+    const work = stubScheduledWork();
+
+    try {
+      const result = await handleScheduled(scheduledEnv, RECAP_NOW, 1);
+      expect(faults()).toBe(1);
+      expect(result).toEqual({ polled: 1, recapped: 0 });
+      expect(work.polledIds).toEqual([league.id]);
+      expectBoundedScheduledErrors(work.errors, 1, [league.id, "enrollment read boom"]);
+      expect(await backlogCount(RECAP_WEEK_KEY)).toBe(0);
+      expect(await recapEnrollmentState()).toEqual({
+        weekKey: RECAP_WEEK_KEY,
+        afterId: null,
+        complete: true,
+      });
+      expect(await scheduledCursorValue()).toBe(JSON.stringify({ afterId: league.id }));
+    } finally {
+      work.restore();
+    }
+  });
+
+  it("still retries pending recaps on an idle hour when the enrollment read fails", async () => {
+    const now = 1_806_002_000_000;
+    const league = await seedLeague("fault_enroll_read_idle", now, "active");
+    await insertPendingRecap(league.id, RECAP_WEEK_KEY, now);
+    await completeRecapEnrollment(RECAP_WEEK_KEY);
+    const { scheduledEnv, faults } = envWithFailingStatements(
+      isAppStateRead(SCHEDULED_RECAP_ENROLLMENT_KEY),
+      "enrollment read boom",
+    );
+    const work = stubScheduledWork();
+
+    try {
+      const result = await handleScheduled(scheduledEnv, IDLE_NOW, 10);
+      expect(faults()).toBe(1);
+      expect(result).toEqual({ polled: 1, recapped: 1 });
+      expect(work.recapIds).toEqual([league.id]);
+      expectBoundedScheduledErrors(work.errors, 1, [league.id, "enrollment read boom"]);
+      expect(await backlogRows(RECAP_WEEK_KEY, [league.id])).toEqual([
+        { league_id: league.id, status: "done", attempts: 1, last_error: null },
+      ]);
+      expect((await recapEnrollmentState())?.complete).toBe(true);
+    } finally {
+      work.restore();
+    }
+  });
+
+  it("falls through to the pending list when the idle pending-exists probe fails", async () => {
+    const now = 1_806_003_000_000;
+    const league = await seedLeague("fault_has_pending", now, "active");
+    await insertPendingRecap(league.id, RECAP_WEEK_KEY, now);
+    await completeRecapEnrollment(RECAP_WEEK_KEY);
+    const { scheduledEnv, faults } = envWithFailingStatements(
+      (query) => query.includes("SELECT 1 AS ok FROM recap_attempt_backlog"),
+      "probe boom",
+    );
+    const work = stubScheduledWork();
+
+    try {
+      const result = await handleScheduled(scheduledEnv, IDLE_NOW, 10);
+      expect(faults()).toBe(1);
+      expect(result).toEqual({ polled: 1, recapped: 1 });
+      expect(work.recapIds).toEqual([league.id]);
+      expectBoundedScheduledErrors(work.errors, 1, [league.id, "probe boom"]);
+    } finally {
+      work.restore();
+    }
+  });
+
+  it("leaves pending recaps untouched when the idle pending list fails", async () => {
+    const now = 1_806_004_000_000;
+    const league = await seedLeague("fault_list_pending_idle", now, "active");
+    await insertPendingRecap(league.id, RECAP_WEEK_KEY, now);
+    await completeRecapEnrollment(RECAP_WEEK_KEY);
+    const { scheduledEnv, faults } = envWithFailingStatements(
+      (query) => query.includes("SELECT leagues.* FROM recap_attempt_backlog"),
+      "pending list boom",
+    );
+    const work = stubScheduledWork();
+
+    try {
+      const result = await handleScheduled(scheduledEnv, IDLE_NOW, 10);
+      expect(faults()).toBe(1);
+      expect(result).toEqual({ polled: 0, recapped: 0 });
+      expect(work.polledIds).toEqual([]);
+      expect(work.recapIds).toEqual([]);
+      expectBoundedScheduledErrors(work.errors, 1, [league.id, "pending list boom"]);
+      expect(await backlogRows(RECAP_WEEK_KEY, [league.id])).toEqual([
+        { league_id: league.id, status: "pending", attempts: 0, last_error: null },
+      ]);
+    } finally {
+      work.restore();
+    }
+  });
+
+  it("gives the whole poll-hour budget to rotation when the backlog list fails", async () => {
+    const now = 1_806_005_000_000;
+    const backlog = await seedLeague("fault_list_pending_poll_a", now, "active");
+    const rotation = await seedLeague("fault_list_pending_poll_b", now + 1, "active");
+    await insertPendingRecap(backlog.id, RECAP_WEEK_KEY, now);
+    await completeRecapEnrollment(RECAP_WEEK_KEY);
+    await setCursorBeforeLeague(rotation.id);
+    const { scheduledEnv, faults } = envWithFailingStatements(
+      (query) => query.includes("SELECT leagues.* FROM recap_attempt_backlog"),
+      "pending list boom",
+    );
+    const work = stubScheduledWork();
+
+    try {
+      const result = await handleScheduled(scheduledEnv, POLL_NOW, 2);
+      expect(faults()).toBe(1);
+      expect(result.polled).toBe(2);
+      expect(work.polledIds).toHaveLength(2);
+      expect(work.polledIds[0]).toBe(rotation.id);
+      expectBoundedScheduledErrors(work.errors, 1, [backlog.id, rotation.id, "pending list boom"]);
+      expect(await scheduledCursorValue()).toBe(JSON.stringify({ afterId: work.polledIds[1] }));
+    } finally {
+      work.restore();
+    }
+  });
+
+  it("keeps working the backlog and leaves the poll cursor alone when the rotation page read fails", async () => {
+    const now = 1_806_006_000_000;
+    const backlog = await seedLeague("fault_rotation_backlog", now, "active");
+    const rotation = await seedLeague("fault_rotation_page", now + 1, "active");
+    await insertPendingRecap(backlog.id, RECAP_WEEK_KEY, now);
+    await completeRecapEnrollment(RECAP_WEEK_KEY);
+    await setCursorBeforeLeague(rotation.id);
+    const cursorBefore = await scheduledCursorValue();
+    const { scheduledEnv, faults } = envWithFailingStatements(
+      (query) => isRotationPageRead(query),
+      "rotation boom",
+    );
+    const work = stubScheduledWork();
+
+    try {
+      const result = await handleScheduled(scheduledEnv, POLL_NOW, 2);
+      expect(faults()).toBe(1);
+      expect(result).toEqual({ polled: 1, recapped: 1 });
+      expect(work.polledIds).toEqual([backlog.id]);
+      expect(work.recapIds).toEqual([backlog.id]);
+      expectBoundedScheduledErrors(work.errors, 1, [backlog.id, rotation.id, "rotation boom"]);
+      expect(await scheduledCursorValue()).toBe(cursorBefore);
+      expect(await backlogRows(RECAP_WEEK_KEY, [backlog.id])).toEqual([
+        { league_id: backlog.id, status: "done", attempts: 1, last_error: null },
+      ]);
+    } finally {
+      work.restore();
+    }
+  });
+
+  it("still enrolls the recap backlog and leaves the poll cursor alone when the cursor read fails", async () => {
+    const now = 1_806_007_000_000;
+    const league = await seedLeague("fault_cursor_read", now, "active");
+    await setCursorBeforeLeague(league.id);
+    const cursorBefore = await scheduledCursorValue();
+    const { scheduledEnv, faults } = envWithFailingStatements(
+      isAppStateRead(SCHEDULED_LEAGUE_CURSOR_KEY),
+      "cursor read boom",
+    );
+    const work = stubScheduledWork();
+
+    try {
+      const result = await handleScheduled(scheduledEnv, RECAP_NOW, 1);
+      expect(faults()).toBe(1);
+      expect(result).toEqual({ polled: 0, recapped: 0 });
+      expect(work.polledIds).toEqual([]);
+      expectBoundedScheduledErrors(work.errors, 1, [league.id, "cursor read boom"]);
+      expect(await backlogCount(RECAP_WEEK_KEY)).toBe(1);
+      expect((await recapEnrollmentState())?.weekKey).toBe(RECAP_WEEK_KEY);
+      expect(await scheduledCursorValue()).toBe(cursorBefore);
+    } finally {
+      work.restore();
+    }
+  });
+
+  it("recaps leagues already known pending when the per-page pending lookup fails", async () => {
+    const now = 1_806_008_000_000;
+    const backlog = await seedLeague("fault_page_pending_a", now, "active");
+    const rotation = await seedLeague("fault_page_pending_b", now + 1, "active");
+    await insertPendingRecap(backlog.id, RECAP_WEEK_KEY, now);
+    await completeRecapEnrollment(RECAP_WEEK_KEY);
+    await setCursorBeforeLeague(rotation.id);
+    const { scheduledEnv, faults } = envWithFailingStatements(
+      (query) => query.includes("SELECT league_id FROM recap_attempt_backlog"),
+      "page pending boom",
+    );
+    const work = stubScheduledWork();
+
+    try {
+      const result = await handleScheduled(scheduledEnv, POLL_NOW, 2);
+      expect(faults()).toBe(1);
+      expect(result).toEqual({ polled: 2, recapped: 1 });
+      expect(work.polledIds).toEqual([rotation.id, backlog.id]);
+      expect(work.recapIds).toEqual([backlog.id]);
+      expectBoundedScheduledErrors(work.errors, 1, [backlog.id, rotation.id, "page pending boom"]);
+      expect(await scheduledCursorValue()).toBe(JSON.stringify({ afterId: rotation.id }));
+    } finally {
+      work.restore();
     }
   });
 });

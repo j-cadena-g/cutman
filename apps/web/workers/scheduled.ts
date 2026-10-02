@@ -227,6 +227,16 @@ function logScheduledLeagueFailure(error: unknown): void {
   );
 }
 
+/** Run an optional D1 step; on failure log the bounded reason and continue with the fallback. */
+async function optionalScheduledStep<T>(step: () => Promise<T>, fallback: T): Promise<T> {
+  try {
+    return await step();
+  } catch (error) {
+    logScheduledLeagueFailure(error);
+    return fallback;
+  }
+}
+
 async function loadScheduledLeaguePage(
   db: D1Database,
   afterId: string | null,
@@ -587,13 +597,22 @@ export async function handleScheduled(
     logScheduledLeagueFailure(error);
   }
 
-  let enrollment = await readRecapEnrollmentState(env.DB);
+  // An unreadable enrollment state skips enrollment this tick rather than guessing a cursor
+  // and overwriting the stored one.
+  let enrollment: RecapEnrollmentState | null = null;
+  let enrollmentReadable = true;
+  try {
+    enrollment = await readRecapEnrollmentState(env.DB);
+  } catch (error) {
+    logScheduledLeagueFailure(error);
+    enrollmentReadable = false;
+  }
   try {
     await deleteStaleRecapAttempts(env.DB, weekKey);
   } catch (error) {
     logScheduledLeagueFailure(error);
   }
-  if (recapWindow) {
+  if (enrollmentReadable && recapWindow) {
     if (enrollment?.weekKey !== weekKey) {
       enrollment = { weekKey, afterId: null, complete: false };
     }
@@ -604,7 +623,7 @@ export async function handleScheduled(
         logScheduledLeagueFailure(error);
       }
     }
-  } else if (enrollment?.weekKey === weekKey && !enrollment.complete) {
+  } else if (enrollmentReadable && enrollment?.weekKey === weekKey && !enrollment.complete) {
     try {
       enrollment = await enrollRecapBacklogPage(env.DB, weekKey, nowMs, maxLeagues, enrollment);
     } catch (error) {
@@ -613,20 +632,32 @@ export async function handleScheduled(
   }
 
   const enrollmentForWeek = enrollment?.weekKey === weekKey ? enrollment : null;
-  const retained = await listRetainedEmailPending(env.DB, weekKey, maxLeagues);
+  // Retained rows stay pending in D1, so skipping them for one tick only delays delivery.
+  const retained = await optionalScheduledStep(
+    () => listRetainedEmailPending(env.DB, weekKey, maxLeagues),
+    [],
+  );
 
   let pending: LeagueRow[] = [];
   if (!recapWindow) {
-    if (!poll && !enrollmentForWeek && retained.length === 0) {
+    if (!poll && enrollmentReadable && !enrollmentForWeek && retained.length === 0) {
       return { polled: 0, recapped: 0 };
     }
-    if (!poll && enrollmentForWeek?.complete && retained.length === 0) {
-      if (!(await hasPendingRecapAttempts(env.DB, weekKey))) {
+    if (
+      !poll &&
+      (enrollmentForWeek?.complete || !enrollmentReadable) &&
+      retained.length === 0
+    ) {
+      // Unknown means "maybe": let listPendingRecapLeagues decide.
+      if (!(await optionalScheduledStep(() => hasPendingRecapAttempts(env.DB, weekKey), true))) {
         return { polled: 0, recapped: 0 };
       }
     }
     if (!poll) {
-      pending = await listPendingRecapLeagues(env.DB, weekKey, maxLeagues);
+      pending = await optionalScheduledStep(
+        () => listPendingRecapLeagues(env.DB, weekKey, maxLeagues),
+        [],
+      );
       if (pending.length === 0 && retained.length === 0) {
         return { polled: 0, recapped: 0 };
       }
@@ -637,28 +668,38 @@ export async function handleScheduled(
   let work: LeagueRow[] = [];
   let recapIds = new Set<string>();
 
-  if (recapWindow) {
-    const afterId = await readScheduledLeagueCursor(env.DB);
-    page = await loadScheduledLeaguePage(env.DB, afterId, maxLeagues);
-    work = page.leagues;
-    recapIds = await pendingRecapIds(
-      env.DB,
-      weekKey,
-      work.map((league) => league.id),
+  // A failed rotation read leaves page null, so the regular cursor is not rewritten this tick.
+  const loadRotationPage = (limit: number) =>
+    optionalScheduledStep<ScheduledLeaguePage<LeagueRow> | null>(async () => {
+      const afterId = await readScheduledLeagueCursor(env.DB);
+      return loadScheduledLeaguePage(env.DB, afterId, limit);
+    }, null);
+  // Leagues from listPendingRecapLeagues are already known pending for this week.
+  const loadRecapIds = () =>
+    optionalScheduledStep(
+      () =>
+        pendingRecapIds(
+          env.DB,
+          weekKey,
+          work.map((league) => league.id),
+        ),
+      new Set(pending.map((league) => league.id)),
     );
+
+  if (recapWindow) {
+    page = await loadRotationPage(maxLeagues);
+    work = page?.leagues ?? [];
+    recapIds = await loadRecapIds();
   } else if (poll) {
     const { backlogLimit, pollLimit } = scheduledPollHourLimits(maxLeagues);
     pending =
-      backlogLimit > 0 ? await listPendingRecapLeagues(env.DB, weekKey, backlogLimit) : [];
-    const afterId = await readScheduledLeagueCursor(env.DB);
+      backlogLimit > 0
+        ? await optionalScheduledStep(() => listPendingRecapLeagues(env.DB, weekKey, backlogLimit), [])
+        : [];
     const pollPageLimit = pending.length > 0 ? pollLimit : maxLeagues;
-    page = await loadScheduledLeaguePage(env.DB, afterId, pollPageLimit);
-    work = uniqueLeaguesById([...page.leagues, ...pending]);
-    recapIds = await pendingRecapIds(
-      env.DB,
-      weekKey,
-      work.map((league) => league.id),
-    );
+    page = await loadRotationPage(pollPageLimit);
+    work = uniqueLeaguesById([...(page?.leagues ?? []), ...pending]);
+    recapIds = await loadRecapIds();
   } else {
     work = pending;
     recapIds = new Set(work.map((league) => league.id));
