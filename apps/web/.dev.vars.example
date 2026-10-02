@@ -28,3 +28,11 @@ CLERK_PUBLISHABLE_KEY=pk_test_...
 # -----------------------------------------------------------------------------
 PILOT_SLEEPER_LEAGUE_ID=0000000000000000000
 USE_SLEEPER_FIXTURES=false
+
+# -----------------------------------------------------------------------------
+# Optional — real Workers AI in local dev (off by default; uses account quota)
+# Set CUTMAN_REMOTE_AI=true and add CLOUDFLARE_API_TOKEN (Workers AI + Workers
+# Scripts edit) and CLOUDFLARE_ACCOUNT_ID to your local-dev Environment. Without
+# them `pnpm run dev` refuses to start rather than opening the OAuth login.
+# -----------------------------------------------------------------------------
+CUTMAN_REMOTE_AI=false

@@ -14,8 +14,11 @@ export default defineConfig({
   plugins: [
     cloudflare({
       viteEnvironment: { name: "ssr" },
-      // AI bindings default to remote and would force Cloudflare OAuth on boot.
-      remoteBindings: false,
+      // AI bindings default to remote and would force Cloudflare OAuth on boot, so remote
+      // bindings stay off unless CUTMAN_REMOTE_AI=true. run-vite-dev.mjs then requires
+      // CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID so Wrangler never opens the login.
+      // Only AI goes remote: D1, KV, and email have no `remote: true` and stay local.
+      remoteBindings: process.env.CUTMAN_REMOTE_AI?.trim() === "true",
       ...(process.env.CUTMAN_WRANGLER_CONFIG
         ? { configPath: process.env.CUTMAN_WRANGLER_CONFIG }
         : {}),

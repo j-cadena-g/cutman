@@ -2,10 +2,18 @@ import { DurableObject } from "cloudflare:workers";
 import { generateBeat, generateRecap, type WorkersAi } from "@cutman/ai";
 import { getLeague, listRecapRecipients, setLeagueTone } from "@cutman/db";
 import { recapEmail, sendEmail } from "@cutman/email";
-import type { NflState, PlayerMap, SleeperMatchup, SleeperTransaction } from "@cutman/sleeper";
+import type {
+  NflState,
+  PlayerMap,
+  SleeperLeague,
+  SleeperMatchup,
+  SleeperTransaction,
+} from "@cutman/sleeper";
 import {
   beatPrompt,
+  buildSeasonLedger,
   canRecapCurrentWeek,
+  closeGameEntries,
   diffSnapshots,
   easternParts,
   factsIfChanged,
@@ -13,14 +21,21 @@ import {
   isBlankBeat,
   isPlayedWeek,
   isTone,
+  lastSettledWeek,
+  previouslyOnEntry,
   recapPrompt,
   runRecapAttempt,
+  seasonLines,
   selectRecapWeek,
   toneOrPlayful,
   type BeatDraft,
+  type FinalWeek,
   type LeagueSnapshot,
   type RecapAttemptResult,
   type RecapDraft,
+  type SeasonFocus,
+  type SeasonLabels,
+  type SeasonRules,
   type StoryFact,
   type Tone,
 } from "@cutman/story";
@@ -51,6 +66,31 @@ export const UNBOOTSTRAPPED_MESSAGE = "Cutman is not bootstrapped";
 const LEGACY_IMPORT_CONFLICT_MESSAGE = "Legacy import conflict";
 
 type LegacySqlValue = string | number | null;
+
+const PLAYOFF_WEEK_START_KEY = "playoffWeekStart";
+const START_WEEK_KEY = "startWeek";
+const MEDIAN_WINS_KEY = "medianWins";
+/** "1" when the latest stored snapshot's week was already final. Bench-shame dedupe needs it. */
+const LATEST_SNAPSHOT_SETTLED_KEY = "latestSnapshotSettled";
+
+/** Keep what the ledger reads: the score, the pairing, and starters' points. */
+function trimFinalMatchup(matchup: SleeperMatchup): SleeperMatchup {
+  const starters = matchup.starters ?? [];
+  const table = matchup.players_points ?? {};
+  return {
+    roster_id: matchup.roster_id,
+    matchup_id: matchup.matchup_id,
+    points: matchup.points,
+    starters,
+    players_points: Object.fromEntries(
+      starters.filter((id) => typeof table[id] === "number").map((id) => [id, table[id] as number]),
+    ),
+  };
+}
+
+function positiveWeek(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : null;
+}
 
 function bootstrapBibleEntry(name: string, tone: Tone): string {
   return `${name} is in the book. Tone: ${tone}.`;
@@ -179,6 +219,12 @@ export class LeagueBrain extends DurableObject<Env> {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         entry TEXT NOT NULL,
         created_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS final_weeks (
+        week INTEGER PRIMARY KEY,
+        played INTEGER NOT NULL,
+        matchups TEXT NOT NULL,
+        recorded_at INTEGER NOT NULL
       );
     `);
     // Pre-split brains stored the Sleeper snowflake as `leagueId` and had no `sleeperLeagueId`.
@@ -338,10 +384,10 @@ export class LeagueBrain extends DurableObject<Env> {
     };
   }
 
-  async poll(): Promise<{ wroteBeat: boolean; hash: string; facts: number }> {
+  async poll(now: number = Date.now()): Promise<{ wroteBeat: boolean; hash: string; facts: number }> {
     const settings = this.readSettings();
     const sleeper = sleeperFromEnv(this.env);
-    const state = await sleeper.getNflState();
+    const state = await this.loadNflState();
     const [users, rosters, matchups, transactions, players] = await Promise.all([
       sleeper.getLeagueUsers(settings.sleeperLeagueId),
       sleeper.getRosters(settings.sleeperLeagueId),
@@ -357,21 +403,165 @@ export class LeagueBrain extends DurableObject<Env> {
       matchups,
       transactions,
     };
+    // Settle finished weeks first so the beat below sees the season through last week.
+    await this.syncFinalWeeksQuietly(state, matchups, { users, rosters, players }, now);
     return this.ingestSnapshot(snapshot, players);
+  }
+
+  private async syncFinalWeeksQuietly(
+    state: NflState,
+    currentMatchups: SleeperMatchup[],
+    labels: SeasonLabels,
+    now: number,
+  ): Promise<void> {
+    try {
+      await this.syncFinalWeeks(state, currentMatchups, labels, now);
+    } catch (error) {
+      if (isBrainGateError(error)) throw error;
+      // The ledger catches up on the next poll. Omit ids and messages: Sleeper errors embed paths.
+      console.error(
+        JSON.stringify({ event: "league_brain.final_weeks_sync_failed", reason: error instanceof Error ? "error" : "unknown" }),
+      );
+    }
+  }
+
+  /**
+   * Record every settled week the ledger is missing, and refresh the latest one for stat
+   * corrections. A league set up mid-season backfills its earlier weeks here on the first poll.
+   */
+  private async syncFinalWeeks(
+    state: NflState,
+    currentMatchups: SleeperMatchup[],
+    labels: SeasonLabels,
+    now: number,
+  ): Promise<void> {
+    const settings = this.readSettings();
+    const league = await this.loadLeague(settings.sleeperLeagueId);
+    if (league) this.storeLeagueRules(league);
+    const settled = lastSettledWeek({
+      seasonType: state.season_type,
+      nflWeek: state.week,
+      currentWeekPlayed: isPlayedWeek(currentMatchups),
+      canSettleCurrent: canRecapCurrentWeek(easternParts(new Date(now))),
+    });
+    const startWeek = positiveWeek(Number(this.getSetting(START_WEEK_KEY))) ?? 1;
+    if (settled < startWeek) return;
+
+    const recorded = new Set(
+      (this.ctx.storage.sql.exec("SELECT week FROM final_weeks").toArray() as Array<{ week: number }>).map(
+        (row) => row.week,
+      ),
+    );
+    const hadPlayedWeeks = this.readFinalWeeks().length > 0;
+    const wanted: number[] = [];
+    for (let week = startWeek; week <= settled; week += 1) {
+      if (!recorded.has(week) || week === settled) wanted.push(week);
+    }
+    // Fetch in parallel to stay inside the provisioning deadline, but keep every week that
+    // loaded: one failed week must not throw away the rest.
+    const loaded = await Promise.allSettled(
+      wanted.map(async (week) => ({
+        week,
+        matchups: week === state.week ? currentMatchups : await this.loadWeekMatchups(settings.sleeperLeagueId, week),
+      })),
+    );
+    const newlySettled: FinalWeek[] = [];
+    for (const result of loaded) {
+      if (result.status !== "fulfilled") continue;
+      const { week, matchups } = result.value;
+      if (this.recordFinalWeek(week, matchups, now)) newlySettled.push({ week, matchups });
+    }
+
+    if (!hadPlayedWeeks) {
+      const weeks = this.readFinalWeeks();
+      const entry = weeks.length >= 2 ? previouslyOnEntry(buildSeasonLedger(weeks, this.seasonRules()), labels) : null;
+      if (entry) this.insertBibleIfNew(entry, now);
+    }
+    for (const week of newlySettled.sort((left, right) => left.week - right.week)) {
+      this.writeCloseGames(week, labels, now);
+    }
+
+    const failure = loaded.find((result) => result.status === "rejected");
+    if (failure) throw failure.reason;
+  }
+
+  /** One-score finals go in the bible once, from final scores, when their week first settles. */
+  private writeCloseGames(week: FinalWeek, labels: SeasonLabels, now = Date.now()): void {
+    for (const entry of closeGameEntries(week, labels)) this.insertBibleIfNew(entry, now);
+  }
+
+  /**
+   * Upsert one week. An empty response is a Sleeper hiccup and is skipped; a played week is
+   * never downgraded to unplayed. Returns true only when the week has just become played.
+   */
+  private recordFinalWeek(week: number, matchups: SleeperMatchup[], now = Date.now()): boolean {
+    if (matchups.length === 0) return false;
+    const played = isPlayedWeek(matchups) ? 1 : 0;
+    const wasPlayed = this.isSettledWeek(week);
+    this.ctx.storage.sql.exec(
+      `INSERT INTO final_weeks (week, played, matchups, recorded_at) VALUES (?, ?, ?, ?)
+       ON CONFLICT(week) DO UPDATE SET played = excluded.played, matchups = excluded.matchups, recorded_at = excluded.recorded_at
+       WHERE (final_weeks.matchups != excluded.matchups OR final_weeks.played != excluded.played)
+         AND NOT (final_weeks.played = 1 AND excluded.played = 0)`,
+      week,
+      played,
+      JSON.stringify(matchups.map(trimFinalMatchup)),
+      now,
+    );
+    return played === 1 && !wasPlayed;
+  }
+
+  private readFinalWeeks(): FinalWeek[] {
+    return (
+      this.ctx.storage.sql
+        .exec("SELECT week, matchups FROM final_weeks WHERE played = 1 ORDER BY week")
+        .toArray() as Array<{ week: number; matchups: string }>
+    ).map((row) => ({ week: row.week, matchups: JSON.parse(row.matchups) as SleeperMatchup[] }));
+  }
+
+  private storeLeagueRules(league: SleeperLeague): void {
+    const settings = league.settings ?? {};
+    const playoffWeekStart = positiveWeek(settings.playoff_week_start);
+    const startWeek = positiveWeek(settings.start_week);
+    if (playoffWeekStart) this.putSetting(PLAYOFF_WEEK_START_KEY, String(playoffWeekStart));
+    if (startWeek) this.putSetting(START_WEEK_KEY, String(startWeek));
+    this.putSetting(MEDIAN_WINS_KEY, settings.league_average_match === 1 ? "1" : "0");
+  }
+
+  private seasonRules(): SeasonRules {
+    return {
+      playoffWeekStart: positiveWeek(Number(this.getSetting(PLAYOFF_WEEK_START_KEY))),
+      medianWins: this.getSetting(MEDIAN_WINS_KEY) === "1",
+    };
+  }
+
+  private seasonContext(labels: SeasonLabels, focus: SeasonFocus): string[] {
+    // Never let a later settled week leak into the context for an earlier beat or recap.
+    const weeks = this.readFinalWeeks().filter((week) => week.week <= focus.week);
+    return seasonLines(buildSeasonLedger(weeks, this.seasonRules()), labels, focus);
   }
 
   async ingestSnapshot(snapshot: LeagueSnapshot, players: PlayerMap = {}): Promise<{ wroteBeat: boolean; hash: string; facts: number }> {
     this.assertLegacyImportReady();
     const hash = await hashSnapshot(snapshot);
     const last = this.latestSnapshot();
-    const facts = await factsIfChanged(last?.hash ?? null, hash, last?.snapshot ?? null, snapshot, players);
+    const settled = this.isSettledWeek(snapshot.week);
+    const prevSettled = last?.week === snapshot.week && this.getSetting(LATEST_SNAPSHOT_SETTLED_KEY) === "1";
+    const facts = await factsIfChanged(last?.hash ?? null, hash, last?.snapshot ?? null, snapshot, players, {
+      settled,
+      prevSettled,
+    });
     if (facts.length === 0) {
-      this.insertSnapshot(snapshot, hash);
+      this.insertSnapshot(snapshot, hash, settled);
       return { wroteBeat: false, hash, facts: 0 };
     }
+    const season = this.seasonContext(
+      { users: snapshot.users, rosters: snapshot.rosters, players },
+      { week: snapshot.week, matchups: snapshot.matchups, settled },
+    );
     let draft: BeatDraft;
     try {
-      draft = await this.generateBeatDraft(snapshot.week, facts);
+      draft = await this.generateBeatDraft(snapshot.week, facts, season);
     } catch (error) {
       if (isBrainGateError(error)) throw error;
       return { wroteBeat: false, hash, facts: facts.length };
@@ -379,18 +569,23 @@ export class LeagueBrain extends DurableObject<Env> {
     if (isBlankBeat(draft)) {
       return { wroteBeat: false, hash, facts: facts.length };
     }
-    const wroteBeat = this.publishBeat(snapshot, hash, facts, draft, last?.hash ?? null);
+    const wroteBeat = this.publishBeat(snapshot, hash, facts, draft, last?.hash ?? null, settled);
     return { wroteBeat, hash, facts: facts.length };
   }
 
+  private isSettledWeek(week: number): boolean {
+    return this.ctx.storage.sql.exec("SELECT week FROM final_weeks WHERE week = ? AND played = 1", week).toArray().length > 0;
+  }
+
   /** Test seam. Default calls Gemma. A throw or blank copy writes nothing. */
-  private async generateBeatDraft(week: number, facts: StoryFact[]): Promise<BeatDraft> {
+  private async generateBeatDraft(week: number, facts: StoryFact[], season: string[] = []): Promise<BeatDraft> {
     const settings = this.readSettings();
     const prompt = beatPrompt({
       tone: settings.tone,
       leagueName: settings.name,
       week,
       bible: this.bibleLines(),
+      season,
       facts,
     });
     return generateBeat(this.env.AI as WorkersAi, prompt.system, prompt.user);
@@ -412,6 +607,16 @@ export class LeagueBrain extends DurableObject<Env> {
       sleeper.getTransactions(sleeperLeagueId, week),
     ]);
     return { matchups, transactions };
+  }
+
+  /** Test seam. Fixtures ignore the week argument, so backfill tests return matchups per week. */
+  private async loadWeekMatchups(sleeperLeagueId: string, week: number): Promise<SleeperMatchup[]> {
+    return sleeperFromEnv(this.env).getMatchups(sleeperLeagueId, week);
+  }
+
+  /** Test seam. League settings carry the playoff start and median scoring. */
+  private async loadLeague(sleeperLeagueId: string): Promise<SleeperLeague | null> {
+    return sleeperFromEnv(this.env).getLeague(sleeperLeagueId);
   }
 
   /** Test seam. Fixture NFL state is pinned to week 1, so rollover tests replace this. */
@@ -461,7 +666,15 @@ export class LeagueBrain extends DurableObject<Env> {
       matchups: weekBundle.matchups,
       transactions: weekBundle.transactions,
     };
-    const facts = diffSnapshots(null, snapshot, players);
+    const facts = diffSnapshots(null, snapshot, players, { settled: true });
+    // The selected week is played, so it counts in the season this recap is written against.
+    if (this.recordFinalWeek(selected, weekBundle.matchups)) {
+      this.writeCloseGames({ week: selected, matchups: weekBundle.matchups }, { users, rosters, players });
+    }
+    const season = this.seasonContext(
+      { users, rosters, players },
+      { week: selected, matchups: weekBundle.matchups, settled: true },
+    );
     return this.attemptRecapWithGenerator(
       weekBundle.matchups,
       facts,
@@ -471,6 +684,7 @@ export class LeagueBrain extends DurableObject<Env> {
           leagueName: settings.name,
           week: selected,
           bible: this.bibleLines(),
+          season,
           facts: storyFacts,
         });
         return this.generateRecapDraft(prompt);
@@ -569,12 +783,13 @@ export class LeagueBrain extends DurableObject<Env> {
     facts: StoryFact[],
     draft: BeatDraft,
     baseHash: string | null,
+    settled: boolean,
   ): boolean {
     const now = Date.now();
     const kind = facts[0].kind;
     return this.ctx.storage.transactionSync(() => {
       if ((this.latestSnapshot()?.hash ?? null) !== baseHash) return false;
-      this.insertSnapshot(snapshot, hash, now);
+      this.insertSnapshot(snapshot, hash, settled, now);
       this.ctx.storage.sql.exec(
         "INSERT INTO beats (kind, copy, facts, week, created_at) VALUES (?, ?, ?, ?, ?)",
         kind,
@@ -583,18 +798,15 @@ export class LeagueBrain extends DurableObject<Env> {
         snapshot.week,
         now,
       );
+      // Close games reach the bible from final scores when their week settles, not from beats.
       for (const fact of facts) {
-        if (fact.kind === "trade") {
-          this.insertBibleIfNew(fact.copy, now);
-        } else if (fact.kind === "rivalry") {
-          this.insertBibleIfNew(`Week ${snapshot.week}: ${fact.copy}`, now);
-        }
+        if (fact.kind === "trade") this.insertBibleIfNew(fact.copy, now);
       }
       return true;
     });
   }
 
-  private insertSnapshot(snapshot: LeagueSnapshot, hash: string, now = Date.now()): void {
+  private insertSnapshot(snapshot: LeagueSnapshot, hash: string, settled: boolean, now = Date.now()): void {
     this.ctx.storage.sql.exec(
       "INSERT INTO snapshots (week, payload_hash, payload, created_at) VALUES (?, ?, ?, ?)",
       snapshot.week,
@@ -602,6 +814,7 @@ export class LeagueBrain extends DurableObject<Env> {
       JSON.stringify(snapshot),
       now,
     );
+    this.putSetting(LATEST_SNAPSHOT_SETTLED_KEY, settled ? "1" : "0");
   }
 
   private insertBibleIfNew(entry: string, now = Date.now()): void {

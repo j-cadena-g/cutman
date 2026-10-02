@@ -18,6 +18,7 @@ import {
   fixtureRosters,
   fixtureTransactions,
   fixtureUsersVerified,
+  v1FixtureMatchups,
   v1FixtureUsers,
 } from "@cutman/sleeper";
 import type { LeagueSnapshot } from "@cutman/story";
@@ -386,7 +387,7 @@ describe("LeagueBrain Durable Object", () => {
     expect((await stub.listRecaps()).map((recap) => recap.week)).toEqual([3, 4]);
   });
 
-  it("keeps one rivalry bible row and one trade bible row across close-score polls", async () => {
+  it("keeps live close scores out of the bible and writes the trade row once", async () => {
     const stub = await boot("bible-once");
     const first = snapshot();
     const second = snapshot(
@@ -416,42 +417,29 @@ describe("LeagueBrain Durable Object", () => {
     expect(firstRecap.status).toBe("published");
     expect(secondRecap.status).toBe("skipped_already");
 
-    const bible = await runInDurableObject(stub, async (_instance, state) => {
-      return state.storage.sql.exec("SELECT entry FROM bible").toArray() as Array<{ entry: string }>;
-    });
-    const entries = bible.map((row) => row.entry);
-    expect(entries.filter((entry) => entry.includes("one-score game"))).toEqual([
-      expect.stringContaining("Week 3:"),
-    ]);
+    const entries = (
+      await runInDurableObject(stub, async (_instance, state) => {
+        return state.storage.sql.exec("SELECT entry FROM bible").toArray() as Array<{ entry: string }>;
+      })
+    ).map((row) => row.entry);
+    // Week 3 was never settled in the ledger, so its close score stays out of the bible.
+    expect(entries.filter((entry) => entry.includes("one-score game"))).toEqual([]);
     expect(entries.filter((entry) => entry.includes("completed a trade"))).toHaveLength(1);
     expect(entries.filter((entry) => entry.includes("completed a trade"))[0]?.startsWith("Week ")).toBe(false);
-
-    const rematch = {
-      ...second,
-      week: 4,
-      matchups: second.matchups.map((matchup) =>
-        matchup.matchup_id === 2 && typeof matchup.points === "number"
-          ? { ...matchup, points: matchup.points + 0.4 }
-          : matchup,
-      ),
-    };
-    const later = await stub.ingestSnapshot(rematch, fixturePlayers);
-    expect(later.wroteBeat).toBe(true);
-    const afterRematch = await runInDurableObject(stub, async (_instance, state) => {
-      return state.storage.sql.exec("SELECT entry FROM bible").toArray() as Array<{ entry: string }>;
-    });
-    const rematchEntries = afterRematch.map((row) => row.entry);
-    const rivalryLines = rematchEntries.filter((entry) => entry.includes("one-score game"));
-    expect(rivalryLines).toHaveLength(2);
-    expect(rivalryLines.some((entry) => entry.startsWith("Week 3:"))).toBe(true);
-    expect(rivalryLines.some((entry) => entry.startsWith("Week 4:"))).toBe(true);
-    expect(rematchEntries.filter((entry) => entry.includes("completed a trade"))).toHaveLength(1);
     expect(entries.filter((entry) => entry.startsWith("Week 3 recap:"))).toEqual([
       "Week 3 recap: Week 3 belongs to Alex",
     ]);
-    expect(entries.some((entry) => entry.includes("on the pine") || entry.includes("hit the wire"))).toBe(false);
-    const beats = await stub.listBeats();
-    expect(beats).toHaveLength(3);
+    expect(entries.some((entry) => entry.includes("on the pine") || entry.includes("picked up"))).toBe(false);
+
+    const beats = await runInDurableObject(stub, async (_instance, state) =>
+      state.storage.sql.exec("SELECT facts FROM beats ORDER BY id").toArray() as Array<{ facts: string }>,
+    );
+    expect(beats).toHaveLength(2);
+    const facts = beats.flatMap((beat) => JSON.parse(beat.facts) as Array<{ kind: string; copy: string }>);
+    expect(facts.some((fact) => fact.kind === "rivalry" || fact.kind === "bench_shame")).toBe(false);
+    expect(
+      facts.filter((fact) => fact.kind === "scoreboard").every((fact) => fact.copy.startsWith("In progress, not final: ")),
+    ).toBe(true);
   });
 
   it("retries a failed recap send without a second model call", async () => {
@@ -2928,5 +2916,303 @@ describe("LeagueBrain persistTone", () => {
     expect(toneWrites).toBe(2);
     expect((await stub.getDashboard()).tone).toBe("sportscenter");
     expect((await getLeague(env.DB, leagueId))?.tone).toBe("sportscenter");
+  });
+});
+
+describe("LeagueBrain season ledger", () => {
+  type SeasonSeams = {
+    loadNflState(): Promise<{ week: number; season_type: string }>;
+    loadWeekMatchups(sleeperLeagueId: string, week: number): Promise<typeof v1FixtureMatchups>;
+    loadLeague(sleeperLeagueId: string): Promise<unknown>;
+    generateBeatDraft(week: number, facts: unknown[], season: string[]): Promise<{ copy: string }>;
+  };
+
+  /** Fixture scores nudged per week so each settled week stores a distinct payload. Roster 1 always wins. */
+  function playedWeek(week: number) {
+    return v1FixtureMatchups.map((matchup) => ({ ...matchup, points: (matchup.points ?? 0) + week / 10 }));
+  }
+
+  async function bootPilot(name: string): Promise<DurableObjectStub<LeagueBrain>> {
+    const stub = env.LEAGUE_BRAIN.getByName(name);
+    await stub.bootstrap({
+      leagueId: `lg-${name}`,
+      sleeperLeagueId: V1_LEAGUE_ID,
+      name: "Pilot League",
+      tone: "playful",
+    });
+    return stub;
+  }
+
+  async function finalWeekRows(stub: DurableObjectStub<LeagueBrain>) {
+    return runInDurableObject(stub, async (_instance, state) =>
+      state.storage.sql.exec("SELECT week, played FROM final_weeks ORDER BY week").toArray(),
+    );
+  }
+
+  it("backfills settled weeks on the first poll and feeds the season into the beat", async () => {
+    const stub = await bootPilot("season-backfill");
+    const loaded: number[] = [];
+    const seasons: string[][] = [];
+    await runInDurableObject(stub, async (instance) => {
+      const brain = instance as unknown as SeasonSeams;
+      brain.loadNflState = async () => ({ week: 4, season_type: "regular" });
+      brain.loadLeague = async () => ({ league_id: V1_LEAGUE_ID, settings: { playoff_week_start: 15 } });
+      brain.loadWeekMatchups = async (_sleeperLeagueId, week) => {
+        loaded.push(week);
+        return playedWeek(week);
+      };
+      brain.generateBeatDraft = async (_week, _facts, season) => {
+        seasons.push(season);
+        return { copy: "Week 4 is underway." };
+      };
+    });
+
+    const result = await stub.poll(THURSDAY_MS);
+    expect(result.wroteBeat).toBe(true);
+    expect(loaded.sort()).toEqual([1, 2, 3]);
+    expect(await finalWeekRows(stub)).toEqual([
+      { week: 1, played: 1 },
+      { week: 2, played: 1 },
+      { week: 3, played: 1 },
+    ]);
+    expect(seasons).toHaveLength(1);
+    expect(seasons[0]?.[0]).toMatch(/^Standings through week 3: 1\. .+ 3-0 /);
+    expect(seasons[0]).toEqual(expect.arrayContaining([expect.stringMatching(/^Week 4 matchup: .+ \(3-0, 1st\) vs /)]));
+    expect(seasons[0]).toEqual(expect.arrayContaining([expect.stringMatching(/^Rematch: /)]));
+
+    const bible = (await stub.getDashboard()).bible.map((row) => row.entry);
+    expect(bible.filter((entry) => entry.startsWith("Previously, through week 3: "))).toHaveLength(1);
+
+    // Later polls only refresh the latest settled week and never repeat the previously-on entry.
+    loaded.length = 0;
+    await stub.poll(THURSDAY_MS);
+    expect(loaded).toEqual([3]);
+    const bibleAfter = (await stub.getDashboard()).bible.map((row) => row.entry);
+    expect(bibleAfter.filter((entry) => entry.startsWith("Previously, "))).toHaveLength(1);
+  });
+
+  it("skips empty responses and never downgrades a played week", async () => {
+    const stub = await bootPilot("season-no-downgrade");
+    let respond: (week: number) => typeof v1FixtureMatchups = playedWeek;
+    await runInDurableObject(stub, async (instance) => {
+      const brain = instance as unknown as SeasonSeams;
+      brain.loadNflState = async () => ({ week: 3, season_type: "regular" });
+      brain.loadLeague = async () => null;
+      brain.loadWeekMatchups = async (_sleeperLeagueId, week) => respond(week);
+      brain.generateBeatDraft = async () => ({ copy: "beat" });
+    });
+
+    respond = (week) => (week === 1 ? [] : playedWeek(week));
+    await stub.poll(THURSDAY_MS);
+    expect(await finalWeekRows(stub)).toEqual([{ week: 2, played: 1 }]);
+
+    respond = (week) => playedWeek(week).map((matchup) => ({ ...matchup, points: week === 2 ? 0 : matchup.points, players_points: week === 2 ? {} : matchup.players_points }));
+    await stub.poll(THURSDAY_MS);
+    expect(await finalWeekRows(stub)).toEqual([
+      { week: 1, played: 1 },
+      { week: 2, played: 1 },
+    ]);
+  });
+
+  it("still writes the beat when settling weeks fails", async () => {
+    const stub = await bootPilot("season-sync-fails");
+    await runInDurableObject(stub, async (instance) => {
+      const brain = instance as unknown as SeasonSeams;
+      brain.loadNflState = async () => ({ week: 4, season_type: "regular" });
+      brain.loadLeague = async () => null;
+      brain.loadWeekMatchups = async () => {
+        throw new Error("Sleeper /league/:id/matchups/:id failed: 500");
+      };
+      brain.generateBeatDraft = async () => ({ copy: "Week 4 is underway." });
+    });
+
+    const result = await stub.poll(THURSDAY_MS);
+    expect(result.wroteBeat).toBe(true);
+    expect(await finalWeekRows(stub)).toEqual([]);
+  });
+
+  it("keeps the weeks that loaded when another week fails, then fills the gap next poll", async () => {
+    const stub = await bootPilot("season-partial");
+    let failWeek: number | null = 2;
+    await runInDurableObject(stub, async (instance) => {
+      const brain = instance as unknown as SeasonSeams;
+      brain.loadNflState = async () => ({ week: 4, season_type: "regular" });
+      brain.loadLeague = async () => null;
+      brain.loadWeekMatchups = async (_sleeperLeagueId, week) => {
+        if (week === failWeek) throw new Error("Sleeper /league/:id/matchups/:id failed: 500");
+        return playedWeek(week);
+      };
+      brain.generateBeatDraft = async () => ({ copy: "beat" });
+    });
+
+    await stub.poll(THURSDAY_MS);
+    expect(await finalWeekRows(stub)).toEqual([
+      { week: 1, played: 1 },
+      { week: 3, played: 1 },
+    ]);
+
+    failWeek = null;
+    await stub.poll(THURSDAY_MS);
+    expect(await finalWeekRows(stub)).toEqual([
+      { week: 1, played: 1 },
+      { week: 2, played: 1 },
+      { week: 3, played: 1 },
+    ]);
+  });
+
+  it("leaves later settled weeks out of an earlier week's recap", async () => {
+    const stub = await bootPilot("season-recap-later-week");
+    const prompts: string[] = [];
+    await runInDurableObject(stub, async (instance, state) => {
+      state.storage.sql.exec(
+        "INSERT INTO final_weeks (week, played, matchups, recorded_at) VALUES (4, 1, ?, 0)",
+        JSON.stringify(playedWeek(4)),
+      );
+      const brain = instance as unknown as {
+        loadNflState(): Promise<{ week: number }>;
+        loadRecapWeek(
+          sleeperLeagueId: string,
+          week: number,
+        ): Promise<{ matchups: typeof v1FixtureMatchups; transactions: [] }>;
+        generateRecapDraft(prompt: { user: string }): Promise<{ subject: string; body: string }>;
+      };
+      brain.loadNflState = async () => ({ week: 4 });
+      brain.loadRecapWeek = async (_sleeperLeagueId, week) => ({ matchups: playedWeek(week), transactions: [] });
+      brain.generateRecapDraft = async (prompt) => {
+        prompts.push(prompt.user);
+        return { subject: "Week 3 recap", body: "Body." };
+      };
+    });
+
+    expect((await stub.attemptRecap(THURSDAY_MS)).status).toBe("published");
+    expect(prompts[0]).toMatch(/- Standings through week 3: /);
+    expect(prompts[0]).not.toContain("week 4");
+  });
+
+  it("writes close games to the bible once, from final scores, when a week settles", async () => {
+    const stub = await bootPilot("season-close-games");
+    let bump = 0;
+    await runInDurableObject(stub, async (instance) => {
+      const brain = instance as unknown as SeasonSeams;
+      brain.loadNflState = async () => ({ week: 3, season_type: "regular" });
+      brain.loadLeague = async () => null;
+      // Roster 3 vs 4 finishes 97.4-101.0 in the fixture: a one-score game.
+      brain.loadWeekMatchups = async (_sleeperLeagueId, week) =>
+        playedWeek(week).map((matchup) => ({ ...matchup, points: (matchup.points ?? 0) + bump }));
+      brain.generateBeatDraft = async () => ({ copy: "beat" });
+    });
+
+    await stub.poll(THURSDAY_MS);
+    const closeGames = async () =>
+      (await stub.getDashboard()).bible.map((row) => row.entry).filter((entry) => entry.includes("one-score game"));
+    const first = await closeGames();
+    expect(first.filter((entry) => entry.startsWith("Week 1: "))).toHaveLength(first.length / 2);
+    expect(first.filter((entry) => entry.startsWith("Week 2: "))).toHaveLength(first.length / 2);
+    expect(first.length).toBeGreaterThan(0);
+    for (const entry of first) expect(entry).toMatch(/^Week [12]: .+ beat .+ \d+(\.\d+)?-\d+(\.\d+)?, a one-score game\.$/);
+
+    // A stat correction re-records week 2 with new scores but does not add a second entry.
+    bump = 0.5;
+    await stub.poll(THURSDAY_MS);
+    expect(await closeGames()).toEqual(first);
+  });
+
+  it("reports bench shame on the final snapshot even after a live snapshot of the same week", async () => {
+    const stub = await bootPilot("season-final-bench");
+    const kinds: string[][] = [];
+    await runInDurableObject(stub, async (instance) => {
+      const brain = instance as unknown as SeasonSeams;
+      brain.generateBeatDraft = async (_week, facts) => {
+        kinds.push((facts as Array<{ kind: string }>).map((fact) => fact.kind));
+        return { copy: "beat" };
+      };
+    });
+    // Roster 1 benches CeeDee Lamb (31.6) behind a lower starter in both snapshots: same pair.
+    const live = { ...snapshot(fixtureMatchupsFinal), week: 1 };
+    await stub.ingestSnapshot(live, fixturePlayers);
+    expect(kinds[0]).not.toContain("bench_shame");
+    expect(kinds[0]).not.toContain("rivalry");
+
+    // Week 1 settles, then the next changed snapshot of the same week is final.
+    await runInDurableObject(stub, async (_instance, state) => {
+      state.storage.sql.exec(
+        "INSERT INTO final_weeks (week, played, matchups, recorded_at) VALUES (1, 1, ?, 0)",
+        JSON.stringify(fixtureMatchupsFinal),
+      );
+    });
+    const final = {
+      ...live,
+      matchups: live.matchups.map((matchup) => ({ ...matchup, points: (matchup.points ?? 0) + 0.1 })),
+    };
+    await stub.ingestSnapshot(final, fixturePlayers);
+    expect(kinds[1]).toContain("bench_shame");
+    expect(kinds[1]).toContain("rivalry");
+
+    // A later final snapshot of the same week does not repeat the same bench pair.
+    const corrected = {
+      ...final,
+      matchups: final.matchups.map((matchup) => ({ ...matchup, points: (matchup.points ?? 0) + 0.1 })),
+    };
+    await stub.ingestSnapshot(corrected, fixturePlayers);
+    expect(kinds[2]).not.toContain("bench_shame");
+  });
+
+  it("reports final facts when the week settles with the same scores as the last live poll", async () => {
+    const stub = await bootPilot("season-settle-same-hash");
+    const kinds: string[][] = [];
+    await runInDurableObject(stub, async (instance) => {
+      const brain = instance as unknown as SeasonSeams;
+      brain.generateBeatDraft = async (_week, facts) => {
+        kinds.push((facts as Array<{ kind: string }>).map((fact) => fact.kind));
+        return { copy: "beat" };
+      };
+    });
+    const live = { ...snapshot(fixtureMatchupsFinal), week: 1 };
+    await stub.ingestSnapshot(live, fixturePlayers);
+    await runInDurableObject(stub, async (_instance, state) => {
+      state.storage.sql.exec(
+        "INSERT INTO final_weeks (week, played, matchups, recorded_at) VALUES (1, 1, ?, 0)",
+        JSON.stringify(fixtureMatchupsFinal),
+      );
+    });
+
+    // Identical payload: only the week's finality changed.
+    const settled = await stub.ingestSnapshot(live, fixturePlayers);
+    expect(settled.wroteBeat).toBe(true);
+    expect(kinds[1]).toEqual(expect.arrayContaining(["scoreboard", "rivalry", "bench_shame"]));
+    expect(kinds[1]).not.toContain("trade");
+
+    // Once the final snapshot is stored, the same payload is quiet again.
+    const repeat = await stub.ingestSnapshot(live, fixturePlayers);
+    expect(repeat.facts).toBe(0);
+  });
+
+  it("writes the recap against the season through the recapped week", async () => {
+    const stub = await bootPilot("season-recap");
+    const prompts: string[] = [];
+    await runInDurableObject(stub, async (instance) => {
+      const brain = instance as unknown as {
+        loadNflState(): Promise<{ week: number }>;
+        loadRecapWeek(
+          sleeperLeagueId: string,
+          week: number,
+        ): Promise<{ matchups: typeof v1FixtureMatchups; transactions: [] }>;
+        generateRecapDraft(prompt: { user: string }): Promise<{ subject: string; body: string }>;
+      };
+      brain.loadNflState = async () => ({ week: 4 });
+      brain.loadRecapWeek = async (_sleeperLeagueId, week) => ({ matchups: playedWeek(week), transactions: [] });
+      brain.generateRecapDraft = async (prompt) => {
+        prompts.push(prompt.user);
+        return { subject: "Week 3 recap", body: "Roster one keeps rolling." };
+      };
+    });
+
+    const result = await stub.attemptRecap(THURSDAY_MS);
+    expect(result.status).toBe("published");
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]).toContain("Season so far (settled; keep every number exactly as written):");
+    expect(prompts[0]).toMatch(/- Standings through week 3: /);
+    expect(prompts[0]).toMatch(/- Week 3 high score: /);
+    expect(await finalWeekRows(stub)).toEqual([{ week: 3, played: 1 }]);
   });
 });

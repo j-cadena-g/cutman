@@ -4,7 +4,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { classifyLocalDevSecrets, formatMissingAgenticNote } from "./lib/local-dev-secrets.mjs";
+import { classifyLocalDevSecrets, formatMissingAgenticNote, remoteAiStatus } from "./lib/local-dev-secrets.mjs";
 import { parseManifestKeys } from "./lib/parse-manifest-keys.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -63,5 +63,12 @@ const agenticNote = formatMissingAgenticNote(missingAgentic);
 if (agenticNote) {
   console.log(agenticNote);
 }
+
+const remoteAi = remoteAiStatus();
+if (remoteAi.error) {
+  console.error(`FAIL: ${remoteAi.error}`);
+  process.exit(1);
+}
+console.log(`local Workers AI: ${remoteAi.enabled ? "on (CUTMAN_REMOTE_AI=true)" : "off"}`);
 
 console.log("PASS: local-dev Environment has required secrets");
