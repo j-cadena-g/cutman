@@ -40,6 +40,14 @@ export type DiffOptions = {
   prevSettled?: boolean;
 };
 
+/**
+ * The week turned final since the previous snapshot. Its final facts must come out even when the
+ * scores, and so the hash, match the last live poll.
+ */
+function justSettled(options: DiffOptions): boolean {
+  return options.settled && !options.prevSettled;
+}
+
 function transactionFacts(
   prev: LeagueSnapshot | null,
   next: LeagueSnapshot,
@@ -135,8 +143,9 @@ function matchupFacts(
   prev: LeagueSnapshot | null,
   next: LeagueSnapshot,
   players: PlayerMap,
-  settled: boolean,
+  options: DiffOptions,
 ): StoryFact[] {
+  const settled = options.settled;
   const prevByRoster = new Map((prev?.matchups ?? []).map((matchup) => [matchup.roster_id, matchup]));
   const grouped = new Map<number | null, SleeperMatchup[]>();
   for (const matchup of next.matchups) {
@@ -153,7 +162,7 @@ function matchupFacts(
     const leftPrev = prevByRoster.get(left.roster_id);
     const rightPrev = prevByRoster.get(right.roster_id);
     const scoreChanged =
-      leftPrev?.points !== left.points || rightPrev?.points !== right.points || !prev;
+      leftPrev?.points !== left.points || rightPrev?.points !== right.points || !prev || justSettled(options);
     if (!scoreChanged) continue;
     const leftName = teamLabel(next.users, next.rosters, left.roster_id);
     const rightName = teamLabel(next.users, next.rosters, right.roster_id);
@@ -249,7 +258,7 @@ export function diffSnapshots(
 ): StoryFact[] {
   const facts = [
     ...transactionFacts(prev, next, players),
-    ...matchupFacts(prev, next, players, options.settled),
+    ...matchupFacts(prev, next, players, options),
     ...benchShameFacts(prev, next, players, options),
   ];
   return facts;
@@ -263,6 +272,6 @@ export async function factsIfChanged(
   players: PlayerMap,
   options: DiffOptions,
 ): Promise<StoryFact[]> {
-  if (prevHash === nextHash) return [];
+  if (prevHash === nextHash && !justSettled(options)) return [];
   return diffSnapshots(prev, next, players, options);
 }

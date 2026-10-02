@@ -41,7 +41,7 @@ describe("snapshot diff idempotency", () => {
     const hashA = await hashSnapshot(first);
     const hashB = await hashSnapshot(second);
     expect(hashA).toBe(hashB);
-    const facts = await factsIfChanged(hashA, hashB, first, second, fixturePlayers, { settled: true });
+    const facts = await factsIfChanged(hashA, hashB, first, second, fixturePlayers, { settled: true, prevSettled: true });
     expect(facts).toEqual([]);
   });
 
@@ -360,6 +360,18 @@ describe("live and final facts", () => {
     expect(afterLive.some((fact) => fact.kind === "bench_shame")).toBe(true);
     const afterFinal = diffSnapshots(first, second, fixturePlayers, { settled: true, prevSettled: true });
     expect(afterFinal.some((fact) => fact.kind === "bench_shame")).toBe(false);
+  });
+
+  it("re-diffs a week that just turned final even when the payload is unchanged", async () => {
+    const same = snapshot();
+    const hash = await hashSnapshot(same);
+    const facts = await factsIfChanged(hash, hash, same, same, fixturePlayers, { settled: true, prevSettled: false });
+    expect(facts.filter((fact) => fact.kind === "scoreboard").every((fact) => fact.copy.startsWith("Final: "))).toBe(true);
+    expect(facts.some((fact) => fact.kind === "rivalry")).toBe(true);
+    expect(facts.some((fact) => fact.kind === "bench_shame")).toBe(true);
+    // Transactions still dedupe against the previous snapshot.
+    expect(facts.some((fact) => fact.kind === "trade")).toBe(false);
+    expect(await factsIfChanged(hash, hash, same, same, fixturePlayers, { settled: true, prevSettled: true })).toEqual([]);
   });
 
   it("describes waiver and free-agent moves as pickups, not trades", () => {

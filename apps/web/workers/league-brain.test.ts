@@ -3157,6 +3157,36 @@ describe("LeagueBrain season ledger", () => {
     expect(kinds[2]).not.toContain("bench_shame");
   });
 
+  it("reports final facts when the week settles with the same scores as the last live poll", async () => {
+    const stub = await bootPilot("season-settle-same-hash");
+    const kinds: string[][] = [];
+    await runInDurableObject(stub, async (instance) => {
+      const brain = instance as unknown as SeasonSeams;
+      brain.generateBeatDraft = async (_week, facts) => {
+        kinds.push((facts as Array<{ kind: string }>).map((fact) => fact.kind));
+        return { copy: "beat" };
+      };
+    });
+    const live = { ...snapshot(fixtureMatchupsFinal), week: 1 };
+    await stub.ingestSnapshot(live, fixturePlayers);
+    await runInDurableObject(stub, async (_instance, state) => {
+      state.storage.sql.exec(
+        "INSERT INTO final_weeks (week, played, matchups, recorded_at) VALUES (1, 1, ?, 0)",
+        JSON.stringify(fixtureMatchupsFinal),
+      );
+    });
+
+    // Identical payload: only the week's finality changed.
+    const settled = await stub.ingestSnapshot(live, fixturePlayers);
+    expect(settled.wroteBeat).toBe(true);
+    expect(kinds[1]).toEqual(expect.arrayContaining(["scoreboard", "rivalry", "bench_shame"]));
+    expect(kinds[1]).not.toContain("trade");
+
+    // Once the final snapshot is stored, the same payload is quiet again.
+    const repeat = await stub.ingestSnapshot(live, fixturePlayers);
+    expect(repeat.facts).toBe(0);
+  });
+
   it("writes the recap against the season through the recapped week", async () => {
     const stub = await bootPilot("season-recap");
     const prompts: string[] = [];
